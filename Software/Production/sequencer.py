@@ -256,7 +256,14 @@ class Sequencer:
         # is only a local is collectable the moment it goes out of scope -
         # and the audio then reads whatever took its place. That is loud
         # garbage at best and a hard fault at worst. See _load_to_ram.
+        #
+        # Both the bytes and the memoryview over them are kept. A memoryview
+        # in MicroPython does not necessarily keep its base object alive, so
+        # holding only the view can still leave the bytes collectable, and
+        # holding only the bytes relies on the sample pointing at them rather
+        # than at the view. Holding both costs two slots in a list.
         self._audio = [None] * TRACK_COUNT
+        self._views = [None] * TRACK_COUNT
         # The read buffer a streamed track's WaveFile reads through.
         self._stream_buffers = [None] * TRACK_COUNT
         # An auditioned sample is owned by nothing else; it and its buffer
@@ -323,11 +330,12 @@ class Sequencer:
             )
             return False
 
-        sample, audio = self._load_to_ram(handle, offset, size)
+        sample, audio, view = self._load_to_ram(handle, offset, size)
         if sample is not None:
             handle.close()
             self._samples[track] = sample
             self._audio[track] = audio
+            self._views[track] = view
             self._streamed[track] = False
             self._sizes[track] = size
         else:
@@ -358,14 +366,14 @@ class Sequencer:
         keep it: see the comment on the RawSample below.
         """
         if size > MAX_RAM_SAMPLE or self._ram_used + size > RAM_BUDGET:
-            return None, None
+            return None, None, None
         try:
             handle.seek(offset)
             data = handle.read(size)
         except (OSError, MemoryError):
-            return None, None
+            return None, None, None
         if len(data) < size:
-            return None, None
+            return None, None, None
         try:
             # RawSample infers bit depth from the buffer's element size: raw
             # bytes mean 8-bit, which the mixer rejects at play() with "the
@@ -387,9 +395,9 @@ class Sequencer:
             # TypeError as well: cast("h") rejects a buffer whose length is not
             # a multiple of two, and like MemoryError it is not caught by the
             # handlers above, so it would reach the main loop.
-            return None, None
+            return None, None, None
         self._ram_used += size
-        # `view` goes back to the caller deliberately. The sample refers to
+        # Both go back to the caller deliberately. The sample refers to
         # this memory and the I2S DMA reads it for as long as the sample can
         # play, but nothing here is a reference the garbage collector can
         # see: once the last name for `data` goes out of scope the bytes are
@@ -397,7 +405,7 @@ class Sequencer:
         # read of memory that is now something else. That is a hard fault,
         # not an exception - the badge drops to safe mode with no traceback,
         # which is what it did.
-        return sample, view
+        return sample, data, view
 
     def is_streamed(self, track):
         """True when a track plays from storage rather than RAM."""
@@ -444,6 +452,7 @@ class Sequencer:
         # Released only after the sample, so a buffer never outlives its
         # owner in the other direction either.
         self._audio[track] = None
+        self._views[track] = None
         self._stream_buffers[track] = None
         handle = self._files[track]
         self._files[track] = None

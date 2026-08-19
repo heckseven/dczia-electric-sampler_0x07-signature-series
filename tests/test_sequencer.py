@@ -977,13 +977,32 @@ def test_a_ram_sample_keeps_its_audio_alive(seq, kit):
 
 
 def test_the_buffer_is_the_audio_that_was_read(seq, kit):
-    """Holding the wrong object would satisfy a reference count and nothing else.
+    """Holding the wrong object would satisfy a reference count and nothing else."""
+    seq.load_kit(kit)
+    assert len(seq._audio[0]) == seq._sizes[0]
 
-    What is held is the 16-bit view the sample was handed, so its length is
-    in samples; the byte count is what the loader accounted for.
+
+def test_both_the_bytes_and_the_view_over_them_are_held(seq, kit):
+    """Either one alone leaves a gap.
+
+    A memoryview in MicroPython does not necessarily keep its base object
+    alive, so holding only the view can still let the bytes be collected.
+    Holding only the bytes assumes the sample points at them rather than at
+    the view it was actually handed. The audio reads whatever replaced them
+    either way, and that is a hard fault rather than an exception.
     """
     seq.load_kit(kit)
-    assert seq._audio[0].nbytes == seq._sizes[0]
+    for track in range(TRACK_COUNT):
+        assert seq._audio[track] is not None, "track %d lost its bytes" % track
+        assert seq._views[track] is not None, "track %d lost its view" % track
+    assert seq._views[0].nbytes == seq._sizes[0]
+
+
+def test_releasing_a_track_lets_both_go(seq, kit):
+    seq.load_kit(kit)
+    seq._release_track(0)
+    assert seq._audio[0] is None
+    assert seq._views[0] is None
 
 
 def test_releasing_a_track_lets_its_audio_go(seq, kit):

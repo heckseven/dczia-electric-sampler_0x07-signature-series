@@ -4,6 +4,9 @@ from setup import (
     display,
 )
 
+# How many menu entries fit on the 128x32 panel at a 10px line height.
+MENU_LINES = 3
+
 
 def neoindex(key_number):
     # Front board carries exactly 10 addressable LEDs (D101-D110).
@@ -19,7 +22,7 @@ def neoindex(key_number):
 
 def selector_calcs(menu, highlight, shift, last_position, position):
     list_length = len(menu)
-    total_lines = 3
+    total_lines = MENU_LINES
     if position < last_position:
         if highlight > 1:
             highlight -= 1
@@ -40,6 +43,29 @@ def selector_calcs(menu, highlight, shift, last_position, position):
 _menu_screen = None
 
 
+def _ensure_menu_screen(lines=MENU_LINES):
+    global _menu_screen
+    if _menu_screen is None:
+        _menu_screen = screen.TextScreen(lines=lines)
+    return _menu_screen
+
+
+def attach_menu():
+    """Put the menu back on the display, and return it.
+
+    Attaching belongs to entering the menu, not to building its screen. Other
+    states show groups of their own, so coming back from one leaves the
+    display pointed somewhere else; a menu screen that only attached itself
+    once, when it was first created, would then update labels nobody could
+    see. Doing it per entry rather than per redraw also keeps it off the
+    scroll path, where a full-screen reattach is exactly the noise the
+    per-line drawing exists to avoid.
+    """
+    menu_screen = _ensure_menu_screen()
+    menu_screen.attach(display)
+    return menu_screen
+
+
 def show_menu(menu, highlight, shift):
     """Shows the menu on the screen.
 
@@ -48,17 +74,13 @@ def show_menu(menu, highlight, shift):
     scroll step, which is the largest possible change on this panel and the
     noisiest thing the display can do to the audio.
     """
-    global _menu_screen
-    total_lines = 3
-    if _menu_screen is None:
-        _menu_screen = screen.TextScreen(lines=total_lines)
-        _menu_screen.attach(display)
+    menu_screen = _ensure_menu_screen()
 
-    for line in range(total_lines):
+    for line in range(MENU_LINES):
         index = shift + line
         try:
             pretty = menu[index]["pretty"]
         except IndexError:
             pretty = ""
         cursor = ">" if pretty and highlight == line + 1 else " "
-        _menu_screen.set_line(line, "%s%s" % (cursor, pretty))
+        menu_screen.set_line(line, "%s%s" % (cursor, pretty))

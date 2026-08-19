@@ -290,3 +290,60 @@ def test_the_menu_blanks_lines_past_the_end_of_a_short_list():
     utils.show_menu([{"pretty": "only"}], 1, 0)
     assert utils._menu_screen.line(1) == " "
     assert utils._menu_screen.line(2) == " "
+
+
+# --- getting the display back ---------------------------------------------
+#
+# Every state points the display at a group of its own, so the menu does not
+# keep it just because it had it once. A menu that updates labels while the
+# display is showing somebody else's group looks frozen: scrolling and backing
+# out both appear to do nothing, because the drawing is real but invisible.
+
+
+def test_entering_the_menu_puts_the_menu_on_the_display():
+    import utils
+
+    menu = MenuState()
+    menu.enter(FakeMachine())
+    assert setup.display.shown is utils._menu_screen.group
+
+
+def test_the_menu_takes_the_display_back_from_another_state():
+    """Returning from the sampler, or any state that shows its own group."""
+    import displayio
+
+    import utils
+
+    machine = FakeMachine()
+    menu = MenuState()
+    menu.enter(machine)  # the menu owns the display
+
+    somebody_else = displayio.Group()
+    setup.display.show(somebody_else)  # another state takes it
+    assert setup.display.shown is somebody_else
+
+    menu.enter(machine)  # and we come back
+    assert setup.display.shown is utils._menu_screen.group
+
+
+def test_scrolling_does_not_reattach_the_display():
+    """Reattaching is a full-screen redraw, the loudest thing on this panel.
+
+    It belongs on state entry, which happens once, not on the scroll path,
+    which happens for every detent.
+    """
+    machine = FakeMachine()
+    menu = MenuState()
+    menu.enter(machine)
+    attached = setup.display.shown
+
+    calls = []
+    real = setup.display.show
+    setup.display.show = lambda group: (calls.append(group), real(group))[1]
+    try:
+        for _ in range(10):
+            show_menu(menu.menu_items, menu.highlight, menu.shift)
+    finally:
+        setup.display.show = real
+    assert calls == [], "show_menu reattached the display"
+    assert setup.display.shown is attached

@@ -3,7 +3,7 @@ from supervisor import ticks_ms
 
 from engine.clock import ticks_diff
 from State import State
-from utils import show_menu
+from utils import attach_menu, show_menu
 from setup import (
     neopixels,
     select_enc,
@@ -53,6 +53,8 @@ class MenuState(State):
         self._dirty = False
         if machine.animation is None:
             machine.animation = Rainbow(neopixels, speed=0.1)
+        # Whatever ran before this had the display pointed at its own group.
+        attach_menu()
         show_menu(self.menu_items, self.highlight, self.shift)
         State.enter(self, machine)
 

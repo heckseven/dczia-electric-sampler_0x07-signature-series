@@ -186,7 +186,7 @@ class SamplerMenuState(State):
         show_menu(self.samples, self.highlight, self.shift)
         while True:
             if self.last_position != select_enc.position:
-                (self.highlight, self.shift) = selector_calcs(
+                self.highlight, self.shift = selector_calcs(
                     self.samples,
                     self.highlight,
                     self.shift,
@@ -215,7 +215,7 @@ class SamplerMenuState(State):
         show_menu(seq_select, self.highlight, self.shift)
         while True:
             if self.last_position != select_enc.position:
-                (self.highlight, self.shift) = selector_calcs(
+                self.highlight, self.shift = selector_calcs(
                     seq_select,
                     self.highlight,
                     self.shift,

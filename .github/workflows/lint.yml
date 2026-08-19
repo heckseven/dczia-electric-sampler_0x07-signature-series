@@ -30,6 +30,7 @@ jobs:
         with:
           options: "--check --verbose"
           src: "./Software/Testing"
+          version: "26.5.1"
 
       - name: Flake8 Lint Production
         uses: py-actions/flake8@v2
@@ -42,3 +43,4 @@ jobs:
         with:
           options: "--check --verbose"
           src: "./Software/Production"
+          version: "26.5.1"

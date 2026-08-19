@@ -284,3 +284,30 @@ class TextScreen:
         screen for every scroll detent.
         """
         self.display.show(self.group)
+
+
+_shared = None
+
+
+def shared(display, lines=3):
+    """The one text screen the firmware draws through.
+
+    States hand the display back and forth, and each one building its own
+    screen would mean a scene graph and a glyph cache per state for a panel
+    that only ever shows one of them. Taking it over is `attach`.
+    """
+    global _shared
+    if _shared is None:
+        _shared = TextScreen(display, lines=lines)
+    return _shared
+
+
+def message(display, *lines):
+    """Show a few lines at once and take the display. For simple states."""
+    text_screen = shared(display)
+    text_screen.attach()
+    text_screen.clear()
+    for index in range(min(len(lines), len(text_screen))):
+        text_screen.set_line(index, lines[index])
+    text_screen.flush_all()
+    return text_screen

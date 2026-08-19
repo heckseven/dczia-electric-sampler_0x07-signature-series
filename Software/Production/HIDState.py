@@ -1,6 +1,4 @@
-import terminalio
 import usb_hid
-from adafruit_display_text import label
 from adafruit_hid.consumer_control import ConsumerControl
 from adafruit_hid.consumer_control_code import ConsumerControlCode
 from adafruit_hid.keyboard import Keyboard
@@ -16,6 +14,7 @@ from utils import (
     neoindex,
 )
 
+import screen
 from State import State
 
 
@@ -59,9 +58,7 @@ class HIDState(State):
             self.consumer_control = fakekb()
 
     def enter(self, machine):
-        text = "HID Controller"
-        text_area = label.Label(terminalio.FONT, text=text, x=2, y=15)
-        display.show(text_area)
+        screen.message(display, "", "HID Controller")
         neopixels.fill((100, 100, 100))
         neopixels.show()
         select_enc.position = 0

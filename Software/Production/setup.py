@@ -4,16 +4,14 @@ import board
 import busio
 import digitalio
 import displayio
+import screen
 import keypad
 import neopixel
 import rotaryio
 import sdcardio
 import storage
-import terminalio
 import time
 import usb_midi
-
-from adafruit_display_text import label
 
 # OLED Screen ( display )
 displayio.release_displays()
@@ -126,7 +124,5 @@ for _baudrate in SD_BAUDRATES:
 if sdcard is None:
     # No card, or none this board can talk to. Everything else still works;
     # samples simply come from flash.
-    text = "No SD Card Found!"
-    text_area = label.Label(terminalio.FONT, text=text, color=0xFFFF00, x=2, y=15)
-    display.show(text_area)
+    screen.message(display, "", "No SD Card Found!")
     time.sleep(5)

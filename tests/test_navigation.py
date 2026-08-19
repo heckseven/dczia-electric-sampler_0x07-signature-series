@@ -9,9 +9,12 @@ a badge.
 import pytest
 
 import circuitpython_stubs
+import screen as screen_module
 import setup
 from FlashyState import FlashyState
+from HIDState import HIDState
 from MenuState import MenuState
+from MIDIState import MIDIState
 from StartupState import StartupState
 from utils import selector_calcs, show_menu
 
@@ -375,3 +378,52 @@ def test_the_menu_still_redraws_late_in_the_tick_period():
         assert utils._menu_screen.line(0) != "stale", "menu never redrew"
     finally:
         ticks.value = before
+
+
+# --- every screen draws through screen.py --------------------------------
+#
+# The point of the shared screen is that no state hand-rolls its own drawing.
+# A state that shows text without taking the display, or takes it without
+# drawing, looks frozen - which is exactly how the Flashy menu broke when
+# show_menu stopped drawing on the caller's behalf.
+
+
+@pytest.mark.parametrize(
+    "state_class", [MenuState, FlashyState, MIDIState, HIDState, StartupState]
+)
+def test_entering_a_state_puts_its_text_on_the_display(state_class):
+    state = state_class()
+    state.enter(FakeMachine())
+    shared = screen_module.shared(setup.display)
+    assert setup.display.shown is shared.group, (
+        "%s did not take the display" % state_class.__name__
+    )
+
+
+@pytest.mark.parametrize("state_class", [MenuState, FlashyState, MIDIState, HIDState])
+def test_entering_a_state_leaves_nothing_waiting_to_be_drawn(state_class):
+    """Entering should show the screen, not reveal it a line per pass."""
+    state = state_class()
+    state.enter(FakeMachine())
+    assert screen_module.shared(setup.display).pending == 0
+
+
+def test_the_flashy_menu_redraws_when_scrolled():
+    """It stopped drawing entirely when show_menu became queue-only."""
+    machine = FakeMachine()
+    flashy = FlashyState()
+    flashy.enter(machine)
+    shared = screen_module.shared(setup.display)
+    before = [shared.drawn(i) for i in range(len(shared))]
+
+    setup.select_enc.position += 1
+    for _ in range(200):
+        flashy.update(machine)
+
+    after = [shared.drawn(i) for i in range(len(shared))]
+    assert after != before, "scrolling Flashy changed nothing on screen"
+
+
+def test_only_one_text_screen_is_ever_built():
+    """A scene graph and glyph cache per state, for one panel, is waste."""
+    assert screen_module.shared(setup.display) is screen_module.shared(setup.display)

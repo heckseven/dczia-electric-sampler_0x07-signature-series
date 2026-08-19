@@ -46,7 +46,7 @@ _menu_screen = None
 def _ensure_menu_screen(lines=MENU_LINES):
     global _menu_screen
     if _menu_screen is None:
-        _menu_screen = screen.TextScreen(display, lines=lines)
+        _menu_screen = screen.shared(display, lines=lines)
     return _menu_screen
 
 

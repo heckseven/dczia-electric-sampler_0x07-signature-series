@@ -1,8 +1,7 @@
-import terminalio
 from adafruit_midi.note_on import NoteOn
 from adafruit_midi.note_off import NoteOff
 from adafruit_midi.control_change import ControlChange
-from adafruit_display_text import label
+import screen
 from State import State
 
 from utils import (
@@ -49,9 +48,7 @@ class MIDIState(State):
         return "midi_controller"
 
     def enter(self, machine):
-        text = "MIDI Controller"
-        text_area = label.Label(terminalio.FONT, text=text, x=2, y=15)
-        display.show(text_area)
+        screen.message(display, "", "MIDI Controller")
         neopixels.fill((100, 100, 100))
         neopixels.show()
         # Reset encoder positions

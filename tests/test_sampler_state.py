@@ -76,8 +76,18 @@ def release(key):
     setup.keys.events.post(circuitpython_stubs.Event(key, pressed=False))
 
 
-def run(state, machine=None):
-    state.update(machine or FakeMachine())
+def run(state, machine=None, passes=8):
+    """Pump the state the way the main loop does.
+
+    A single pass handles a bounded number of key events, because unbounded
+    draining is the same failure mode the redraw budget exists to prevent.
+    The real loop turns over thousands of times a second, so a backlog is
+    cleared microseconds later; a test that calls update once is modelling a
+    loop that runs once.
+    """
+    machine = machine or FakeMachine()
+    for _ in range(passes):
+        state.update(machine)
 
 
 # --- live pads ------------------------------------------------------------
@@ -546,3 +556,32 @@ def test_a_pad_hit_still_lights_the_pad(state):
         state._act(action, value, None)
     state._render()
     assert state._last_pixels != quiet
+
+
+def test_a_bounded_pass_does_not_drop_the_events_it_did_not_handle(state):
+    """Bounding the drain must not eat the events it refuses to process.
+
+    Fetching an event and then discovering the budget is spent loses it: it
+    has already left the queue. A release lost that way leaves a modifier
+    stuck down for the rest of the session, which is worse than the
+    unbounded drain the bound was added to prevent.
+    """
+    engine = sequencer_module.engine
+    engine.mode = LIVE
+    state.controls.set_mode(LIVE)
+
+    for key in (FUNCTION, PLAY):
+        press(key)
+    for key in (PLAY, FUNCTION):
+        release(key)
+    assert 4 > module_max_events(), "the test needs more events than one pass takes"
+
+    run(state)
+    assert not state.controls._function_held, "FUNCTION never came back up"
+    assert not state.controls._play_held, "PLAY never came back up"
+
+
+def module_max_events():
+    import SamplerState as module
+
+    return module.MAX_EVENTS_PER_PASS

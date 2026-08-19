@@ -40,6 +40,10 @@ from utils import neoindex
 # short enough not to smear at speed.
 FLASH_PASSES = 40
 
+# Key events handled in one pass. Two covers a press and release arriving
+# together; a backlog beyond that waits for the next pass, microseconds away.
+MAX_EVENTS_PER_PASS = 2
+
 # How many passes each half of an indicator blink lasts.
 BLINK_PASSES = 200
 
@@ -82,7 +86,11 @@ class SamplerState(State):
         self._pixels_dirty = True
         # One label per line. A single label spanning the screen would make
         # every change a full-screen resend, which is audible; see screen.py.
-        self._screen = screen_module.TextScreen(display, lines=3)
+        # The one screen the whole firmware draws through. Building a
+        # second one here left two sets of TileGrids alive on the same font
+        # bitmap, which is the difference between entering the sampler from
+        # the menu and entering it directly - only the first builds both.
+        self._screen = screen_module.shared(display, lines=3)
         self._attached = False
         State.__init__(self)
 
@@ -123,12 +131,22 @@ class SamplerState(State):
         self._render()
 
     def _handle_keys(self, machine):
-        event = keys.events.get()
-        while event:
+        # Bounded like every other kind of work in this loop. A backlog of
+        # events - switch bounce, or a pass that ran long - would otherwise
+        # all be handled in one pass, each one able to trigger a hit and
+        # dirty the pixels, which is exactly the unbounded work the redraw
+        # budget and flush interval exist to prevent elsewhere.
+        # The bound is checked before fetching, never after. Fetching first
+        # and then finding the budget spent would drop that event on the
+        # floor: it has already left the queue. A release lost that way
+        # leaves a modifier stuck down for good.
+        for _ in range(MAX_EVENTS_PER_PASS):
+            event = keys.events.get()
+            if not event:
+                break
             for action, value in self.controls.handle(event.key_number, event.pressed):
                 if self._act(action, value, machine):
                     return True
-            event = keys.events.get()
         return False
 
     def _act(self, action, value, machine):

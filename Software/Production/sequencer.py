@@ -107,6 +107,17 @@ SYNC_PULSE_MS = 5
 # lands under a drum hit rather than in silence.
 STREAM_LINGER_MS = 750
 
+# How loud one voice is at full velocity. The mixer sums its voices, so this
+# is a polyphony budget rather than a taste setting: four voices at full
+# velocity reach full scale together and anything above that clips hard.
+#
+# It matters because the default beat plays a kick and a snare on the same
+# step. At velocity/127 straight through, those two alone summed to 1.65 of
+# full scale, which is a loud crunch on the first step where two voices
+# coincide - heard on the badge as a few clean hits and then distortion. The
+# original firmware ran every voice at 0.1 for the same reason.
+DEFAULT_VOLUME = 0.25
+
 # How often the MIDI ports are drained. Reading them costs about 430 us a pass
 # on this board, mostly USB, against a main loop that is otherwise around
 # 200 us - so polling every iteration triples the loop period and thins the
@@ -199,7 +210,14 @@ class Sequencer:
         # Two is enough. Going to three or four made no audible difference,
         # even though a voice is reused before a long sample has finished, and
         # voices are nearly free - 48 of them cost 1328 bytes.
-        self.poly = True
+        # One voice per track. Two alternating voices let a hit ring through
+        # its own retrigger, but it also means one sample object is played on
+        # two mixer voices at once - harmless for a RAM sample, corrupting for
+        # a streamed one, which shares a file position and a read buffer
+        # between them. It stays available as a setting rather than a default.
+        self.poly = False
+        # Scales every voice; see DEFAULT_VOLUME.
+        self.volume = DEFAULT_VOLUME
 
         # Whether pulses arriving on the sync jack should start a stopped
         # transport, or only set tempo and phase for a transport the player
@@ -348,8 +366,13 @@ class Sequencer:
             # signed says what the audio actually is. A memoryview rather than
             # array.array('h', data) so the audio is not copied - a second
             # copy of every sample would double peak memory during loading.
+            # The memoryview is named and kept, not built inline. It is what
+            # the sample was actually handed, and holding only the bytes
+            # underneath it relies on an assumption about which of the two
+            # CircuitPython keeps a pointer into. Holding the view holds both.
+            view = memoryview(data).cast("h")
             sample = RawSample(
-                memoryview(data).cast("h"),
+                view,
                 channel_count=CHANNELS,
                 sample_rate=SAMPLE_RATE,
             )
@@ -359,7 +382,7 @@ class Sequencer:
             # handlers above, so it would reach the main loop.
             return None, None
         self._ram_used += size
-        # `data` goes back to the caller deliberately. The sample refers to
+        # `view` goes back to the caller deliberately. The sample refers to
         # this memory and the I2S DMA reads it for as long as the sample can
         # play, but nothing here is a reference the garbage collector can
         # see: once the last name for `data` goes out of scope the bytes are
@@ -367,7 +390,7 @@ class Sequencer:
         # read of memory that is now something else. That is a hard fault,
         # not an exception - the badge drops to safe mode with no traceback,
         # which is what it did.
-        return sample, data
+        return sample, view
 
     def is_streamed(self, track):
         """True when a track plays from storage rather than RAM."""
@@ -502,7 +525,7 @@ class Sequencer:
         if sample is None:
             return False
         voice = self.mixer.voice[self._voice_for(track)]
-        voice.level = velocity / 127.0
+        voice.level = self.volume * (velocity / 127.0)
         try:
             # Starting here means the stream's own transient lands under a
             # drum hit rather than in silence, where it would be obvious.
@@ -547,7 +570,8 @@ class Sequencer:
             return False
         self.start_stream()
         voice = self.mixer.voice[AUDITION_VOICE]
-        voice.level = 0.5
+        # Half a full-velocity hit, so a preview sits under the pattern.
+        voice.level = self.volume * 0.5
         # Held before playing, not after: the sample and the buffer it reads
         # through must outlive this function, and nothing else owns them.
         self._audition_sample = sample

@@ -451,3 +451,31 @@ def test_the_watchdog_is_fed_inside_the_loop():
     source = open(os.path.join(PRODUCTION_DIR, "main.py")).read()
     loop = source.index("while True:")
     assert source.index("watchdog.feed()", loop) > loop
+
+
+def test_the_sampler_draws_through_the_shared_screen():
+    """A second screen means two sets of tile grids on one font bitmap.
+
+    Which one exists depends on how the sampler was reached: entering it
+    from the menu builds both, entering it directly builds only its own.
+    That is the difference between a badge that runs and one that does not,
+    and it is not a difference any screen should be able to create.
+    """
+    from SamplerState import SamplerState
+
+    state = SamplerState()
+    assert state._screen is screen_module.shared(setup.display)
+
+
+def test_only_one_screen_exists_however_states_are_reached():
+    from SamplerState import SamplerState
+
+    screens = set()
+    for state_class in (MenuState, FlashyState, MIDIState, HIDState, StartupState):
+        state = state_class()
+        state.enter(FakeMachine())
+        screens.add(id(setup.display.shown))
+    sampler = SamplerState()
+    sampler.enter(FakeMachine())
+    screens.add(id(setup.display.shown))
+    assert len(screens) == 1, "%d different groups were shown" % len(screens)

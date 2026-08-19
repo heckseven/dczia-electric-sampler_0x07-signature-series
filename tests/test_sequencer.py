@@ -11,7 +11,7 @@ import pytest
 
 import circuitpython_stubs
 import sequencer as sequencer_module
-from engine.song import DEFAULT_VELOCITY, TRACK_COUNT
+from engine.song import DEFAULT_VELOCITY, MAX_VELOCITY, TRACK_COUNT
 from engine.transport import LIVE, SEQ
 from sequencer import AUDITION_VOICE, MIXER_VOICES, VOICES_PER_TRACK, Sequencer
 
@@ -103,9 +103,16 @@ def test_triggering_a_silent_track_is_harmless(seq):
 # --- voice routing --------------------------------------------------------
 
 
-def test_poly_is_the_default(seq):
-    """Cutting a ringing sample clicks, and no fade is available here."""
-    assert seq.poly is True
+def test_one_voice_per_track_is_the_default(seq):
+    """The locked decision for this rework was one voice per track.
+
+    Two alternating voices let a hit ring through its own retrigger, which is
+    worth having - but it plays one sample object on two mixer voices at
+    once. That is harmless for a sample in RAM and corrupting for a streamed
+    one, which would share a file position and a read buffer between them.
+    It belongs behind a setting, which is where the decision put it.
+    """
+    assert seq.poly is False
 
 
 def test_the_first_hit_uses_the_tracks_first_voice(seq, kit):
@@ -159,12 +166,16 @@ def test_audition_does_not_use_a_track_voice(seq, kit):
 
 
 def test_velocity_scales_the_voice_level(seq, kit):
+    """Velocity sets the level, scaled by the master volume.
+
+    Full velocity is not full scale: the mixer sums its voices, so a single
+    hit has to leave room for the others playing with it.
+    """
     seq.load_kit(kit)
-    seq.poly = False  # pin the voice so the level can be read back
-    seq.trigger(0, 127)
-    assert seq.mixer.voice[0].level == pytest.approx(1.0)
+    seq.trigger(0, MAX_VELOCITY)
+    assert seq.mixer.voice[0].level == pytest.approx(seq.volume)
     seq.trigger(0, 64)
-    assert seq.mixer.voice[0].level == pytest.approx(64 / 127.0, abs=0.01)
+    assert seq.mixer.voice[0].level == pytest.approx(seq.volume * 64 / 127.0, abs=0.01)
 
 
 # --- transport wiring -----------------------------------------------------
@@ -966,9 +977,13 @@ def test_a_ram_sample_keeps_its_audio_alive(seq, kit):
 
 
 def test_the_buffer_is_the_audio_that_was_read(seq, kit):
-    """Holding the wrong object would satisfy a reference count and nothing else."""
+    """Holding the wrong object would satisfy a reference count and nothing else.
+
+    What is held is the 16-bit view the sample was handed, so its length is
+    in samples; the byte count is what the loader accounted for.
+    """
     seq.load_kit(kit)
-    assert len(seq._audio[0]) == seq._sizes[0]
+    assert seq._audio[0].nbytes == seq._sizes[0]
 
 
 def test_releasing_a_track_lets_its_audio_go(seq, kit):
@@ -1040,3 +1055,41 @@ def test_every_playing_sample_is_owned_somewhere(seq, kit):
         assert seq._samples[track] is not None
         held = seq._audio[track] is not None or seq._stream_buffers[track] is not None
         assert held, "track %d plays through a buffer nothing owns" % track
+
+
+# --- how loud the mixer is asked to be ------------------------------------
+#
+# audiomixer sums its voices. Levels are a polyphony budget, not a taste
+# setting: whatever the sum reaches above full scale is clipped, which is a
+# crunch rather than a quiet distortion. The shipped beat puts a kick and a
+# snare on the same step, so this is reached immediately.
+
+
+def worst_simultaneous_level(seq):
+    """The loudest sum the current pattern can ask the mixer for."""
+    song = seq.song
+    worst = 0.0
+    for step in range(song.length):
+        total = 0.0
+        for track in range(TRACK_COUNT):
+            velocity = song.velocity(track, step)
+            if velocity:
+                total += seq.volume * (velocity / 127.0)
+        if total > worst:
+            worst = total
+    return worst
+
+
+def test_the_shipped_beat_does_not_clip(seq):
+    """Two voices on one step summed to 1.65 of full scale before this."""
+    seq.load_demo_pattern()
+    assert worst_simultaneous_level(seq) <= 1.0
+
+
+def test_a_full_chord_of_four_reaches_full_scale_but_no_further(seq):
+    """The budget: four voices at full velocity is the design limit."""
+    song = seq.song
+    song.clear_all()
+    for track in range(4):
+        song.set_step(track, 0, MAX_VELOCITY)
+    assert worst_simultaneous_level(seq) <= 1.0

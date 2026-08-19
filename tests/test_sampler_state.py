@@ -11,8 +11,11 @@ import pytest
 import circuitpython_stubs
 import sequencer as sequencer_module
 import setup
+from engine import view
 from engine.controls import FUNCTION, PLAY, SELECT, VOLUME
+from engine.song import STEPS_PER_PAGE
 from engine.transport import LIVE, SEQ
+import SamplerState as sampler_module
 from SamplerState import SamplerState
 
 
@@ -380,16 +383,70 @@ def test_pixels_are_pushed_when_something_changes(state):
     assert setup.neopixels.show_count > before
 
 
-def test_the_display_is_not_redrawn_every_pass(state):
-    """A frame costs ~13ms; the loop runs in ~250us."""
-    setup.display.shown = None
-    drawn = 0
-    for _ in range(50):
-        run(state)
-        if setup.display.shown is not None:
-            drawn += 1
-            setup.display.shown = None
-    assert drawn < 50
+def test_the_display_is_not_redrawn_on_every_pass(state):
+    """Redrawing text is what pops the amplifier, so it has to be rationed.
+
+    Counting real calls, not recomputing the throttle: a test that re-derives
+    `passes % REDRAW_EVERY` would still pass if the redraw were deleted.
+    """
+    calls = []
+    real = state._render_display
+
+    def counted():
+        calls.append(1)
+        return real()
+
+    state._render_display = counted
+    passes = sampler_module.REDRAW_EVERY * 3
+    for _ in range(passes):
+        state.update(None)
+    assert 0 < len(calls) <= 4, len(calls)
+    assert len(calls) < passes / 10, "redrawing far too often"
+
+
+def test_an_encoder_edit_reaches_the_pixels(state):
+    """The gate is only safe if every path that changes a colour marks it.
+
+    A velocity nudge changes a pad's brightness without moving the playhead
+    or the blink phase, so without an explicit mark it would not be drawn
+    until some unrelated event happened to invalidate the cache.
+    """
+    engine = sequencer_module.engine
+    engine.mode = SEQ
+    state.controls.set_mode(SEQ)
+    engine.song.set_step(0, 0, 40)
+    for action, value in state.controls.press(0):
+        state._act(action, value, None)
+    # Render after the press, so the press's own invalidation is spent and
+    # only the encoder turn can account for a change.
+    state._render(force=True)
+    before = list(state._last_pixels)
+
+    setup.select_enc.position += 5
+    state._handle_encoders()
+    state._render()
+
+    assert engine.song.velocity(0, 0) > 40, "the nudge itself must have landed"
+    assert state._last_pixels != before, "brighter step, unchanged pixels"
+
+
+def test_changing_the_pattern_length_reaches_the_pixels(state):
+    """Moving the loop point changes which pads read as out of pattern."""
+    engine = sequencer_module.engine
+    engine.mode = SEQ
+    state.controls.set_mode(SEQ)
+    engine.song.set_length(16)
+    for action, value in state.controls.press(FUNCTION):
+        state._act(action, value, None)
+    state._render(force=True)
+    before = list(state._last_pixels)
+
+    setup.select_enc.position -= 12
+    state._handle_encoders()
+    state._render()
+
+    assert engine.song.length < 16, "the length change must have landed"
+    assert state._last_pixels != before, "loop point moved, unchanged pixels"
 
 
 def test_the_display_does_not_follow_the_playhead(state):
@@ -407,18 +464,29 @@ def test_the_display_does_not_follow_the_playhead(state):
     for step in range(engine.song.length):
         engine.clock.tick = step * engine.song.ticks_per_step
         state._render_display()
-        seen.add(state._shown)
+        seen.add(tuple(state._screen.line(i) for i in range(len(state._screen))))
     assert len(seen) == 1, "the screen must not change as the playhead moves"
 
 
 def test_the_display_still_updates_when_the_player_changes_something(state):
     engine = sequencer_module.engine
     state._render_display()
-    before = state._shown
+    before = [state._screen.line(i) for i in range(len(state._screen))]
     engine.set_bpm(engine.clock.bpm + 10)
-    state._shown = None
     state._render_display()
-    assert state._shown != before
+    after = [state._screen.line(i) for i in range(len(state._screen))]
+    assert after != before
+
+
+def test_only_the_line_that_changed_is_rewritten(state):
+    """A change must not resend lines that did not change; that is the fix."""
+    engine = sequencer_module.engine
+    state._render_display()
+    top_before = state._screen.line(0)
+    engine.set_bpm(engine.clock.bpm + 10)  # only the detail line carries BPM
+    state._render_display()
+    assert state._screen.line(0) == top_before
+    assert "%d" % engine.clock.bpm in state._screen.line(1)
 
 
 def test_pads_still_show_the_playhead(state):
@@ -428,8 +496,53 @@ def test_pads_still_show_the_playhead(state):
     state.controls.set_mode(SEQ)
     engine.toggle_play()
     engine.clock.tick = 0
-    state._render_pixels(engine.current_step)
+    state._render(force=True)
     first = list(state._last_pixels)
     engine.clock.tick = 3 * engine.song.ticks_per_step
-    state._render_pixels(engine.current_step)
+    state._render()
     assert state._last_pixels != first
+
+
+def test_a_moved_playhead_still_reaches_the_pixels(state):
+    """The gate must not swallow the one update that changes every step."""
+    engine = sequencer_module.engine
+    engine.mode = SEQ
+    state.controls.set_mode(SEQ)
+    engine.toggle_play()
+    for step in range(STEPS_PER_PAGE):
+        engine.clock.tick = step * engine.song.ticks_per_step
+        state._render()
+        assert state._last_pixels[step] == view.PLAYHEAD
+
+
+def test_pixels_are_not_rebuilt_when_nothing_moved(state):
+    """The main loop turns over about 4000 times a second; rebuilding the
+    colour list on every pass is continuous allocation for no visible change.
+    """
+    state._render(force=True)
+    calls = []
+    real = state._render_pixels
+
+    def counted(playhead, blink):
+        calls.append(1)
+        return real(playhead, blink)
+
+    state._render_pixels = counted
+    for _ in range(50):
+        state._render()
+    assert calls == [], "nothing moved, so nothing should have been rebuilt"
+
+
+def test_a_pad_hit_still_lights_the_pad(state):
+    """Flashes are the case the gate is most likely to miss: they change the
+    colours without moving the playhead or the blink phase.
+    """
+    engine = sequencer_module.engine
+    engine.mode = LIVE
+    state.controls.set_mode(LIVE)
+    state._render(force=True)
+    quiet = list(state._last_pixels)
+    for action, value in state.controls.press(0):
+        state._act(action, value, None)
+    state._render()
+    assert state._last_pixels != quiet

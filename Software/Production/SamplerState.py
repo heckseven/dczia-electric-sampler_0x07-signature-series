@@ -5,11 +5,13 @@ engine is a singleton ticked from the main loop, so the beat carries on
 whether or not this state is the one on screen. Leaving here for the menu
 stops nothing.
 
-Redrawing is throttled and change-driven. A full 128x32 frame costs about
-13 ms over I2C even at 400 kHz, and the main loop runs every 250 us or so;
-redrawing on every pass would spend almost all of the badge's time pushing
-identical pixels and would drag the sequencer with it.
+Redrawing is throttled. Sending a frame costs about 32 ms of I2C traffic and
+audibly pops the amplifier, while the main loop runs every 250 us or so, so
+redrawing on every pass would keep the bus busy continuously and make the
+badge crackle whenever a pattern played.
 """
+
+from supervisor import ticks_ms
 
 import screen as screen_module
 from engine import view
@@ -27,7 +29,7 @@ from engine.controls import (
     TOGGLE_TRANSPORT,
     Controls,
 )
-from engine.song import MAX_VELOCITY, MIN_VELOCITY
+from engine.song import STEPS_PER_PAGE, TRACK_COUNT
 from engine.transport import SEQ
 from sequencer import engine as sequencer
 from setup import display, keys, neopixels, select_enc, volume_enc  # noqa: F401
@@ -37,6 +39,12 @@ from utils import neoindex
 # How long a struck pad stays lit, in main-loop passes. Long enough to see,
 # short enough not to smear at speed.
 FLASH_PASSES = 40
+
+# How many passes each half of an indicator blink lasts.
+BLINK_PASSES = 200
+
+# The two pixels beyond the pads, at the Play and Function buttons.
+INDICATOR_PIXELS = 2
 
 # How often the display is even considered for redrawing, in main-loop passes.
 #
@@ -68,8 +76,10 @@ class SamplerState(State):
         self._last_select = 0
         self._last_volume = 0
         self._passes = 0
-        self._shown = None
         self._last_pixels = None
+        self._last_playhead = -1
+        self._last_blink = None
+        self._pixels_dirty = True
         # One label per line. A single label spanning the screen would make
         # every change a full-screen resend, which is audible; see screen.py.
         self._screen = screen_module.TextScreen(lines=3)
@@ -83,8 +93,10 @@ class SamplerState(State):
         self.controls = Controls(mode=sequencer.mode)
         self._last_select = select_enc.position
         self._last_volume = volume_enc.position
-        self._shown = None
         self._last_pixels = None
+        self._last_playhead = -1
+        self._last_blink = None
+        self._pixels_dirty = True
         self._edited = set()
         self._screen.attach(display)
         self._attached = True
@@ -127,6 +139,7 @@ class SamplerState(State):
             else:
                 sequencer.pad_hit(value)
                 self._flash[value] = FLASH_PASSES
+                self._pixels_dirty = True
         elif action == PAD_RELEASE:
             if self.controls.mode == SEQ and value not in self._edited:
                 self._toggle_step(value)
@@ -150,11 +163,11 @@ class SamplerState(State):
         elif action == BACK:
             machine.go_to_state("menu")
             return True
-        self._shown = None  # any action may have changed what is displayed
+        self._pixels_dirty = True
         return False
 
     def _toggle_step(self, slot):
-        step = sequencer.page * 8 + slot
+        step = sequencer.page * STEPS_PER_PAGE + slot
         if step >= sequencer.song.length:
             return
         track = sequencer.selected_track
@@ -170,13 +183,17 @@ class SamplerState(State):
         if position != self._last_select:
             self._select_turned(position - self._last_select)
             self._last_select = position
-            self._shown = None
+            # A turn can change a step's velocity, and so its brightness, or
+            # move the loop point and so which pads read as out of pattern.
+            # Nothing else marks that, and the pixels are only rebuilt when
+            # something says they are stale.
+            self._pixels_dirty = True
 
         position = volume_enc.position
         if position != self._last_volume:
             self._volume_turned(position - self._last_volume)
             self._last_volume = position
-            self._shown = None
+            self._pixels_dirty = True
 
     def _select_turned(self, delta):
         target = self.controls.select_turn_target()
@@ -203,11 +220,12 @@ class SamplerState(State):
         song = sequencer.song
         track = sequencer.selected_track
         for slot in self.controls.held_pads:
-            step = sequencer.page * 8 + slot
+            step = sequencer.page * STEPS_PER_PAGE + slot
             if step >= song.length or not song.is_on(track, step):
                 continue
             level = song.velocity(track, step) + delta * 4
-            song.set_velocity(track, step, max(MIN_VELOCITY, min(MAX_VELOCITY, level)))
+            # Song.set_velocity clamps to this range itself.
+            song.set_velocity(track, step, level)
             # This hold is an edit, so releasing must not toggle the step off.
             self._edited.add(slot)
 
@@ -220,17 +238,37 @@ class SamplerState(State):
             self._flash[pad] -= 1
             if self._flash[pad] <= 0:
                 del self._flash[pad]
+                self._pixels_dirty = True
 
     def _render(self, force=False):
         playhead = sequencer.current_step if sequencer.transport.playing else None
-        self._render_pixels(playhead)
+        blink = (self._passes // BLINK_PASSES) % 2 == 0
+        # Only rebuild colours when something that decides them has moved.
+        # This runs on every pass of a loop that turns over about 4000 times a
+        # second, and building the colour list allocates: a list per call, a
+        # tuple per pad, a set of flashes. Left ungated that is continuous
+        # small-object churn feeding the garbage collector, which is exactly
+        # the sort of pause this rework exists to avoid.
+        if (
+            force
+            or self._pixels_dirty
+            or playhead != self._last_playhead
+            or blink != self._last_blink
+        ):
+            self._render_pixels(playhead, blink)
+            self._last_playhead = playhead
+            self._last_blink = blink
+            self._pixels_dirty = False
         if force or self._passes % REDRAW_EVERY == 0:
             self._render_display()
 
-    def _render_pixels(self, playhead):
+    def _render_pixels(self, playhead, blink):
         song = sequencer.song
-        loaded = [sequencer.has_sample(t) for t in range(8)]
-        blink = (self._passes // 200) % 2 == 0
+        # seq_pads never looks at `loaded`, so do not build it in that mode.
+        if self.controls.mode == SEQ:
+            loaded = ()
+        else:
+            loaded = [sequencer.has_sample(t) for t in range(TRACK_COUNT)]
         colors = view.pads(
             song,
             self.controls.mode,
@@ -240,15 +278,16 @@ class SamplerState(State):
             playhead=playhead,
             flashing=set(self._flash),
         )
-        colors = list(colors)
         colors.append(view.play_indicator(sequencer.transport, blink))
         colors.append(
-            view.function_indicator(self.controls.mode, sequencer.clock, blink)
+            view.function_indicator(
+                self.controls.mode, sequencer.clock, blink, now=ticks_ms()
+            )
         )
         if colors == self._last_pixels:
             return
         self._last_pixels = colors
-        for key_number in range(10):
+        for key_number in range(TRACK_COUNT + INDICATOR_PIXELS):
             neopixels[neoindex(key_number)] = colors[key_number]
         neopixels.show()
 
@@ -268,6 +307,6 @@ class SamplerState(State):
         # frames pop the amplifier. The playhead lives on the pad LEDs
         # instead, which cost about 2 ms and are electrically quiet.
         bottom = view.step_row(song, sequencer.selected_track, sequencer.page)
-        # Set each line separately: only lines that differ are resent.
+        # Set each line separately: only lines that differ are resent, and a
+        # line whose text is unchanged sends nothing at all.
         self._screen.set_lines((top, middle, bottom))
-        self._shown = "%s\n%s\n%s" % (top, middle, bottom)

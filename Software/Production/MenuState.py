@@ -1,4 +1,5 @@
 from adafruit_led_animation.animation.rainbow import Rainbow
+from supervisor import ticks_ms
 
 from State import State
 from utils import show_menu
@@ -7,6 +8,12 @@ from setup import (
     select_enc,
     keys,
 )
+
+# Sending a frame costs about 32 ms of I2C traffic and audibly pops the
+# amplifier through the shared supply. Scrolling quickly would otherwise queue
+# a frame per detent, so redraws are coalesced: the position is always current,
+# but the screen is only pushed this often.
+REDRAW_INTERVAL_MS = 120
 
 
 class MenuState(State):
@@ -41,6 +48,8 @@ class MenuState(State):
 
     def enter(self, machine):
         self.last_position = 0
+        self._last_draw = 0
+        self._dirty = False
         if machine.animation is None:
             machine.animation = Rainbow(neopixels, speed=0.1)
         show_menu(self.menu_items, self.highlight, self.shift)
@@ -70,8 +79,16 @@ class MenuState(State):
                 else:
                     if self.shift + self.total_lines < self.list_length:
                         self.shift += 1
-            show_menu(self.menu_items, self.highlight, self.shift)
+            self._dirty = True
         self.last_position = position
+
+        # Coalesce: scrolling fast must not queue a frame per detent.
+        if self._dirty:
+            now = ticks_ms()
+            if abs(now - self._last_draw) >= REDRAW_INTERVAL_MS:
+                show_menu(self.menu_items, self.highlight, self.shift)
+                self._last_draw = now
+                self._dirty = False
 
         key = keys.events.get()
         if key and key.pressed:

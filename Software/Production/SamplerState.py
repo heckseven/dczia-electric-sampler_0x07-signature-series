@@ -40,9 +40,19 @@ from utils import neoindex
 # short enough not to smear at speed.
 FLASH_PASSES = 40
 
-# Display refresh interval in main-loop passes. A frame costs about 13 ms; the
-# loop runs in about 250 us, so this puts redraws roughly 25 ms apart.
-REDRAW_EVERY = 100
+# How often the display is even considered for redrawing, in main-loop passes.
+#
+# Sending a frame is expensive and, more importantly, noisy: measured at about
+# 32 ms of I2C traffic, and that traffic audibly pops the amplifier through the
+# shared supply. Confirmed on the badge - identical work with the bus silent
+# produces no pops, and a slower bus produces more of them, because each frame
+# occupies it for longer.
+#
+# Reusing Label objects does not help: measured, mutating a label's text costs
+# 31 ms against 33 ms for rebuilding the group, because displayio resends
+# essentially the whole frame either way. A refresh with nothing changed costs
+# 122 us. So the only lever is how often the content changes at all.
+REDRAW_EVERY = 400
 
 
 class SamplerState(State):
@@ -210,7 +220,7 @@ class SamplerState(State):
         playhead = sequencer.current_step if sequencer.transport.playing else None
         self._render_pixels(playhead)
         if force or self._passes % REDRAW_EVERY == 0:
-            self._render_display(playhead)
+            self._render_display()
 
     def _render_pixels(self, playhead):
         song = sequencer.song
@@ -237,7 +247,7 @@ class SamplerState(State):
             neopixels[neoindex(key_number)] = colors[key_number]
         neopixels.show()
 
-    def _render_display(self, playhead):
+    def _render_display(self):
         song = sequencer.song
         top = view.status_line(
             song,
@@ -248,7 +258,11 @@ class SamplerState(State):
             sequencer.clock,
         )
         middle = view.detail_line(song, sequencer.clock)
-        bottom = view.step_row(song, sequencer.selected_track, sequencer.page, playhead)
+        # The playhead is deliberately absent. Including it would change the
+        # text on every step, so a frame would be sent on every step, and
+        # frames pop the amplifier. The playhead lives on the pad LEDs
+        # instead, which cost about 2 ms and are electrically quiet.
+        bottom = view.step_row(song, sequencer.selected_track, sequencer.page)
         text = "%s\n%s\n%s" % (top, middle, bottom)
         if text == self._shown:
             return

@@ -390,3 +390,46 @@ def test_the_display_is_not_redrawn_every_pass(state):
             drawn += 1
             setup.display.shown = None
     assert drawn < 50
+
+
+def test_the_display_does_not_follow_the_playhead(state):
+    """A frame costs ~32ms of I2C and that traffic pops the amplifier.
+
+    Putting the playhead on screen would change the text every step, so a
+    frame would be sent every step. The pad LEDs carry the playhead instead.
+    """
+    engine = sequencer_module.engine
+    engine.song.set_step(engine.selected_track, 0, 100)
+    engine.song.set_step(engine.selected_track, 4, 100)
+    engine.toggle_play()
+
+    seen = set()
+    for step in range(engine.song.length):
+        engine.clock.tick = step * engine.song.ticks_per_step
+        state._render_display()
+        seen.add(state._shown)
+    assert len(seen) == 1, "the screen must not change as the playhead moves"
+
+
+def test_the_display_still_updates_when_the_player_changes_something(state):
+    engine = sequencer_module.engine
+    state._render_display()
+    before = state._shown
+    engine.set_bpm(engine.clock.bpm + 10)
+    state._shown = None
+    state._render_display()
+    assert state._shown != before
+
+
+def test_pads_still_show_the_playhead(state):
+    """It has to be visible somewhere, and the LEDs are the quiet place."""
+    engine = sequencer_module.engine
+    engine.mode = SEQ
+    state.controls.set_mode(SEQ)
+    engine.toggle_play()
+    engine.clock.tick = 0
+    state._render_pixels(engine.current_step)
+    first = list(state._last_pixels)
+    engine.clock.tick = 3 * engine.song.ticks_per_step
+    state._render_pixels(engine.current_step)
+    assert state._last_pixels != first

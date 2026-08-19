@@ -6,9 +6,12 @@ a change to scrolling or to a menu's wiring could not be caught before flashing
 a badge.
 """
 
+import os
+
 import pytest
 
 import circuitpython_stubs
+from conftest import PRODUCTION_DIR
 import screen as screen_module
 import setup
 from FlashyState import FlashyState
@@ -427,3 +430,24 @@ def test_the_flashy_menu_redraws_when_scrolled():
 def test_only_one_text_screen_is_ever_built():
     """A scene graph and glyph cache per state, for one panel, is waste."""
     assert screen_module.shared(setup.display) is screen_module.shared(setup.display)
+
+
+# --- the badge recovering on its own --------------------------------------
+#
+# It has hung with the CPU inside a peripheral driver: still powered, still
+# enumerated, frozen on the last thing drawn, and unreachable by Ctrl-C. The
+# reset button is not reachable in a rack, so restarting itself is the only
+# recovery the player actually has.
+
+
+def test_the_main_loop_runs_a_watchdog():
+    source = open(os.path.join(PRODUCTION_DIR, "main.py")).read()
+    assert "watchdog" in source
+    assert "feed()" in source, "an armed watchdog that is never fed just resets"
+
+
+def test_the_watchdog_is_fed_inside_the_loop():
+    """Feeding outside the loop arms a reset that always fires."""
+    source = open(os.path.join(PRODUCTION_DIR, "main.py")).read()
+    loop = source.index("while True:")
+    assert source.index("watchdog.feed()", loop) > loop

@@ -121,15 +121,92 @@ class NeoPixel:
 
 
 class DigitalInOut:
+    """Models the parts of digitalio.DigitalInOut the firmware relies on.
+
+    Including the context manager, which CircuitPython supports and which
+    releases the pin on exit - code that claims a pin temporarily depends on
+    that, and a stub without it fails in a way the badge never would.
+
+    `pulled_high` lets a test say what an input pin reads, so bus recovery
+    can be exercised against both a free line and a held one.
+    """
+
+    pulled_high = True
+
     def __init__(self, pin):
         self.pin = pin
         self.direction = None
+        self.pull = None
         self.value = False
+        self.deinited = False
+        self.transitions = []
+
+    def switch_to_input(self, pull=None):
+        self.direction = _Direction.INPUT
+        self.pull = pull
+        self.value = self.pulled_high
+
+    def switch_to_output(self, value=False):
+        self.direction = _Direction.OUTPUT
+        self.value = value
+
+    def __setattr__(self, name, value):
+        if name == "value" and self.__dict__.get("direction") == _Direction.OUTPUT:
+            self.__dict__.setdefault("transitions", []).append(value)
+        self.__dict__[name] = value
+
+    def deinit(self):
+        self.deinited = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.deinit()
+        return False
 
 
 class _Direction:
     OUTPUT = "output"
     INPUT = "input"
+
+
+class _Pull:
+    UP = "up"
+    DOWN = "down"
+
+
+class _WatchDogMode:
+    RESET = "RESET"
+    RAISE = "RAISE"
+
+
+class WatchDogTimer:
+    """Models microcontroller.watchdog.
+
+    Enforces what the hardware does: the timeout has to be set before the
+    mode, because setting the mode is what arms it.
+    """
+
+    def __init__(self):
+        self.timeout = None
+        self._mode = None
+        self.feeds = 0
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @mode.setter
+    def mode(self, value):
+        if value is not None and not self.timeout:
+            raise ValueError("watchdog timeout must be set before the mode")
+        self._mode = value
+
+    def feed(self):
+        if self._mode is None:
+            raise ValueError("watchdog is not running")
+        self.feeds += 1
 
 
 class I2C:
@@ -572,8 +649,15 @@ def install():
         "board": board,
         "busio": _module("busio", I2C=I2C, SPI=SPI, UART=UART),
         "digitalio": _module(
-            "digitalio", DigitalInOut=DigitalInOut, Direction=_Direction
+            "digitalio",
+            DigitalInOut=DigitalInOut,
+            Direction=_Direction,
+            Pull=_Pull,
         ),
+        "microcontroller": _module(
+            "microcontroller", watchdog=WatchDogTimer(), reset=lambda: None
+        ),
+        "watchdog": _module("watchdog", WatchDogMode=_WatchDogMode),
         "keypad": _module("keypad", KeyMatrix=KeyMatrix, Event=Event),
         "rotaryio": _module("rotaryio", IncrementalEncoder=IncrementalEncoder),
         "neopixel": _module("neopixel", NeoPixel=NeoPixel),

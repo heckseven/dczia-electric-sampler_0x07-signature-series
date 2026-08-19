@@ -11,6 +11,9 @@ The engine's tick never blocks. The previous sequencer spun in
 input was dropped and the display could not be touched during playback.
 """
 
+import microcontroller
+from watchdog import WatchDogMode
+
 from FlashyState import FlashyState
 from HIDState import HIDState
 from MenuState import MenuState
@@ -42,6 +45,18 @@ class StateMachine(object):
             self.state.update(self)
 
 
+# The badge has hung with the CPU parked inside a peripheral driver, where
+# a KeyboardInterrupt cannot reach it: still powered, still enumerated, but
+# frozen on whatever was last drawn, and only unplugging it would help. The
+# reset button is not reachable when the badge is mounted in a rack, so the
+# only honest recovery is for the badge to notice and restart itself.
+#
+# The timeout is generous on purpose. The main loop turns over thousands of
+# times a second and the longest thing it does deliberately - drawing a line
+# of text - is measured in tens of milliseconds, so two seconds is a hundred
+# times the worst legitimate pass and cannot fire on a slow one.
+WATCHDOG_TIMEOUT = 2.0
+
 machine = StateMachine()
 machine.add_state(StartupState())
 machine.add_state(FlashyState())
@@ -51,7 +66,14 @@ machine.add_state(MenuState())
 machine.add_state(SamplerState())
 machine.go_to_state("startup")
 
+# Started after setup and the first state are done: loading a kit reads the
+# card, which is legitimately slower than anything the loop does later.
+watchdog = microcontroller.watchdog
+watchdog.timeout = WATCHDOG_TIMEOUT
+watchdog.mode = WatchDogMode.RESET
+
 while True:
+    watchdog.feed()
     # The beat runs regardless of what is on screen.
     engine.tick()
     machine.update()

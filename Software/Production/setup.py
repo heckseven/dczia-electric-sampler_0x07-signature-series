@@ -15,6 +15,52 @@ import usb_midi
 
 # OLED Screen ( display )
 displayio.release_displays()
+
+
+def free_i2c_bus(scl_pin, sda_pin, tries=9):
+    """Clock a stuck slave off the bus before claiming it.
+
+    An I2C slave interrupted part way through returning a byte carries on
+    holding SDA low, waiting for the clocks it was promised. The master has
+    been reset and knows nothing about it, so its first transaction blocks
+    forever - in native code, where a KeyboardInterrupt cannot reach, which
+    leaves the badge running but frozen on whatever was last drawn.
+
+    This is why a soft reset would not clear it and unplugging would: only
+    removing power resets the display as well. The badge soft resets often
+    (any save over USB reloads the code), and a reload mid-frame is exactly
+    how a slave gets left mid-byte.
+
+    The cure is the one from the I2C specification: clock SCL until the slave
+    finishes the byte it thinks it is sending and releases SDA, then issue a
+    STOP so it is back in a known state. Returns True if the bus needed
+    freeing, which is worth knowing rather than doing silently.
+    """
+    with digitalio.DigitalInOut(sda_pin) as sda, digitalio.DigitalInOut(scl_pin) as scl:
+        sda.switch_to_input(pull=digitalio.Pull.UP)
+        scl.switch_to_input(pull=digitalio.Pull.UP)
+        if sda.value:
+            return False  # nobody is holding the line; nothing to do
+
+        scl.switch_to_output(value=True)
+        for _ in range(tries):
+            scl.value = False
+            time.sleep(0.000005)
+            scl.value = True
+            time.sleep(0.000005)
+            if sda.value:
+                break
+
+        # A STOP condition: SDA rising while SCL is high.
+        sda.switch_to_output(value=False)
+        scl.value = True
+        time.sleep(0.000005)
+        sda.value = True
+        time.sleep(0.000005)
+        return True
+
+
+i2c_was_stuck = free_i2c_bus(board.GP15, board.GP14)
 # A full 128x32 frame is 512 bytes plus overhead, so the CircuitPython
 # default of 100 kHz makes every frame cost roughly 50 ms.
 # 400 kHz, the SSD1306 datasheet maximum. 1 MHz was tried and measured a

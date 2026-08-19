@@ -260,6 +260,10 @@ class SDCard:
     path setup.py has to survive."""
 
     def __init__(self, spi, cs, baudrate=8000000):
+        # cs is a Pin for sdcardio, not a DigitalInOut - the two drivers
+        # differ here and getting it wrong is a TypeError on hardware.
+        if not isinstance(cs, Pin):
+            raise TypeError("cs must be of type Pin, not DigitalInOut")
         raise OSError("no SD card in the test environment")
 
 

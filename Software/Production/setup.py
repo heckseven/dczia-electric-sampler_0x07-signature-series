@@ -82,8 +82,9 @@ midi_usb = adafruit_midi.MIDI(
 try:
     # busio.SPI(clock:, MOSI: , MISO:)
     spi = busio.SPI(board.GP10, board.GP11, board.GP12)
-    cs = digitalio.DigitalInOut(board.GP13)
-    sdcard = sdcardio.SDCard(spi, cs)
+    # sdcardio takes the chip-select Pin itself and drives it, unlike
+    # adafruit_sdcard which expected a DigitalInOut wrapped around it.
+    sdcard = sdcardio.SDCard(spi, board.GP13)
     vfs = storage.VfsFat(sdcard)
     storage.mount(vfs, "/sd")
 except:

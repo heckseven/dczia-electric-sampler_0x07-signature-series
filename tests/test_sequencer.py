@@ -906,3 +906,42 @@ def test_a_working_voice_is_not_reported_as_an_error(seq, kit):
     assert seq.trigger(0, 100) is True
     assert seq.audio_errors == 0
     assert seq.last_audio_error is None
+
+
+def test_a_failing_voice_silences_the_output(seq, kit):
+    """Containing the error is not enough on its own.
+
+    Observed on the badge: the hit was skipped and the sequencer carried on,
+    but the I2S peripheral was left looping its buffer, which is a loud
+    continuous noise rather than one missing drum. Silence is the only
+    acceptable result of an audio path that has just failed.
+    """
+    seq.load_kit(kit)
+    seq.trigger(1, 100)
+    assert seq._streaming is True
+    _exploding_voice(seq, OSError(5, "boom"))
+    seq.trigger(0, 100)
+    assert seq._streaming is False, "the output was left running"
+
+
+def test_a_teardown_that_also_fails_does_not_escape(seq, kit):
+    """The path is already faulty; the recovery must not raise on top of it."""
+    seq.load_kit(kit)
+    _exploding_voice(seq, OSError(5, "boom"))
+
+    def also_boom():
+        raise OSError(5, "stop failed too")
+
+    seq.stop_stream = also_boom
+    assert seq.trigger(0, 100) is False
+
+
+def test_the_next_hit_can_still_start_the_stream(seq, kit):
+    """Silencing must not wedge the sampler into permanent silence."""
+    seq.load_kit(kit)
+    good = seq.mixer.voice[0].play
+    _exploding_voice(seq, OSError(5, "boom"))
+    seq.trigger(0, 100)
+    seq.mixer.voice[0].play = good
+    assert seq.trigger(0, 100) is True
+    assert seq._streaming is True

@@ -17,11 +17,13 @@ import usb_midi
 displayio.release_displays()
 # A full 128x32 frame is 512 bytes plus overhead, so the CircuitPython
 # default of 100 kHz makes every frame cost roughly 50 ms.
-# 1 MHz rather than the SSD1306 datasheet's 400 kHz maximum: the panel on
-# this badge runs it without flicker or corruption, and it takes the worst
-# stall while scrolling during playback from 26 ms to 21 ms against an audio
-# buffer that holds 32 ms. Revert to 400_000 if a panel ever misbehaves.
-i2c = busio.I2C(board.GP15, board.GP14, frequency=1_000_000)
+# 400 kHz, the SSD1306 datasheet maximum. 1 MHz was tried and measured a
+# useful 5 ms faster on the worst stall, and looked clean on this panel, but
+# it was running during a run of instability - a dead USB endpoint, an
+# OSError out of the audio path - and an out-of-spec bus is not something to
+# leave in place while chasing a fault. Worth revisiting deliberately, once
+# the badge is stable, rather than as one variable among several.
+i2c = busio.I2C(board.GP15, board.GP14, frequency=400_000)
 display_bus = displayio.I2CDisplay(i2c, device_address=0x3C)
 display = adafruit_displayio_ssd1306.SSD1306(display_bus, width=128, height=32)
 

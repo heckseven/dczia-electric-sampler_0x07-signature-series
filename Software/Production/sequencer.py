@@ -478,6 +478,17 @@ class Sequencer:
         except OSError as error:
             self.audio_errors += 1
             self.last_audio_error = error
+            # Silence the output before returning. Observed on the badge:
+            # containing the error but leaving the stream up left the I2S
+            # peripheral looping whatever was in its buffer, which is a loud
+            # continuous noise rather than a missed drum hit. Stopping it
+            # costs the next hit a stream start, which is the cheaper of the
+            # two by a wide margin.
+            try:
+                self.stop_stream()
+            except OSError:
+                # The teardown is best effort; the path is already faulty.
+                pass
             # Say so once. A silent skip would turn a hardware fault into a
             # pattern that quietly drops hits, which is far harder to chase.
             if self.audio_errors == 1:

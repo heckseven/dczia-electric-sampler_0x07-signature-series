@@ -23,8 +23,10 @@ from adafruit_midi.midi_continue import Continue
 from adafruit_midi.note_on import NoteOn
 from adafruit_midi.start import Start
 from adafruit_midi.stop import Stop
-from audiocore import WaveFile
+from audiocore import RawSample, WaveFile
 from supervisor import ticks_ms
+
+from engine import wav
 
 from engine import quantize
 from engine.clock import Clock, ticks_diff
@@ -41,6 +43,19 @@ SAMPLE_DIRS = ("/sd/samples", "/samples")
 SAMPLE_RATE = 22050
 CHANNELS = 1
 BITS = 16
+
+# Samples are loaded into RAM rather than streamed wherever they fit, because
+# storage cannot reliably feed the mixer. Measured on this board: audio needs
+# 43.1 KB/s per playing voice, flash sustains 391 KB/s and the SD card only
+# 169 KB/s in the small reads streaming produces. Three voices from a card is
+# already marginal and eight tracks would need 345 KB/s, which starves the I2S
+# buffer and sounds like harsh digital distortion.
+#
+# The budget is deliberately conservative against the ~86 KB free measured with
+# the engine loaded. A sample too big for it still plays, by streaming, which is
+# fine for the one long sound in a kit and bad only if every track is long.
+RAM_BUDGET = 48 * 1024
+MAX_RAM_SAMPLE = 24 * 1024
 
 # Two voices per track plus two spare. Mono per track is the default, but
 # voices are nearly free - 24 of them measured at about 1.1KB against 141KB
@@ -124,12 +139,16 @@ class Sequencer:
 
         self._samples = [None] * TRACK_COUNT
         self._files = [None] * TRACK_COUNT
+        self._streamed = [False] * TRACK_COUNT
+        self._sizes = [0] * TRACK_COUNT
+        self._ram_used = 0
         self._next_voice = [0] * TRACK_COUNT
         self.midi_out = [False] * TRACK_COUNT  # per track, opt in
 
         self._sync_out_until = None
         self._sync_in_high = True
         self._last_step = None
+        self.last_error = None
 
     # --- kit --------------------------------------------------------------
 
@@ -148,14 +167,78 @@ class Sequencer:
             handle = open(path, "rb")
         except OSError:
             return False
+
         try:
-            self._samples[track] = WaveFile(handle)
-        except (OSError, ValueError):
+            rate, channels, bits, offset, size = wav.read_format(handle)
+        except (OSError, wav.WavError):
             handle.close()
             return False
-        self._files[track] = handle
+
+        if not wav.matches(rate, channels, bits, SAMPLE_RATE, CHANNELS, BITS):
+            # The mixer has one fixed format; anything else plays at the wrong
+            # pitch or not at all. Refuse it rather than make a mess of it.
+            handle.close()
+            self.last_error = "%s is %s, need %s" % (
+                path,
+                wav.describe(rate, channels, bits),
+                wav.describe(SAMPLE_RATE, CHANNELS, BITS),
+            )
+            return False
+
+        sample = self._load_to_ram(handle, offset, size)
+        if sample is not None:
+            handle.close()
+            self._samples[track] = sample
+            self._streamed[track] = False
+            self._sizes[track] = size
+        else:
+            try:
+                handle.seek(0)
+                self._samples[track] = WaveFile(handle)
+            except (OSError, ValueError):
+                handle.close()
+                return False
+            self._files[track] = handle
+            self._streamed[track] = True
+
         self.song.set_sample(track, path)
         return True
+
+    def _load_to_ram(self, handle, offset, size):
+        """Read the audio into memory, or return None to fall back to streaming."""
+        if size > MAX_RAM_SAMPLE or self._ram_used + size > RAM_BUDGET:
+            return None
+        try:
+            handle.seek(offset)
+            data = handle.read(size)
+        except (OSError, MemoryError):
+            return None
+        if len(data) < size:
+            return None
+        try:
+            # RawSample infers bit depth from the buffer's element size: raw
+            # bytes mean 8-bit, which the mixer rejects at play() with "the
+            # sample's bits_per_sample does not match". Casting to 16-bit
+            # signed says what the audio actually is. A memoryview rather than
+            # array.array('h', data) so the audio is not copied - a second
+            # copy of every sample would double peak memory during loading.
+            sample = RawSample(
+                memoryview(data).cast("h"),
+                channel_count=CHANNELS,
+                sample_rate=SAMPLE_RATE,
+            )
+        except (ValueError, MemoryError):
+            return None
+        self._ram_used += size
+        return sample
+
+    def is_streamed(self, track):
+        """True when a track plays from storage rather than RAM."""
+        return self._streamed[track]
+
+    @property
+    def ram_used(self):
+        return self._ram_used
 
     def load_kit(self, paths):
         loaded = 0
@@ -166,6 +249,11 @@ class Sequencer:
         return loaded
 
     def _release_track(self, track):
+        if self._samples[track] is not None and not self._streamed[track]:
+            # Reclaim the budget this track's audio was holding.
+            self._ram_used = max(0, self._ram_used - self._sample_bytes(track))
+        self._sizes[track] = 0
+        self._streamed[track] = False
         self._samples[track] = None
         handle = self._files[track]
         self._files[track] = None
@@ -174,6 +262,9 @@ class Sequencer:
                 handle.close()
             except OSError:
                 pass
+
+    def _sample_bytes(self, track):
+        return self._sizes[track]
 
     def has_sample(self, track):
         return self._samples[track] is not None

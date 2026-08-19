@@ -75,3 +75,13 @@ def test_sync_pins_match_the_schematic():
     # SYNC_IN -> GP6 (via Q1 inverter), SYNC_OUT -> GP7 (via OPA341 buffer)
     assert setup.sync_in.pin.name == "GP6"
     assert setup.sync_out.pin.name == "GP7"
+
+
+def test_the_midi_uart_does_not_block():
+    """A blocking read stalls the sequencer.
+
+    busio.UART defaults to a one second timeout. Polling MIDI in every pass of
+    the main loop with that default measured 1,000,000 us per call on hardware
+    and dropped the sequencer to about a seventh of its tempo.
+    """
+    assert setup.midi_uart.timeout == 0

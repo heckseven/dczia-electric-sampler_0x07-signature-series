@@ -145,10 +145,13 @@ class SPI:
 
 
 class UART:
-    def __init__(self, tx=None, rx=None, baudrate=9600, **kwargs):
+    # The real default is a one second timeout, which blocks the main loop on
+    # every read when no MIDI is arriving.
+    def __init__(self, tx=None, rx=None, baudrate=9600, timeout=1, **kwargs):
         self.tx = tx
         self.rx = rx
         self.baudrate = baudrate
+        self.timeout = timeout
 
 
 class Group:
@@ -216,13 +219,37 @@ class WaveFile:
         self.file = file_obj
 
 
+class RawSample:
+    """Audio held in memory.
+
+    Bit depth is inferred from the buffer's element size, exactly as
+    CircuitPython does: plain bytes are 8-bit, a 2-byte element type is
+    16-bit. Getting this wrong constructs fine and only fails later at
+    play(), so the check is reproduced here to catch it in tests.
+    """
+
+    def __init__(self, buffer, channel_count=1, sample_rate=8000):
+        self.buffer = buffer
+        self.channel_count = channel_count
+        self.sample_rate = sample_rate
+        itemsize = getattr(buffer, "itemsize", 1)
+        self.bits_per_sample = itemsize * 8
+
+    def __len__(self):
+        return len(self.buffer)
+
+
 class _Voice:
-    def __init__(self):
+    def __init__(self, bits_per_sample=16):
         self.level = 1.0
         self.playing = False
         self.sample = None
+        self.bits_per_sample = bits_per_sample
 
     def play(self, sample, loop=False):
+        bits = getattr(sample, "bits_per_sample", None)
+        if bits is not None and bits != self.bits_per_sample:
+            raise ValueError("The sample's bits_per_sample does not match the mixer's")
         self.sample = sample
         self.playing = True
 
@@ -233,7 +260,8 @@ class _Voice:
 class Mixer:
     def __init__(self, voice_count=1, **kwargs):
         self.voice_count = voice_count
-        self.voice = [_Voice() for _ in range(voice_count)]
+        bits = kwargs.get("bits_per_sample", 16)
+        self.voice = [_Voice(bits) for _ in range(voice_count)]
         self.config = kwargs
 
 
@@ -474,7 +502,7 @@ def install():
         "usb_hid": _module("usb_hid", devices=[]),
         "audiobusio": _module("audiobusio", I2SOut=I2SOut),
         "audiomixer": _module("audiomixer", Mixer=Mixer),
-        "audiocore": _module("audiocore", WaveFile=WaveFile),
+        "audiocore": _module("audiocore", WaveFile=WaveFile, RawSample=RawSample),
         "supervisor": _module("supervisor", ticks_ms=ticks),
         "adafruit_displayio_ssd1306": _module(
             "adafruit_displayio_ssd1306", SSD1306=SSD1306

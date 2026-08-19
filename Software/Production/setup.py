@@ -61,7 +61,12 @@ volume_enc = rotaryio.IncrementalEncoder(board.GP4, board.GP5)
 
 # MIDI setup
 # GP9 is the receive side of the opto-isolated MIDI IN jack (U5, TLP2361).
-midi_uart = busio.UART(tx=board.GP8, rx=board.GP9, baudrate=31250)
+# timeout=0 makes reads non-blocking. busio.UART defaults to a one second
+# timeout, so a receive() with no MIDI waiting stalls the whole main loop for
+# a full second - measured on hardware at 1,000,000 us per call, which drags
+# the sequencer to roughly a seventh of its tempo. Anything polling this port
+# every pass needs the read to return immediately.
+midi_uart = busio.UART(tx=board.GP8, rx=board.GP9, baudrate=31250, timeout=0)
 midi_serial_channel = 1
 midi_serial = adafruit_midi.MIDI(
     midi_in=midi_uart,

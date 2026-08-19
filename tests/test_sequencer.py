@@ -88,11 +88,11 @@ def test_a_bad_sample_does_not_disturb_other_tracks(seq, kit):
     assert seq.has_sample(2) and seq.has_sample(4)
 
 
-def test_reloading_a_track_closes_the_old_file(seq, kit):
+def test_a_ram_loaded_track_holds_no_file_handle(seq, kit):
+    """Loading into RAM closes the file at once - nothing to leak."""
     seq.load_track(0, kit[0])
-    first = seq._files[0]
-    seq.load_track(0, kit[1])
-    assert first.closed
+    assert seq.is_streamed(0) is False
+    assert seq._files[0] is None
 
 
 def test_triggering_a_silent_track_is_harmless(seq):
@@ -424,3 +424,127 @@ def test_an_absolute_path_is_left_alone():
 def test_an_unknown_name_resolves_to_nothing():
     lister = fake_lister({"/samples": []})
     assert sequencer_module.resolve_sample("nope.wav", lister) is None
+
+
+# --- RAM loading versus streaming -----------------------------------------
+
+
+def write_wav_sized(path, data_bytes, rate=22050, channels=1, bits=16):
+    frames = data_bytes // 2
+    data = struct.pack("<%dh" % frames, *([0] * frames))
+    header = (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
+        + struct.pack(
+            "<IHHIIHH",
+            16,
+            1,
+            channels,
+            rate,
+            rate * channels * bits // 8,
+            channels * bits // 8,
+            bits,
+        )
+        + b"data"
+        + struct.pack("<I", len(data))
+    )
+    path.write_bytes(header + data)
+    return str(path)
+
+
+def test_a_short_sample_is_loaded_into_ram(seq, tmp_path):
+    """Storage cannot feed the mixer reliably; RAM takes it out of the path."""
+    path = write_wav_sized(tmp_path / "short.wav", 8 * 1024)
+    assert seq.load_track(0, path) is True
+    assert seq.has_sample(0)
+    assert seq.is_streamed(0) is False
+    assert seq.ram_used == 8 * 1024
+
+
+def test_an_oversized_sample_falls_back_to_streaming(seq, tmp_path):
+    """One long sound in a kit should still play, just from storage."""
+    path = write_wav_sized(tmp_path / "long.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
+    assert seq.load_track(0, path) is True
+    assert seq.has_sample(0)
+    assert seq.is_streamed(0) is True
+    assert seq.ram_used == 0
+
+
+def test_the_ram_budget_is_not_exceeded(seq, tmp_path):
+    size = sequencer_module.MAX_RAM_SAMPLE
+    for track in range(TRACK_COUNT):
+        path = write_wav_sized(tmp_path / ("t%d.wav" % track), size)
+        seq.load_track(track, path)
+    assert seq.ram_used <= sequencer_module.RAM_BUDGET
+
+
+def test_tracks_past_the_budget_stream_instead_of_failing(seq, tmp_path):
+    size = sequencer_module.MAX_RAM_SAMPLE
+    for track in range(TRACK_COUNT):
+        path = write_wav_sized(tmp_path / ("t%d.wav" % track), size)
+        assert seq.load_track(track, path) is True, "every track must still load"
+    assert any(seq.is_streamed(t) for t in range(TRACK_COUNT))
+
+
+def test_reloading_a_track_returns_its_ram(seq, tmp_path):
+    path = write_wav_sized(tmp_path / "a.wav", 8 * 1024)
+    seq.load_track(0, path)
+    assert seq.ram_used == 8 * 1024
+    seq.load_track(0, path)
+    assert seq.ram_used == 8 * 1024, "budget must not leak on reload"
+
+
+def test_a_wrong_rate_sample_is_refused_with_a_reason(seq, tmp_path):
+    """The mixer has one fixed format; 44.1k would play an octave down."""
+    path = write_wav_sized(tmp_path / "44k.wav", 4096, rate=44100)
+    assert seq.load_track(0, path) is False
+    assert not seq.has_sample(0)
+    assert "44100" in seq.last_error
+
+
+def test_a_stereo_sample_is_refused(seq, tmp_path):
+    path = write_wav_sized(tmp_path / "st.wav", 4096, channels=2)
+    assert seq.load_track(0, path) is False
+    assert "2ch" in seq.last_error
+
+
+def test_reloading_a_streamed_track_closes_its_file(seq, tmp_path):
+    """Only streamed tracks hold a handle, and it must not leak on reload."""
+    big = write_wav_sized(tmp_path / "big.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
+    seq.load_track(0, big)
+    assert seq.is_streamed(0) is True
+    first = seq._files[0]
+    assert first is not None
+
+    seq.load_track(0, big)
+    assert first.closed, "the previous handle must be closed"
+
+
+def test_releasing_a_streamed_track_closes_its_file(seq, tmp_path):
+    big = write_wav_sized(tmp_path / "big2.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
+    seq.load_track(3, big)
+    handle = seq._files[3]
+    seq.load_track(3, None)
+    assert handle.closed
+    assert not seq.has_sample(3)
+
+
+def test_a_ram_loaded_sample_can_actually_be_played(seq, tmp_path):
+    """RawSample infers bit depth from the buffer's element size.
+
+    Handing it raw bytes makes it 8-bit, which constructs happily and only
+    fails at play() with "bits_per_sample does not match". This exercises the
+    play path so that mistake cannot reach hardware again.
+    """
+    path = write_wav_sized(tmp_path / "ram.wav", 8 * 1024)
+    seq.load_track(0, path)
+    assert seq.is_streamed(0) is False
+    assert seq.trigger(0, 100) is True
+    assert seq.mixer.voice[0].playing
+
+
+def test_a_ram_loaded_sample_is_sixteen_bit(seq, tmp_path):
+    path = write_wav_sized(tmp_path / "ram2.wav", 4096)
+    seq.load_track(0, path)
+    assert seq._samples[0].bits_per_sample == 16

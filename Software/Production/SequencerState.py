@@ -79,17 +79,6 @@ class midi_sequences:
             ]
         )
 
-    def show_sequence(self):
-        for index, item in enumerate(self.sequence):
-            if item[0]:
-                mapped_neopixel = neoindex(index)
-                neopixels[mapped_neopixel] = (0, 0, 255)
-                neopixels.show()
-            elif item[0] is False:
-                mapped_neopixel = neoindex(index)
-                neopixels[mapped_neopixel] = (255, 0, 0)
-                neopixels.show()
-
 
 class SequencerMenuState:
     sequencer_mode = "midi"

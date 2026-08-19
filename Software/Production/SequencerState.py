@@ -161,7 +161,11 @@ class SamplerMenuState(State):
         self.shift = 0
         # Get list of samples ONCE
         wav_files = []
-        files = listdir("/samples/")
+        try:
+            files = listdir("/samples/")
+        except OSError:
+            # No samples directory: start empty rather than failing at boot
+            files = []
         for file in files:
             if file.endswith(".wav") and (not file.startswith(".")):
                 wav_files.append({"name": file, "pretty": file})

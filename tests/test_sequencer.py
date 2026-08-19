@@ -992,3 +992,51 @@ def test_a_streamed_track_holds_no_buffer(seq, kit, monkeypatch):
     seq.load_kit(kit)
     assert seq.is_streamed(0)
     assert seq._audio[0] is None
+
+
+def test_a_streamed_track_keeps_its_read_buffer(seq, kit, monkeypatch):
+    """Same defect as the RAM path, one function away.
+
+    WaveFile reads through the bytearray it was handed. Passing a fresh one
+    as an argument and keeping no other name for it makes it collectable as
+    soon as loading returns, and the audio then reads whatever replaced it.
+    """
+    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
+    seq.load_kit(kit)
+    assert seq.is_streamed(0)
+    assert seq._stream_buffers[0] is not None
+    assert len(seq._stream_buffers[0]) == sequencer_module.STREAM_BUFFER
+
+
+def test_releasing_a_streamed_track_lets_its_buffer_go(seq, kit, monkeypatch):
+    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
+    seq.load_kit(kit)
+    seq._release_track(0)
+    assert seq._stream_buffers[0] is None
+
+
+def test_an_auditioned_sample_outlives_the_call(seq, kit):
+    """Nothing else owns it: the voice is playing a local otherwise."""
+    assert seq.audition(kit[0]) is True
+    assert seq._audition_sample is not None
+    assert seq._audition_buffer is not None
+
+
+def test_a_failed_audition_holds_nothing(seq, tmp_path):
+    bad = tmp_path / "bad.wav"
+    bad.write_bytes(b"not a wav file at all")
+    assert seq.audition(str(bad)) is False
+    assert seq._audition_sample is None
+
+
+def test_every_playing_sample_is_owned_somewhere(seq, kit):
+    """The rule this class of bug keeps breaking, stated once.
+
+    Anything CircuitPython plays holds a pointer, not a traceable reference.
+    If the sequencer is not holding it, nothing is.
+    """
+    seq.load_kit(kit)
+    for track in range(TRACK_COUNT):
+        assert seq._samples[track] is not None
+        held = seq._audio[track] is not None or seq._stream_buffers[track] is not None
+        assert held, "track %d plays through a buffer nothing owns" % track

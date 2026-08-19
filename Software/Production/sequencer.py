@@ -226,9 +226,19 @@ class Sequencer:
         self.last_audio_error = None
 
         self._samples = [None] * TRACK_COUNT
-        # The bytes behind each RAM sample, held so they cannot be collected
-        # while the I2S DMA is still reading them. See _load_to_ram.
+        # Everything a playing sample reads through, held for as long as it
+        # can play. CircuitPython's audio objects keep pointers into these
+        # buffers, not references the collector can trace, so a buffer that
+        # is only a local is collectable the moment it goes out of scope -
+        # and the audio then reads whatever took its place. That is loud
+        # garbage at best and a hard fault at worst. See _load_to_ram.
         self._audio = [None] * TRACK_COUNT
+        # The read buffer a streamed track's WaveFile reads through.
+        self._stream_buffers = [None] * TRACK_COUNT
+        # An auditioned sample is owned by nothing else; it and its buffer
+        # have to live here until the next audition replaces them.
+        self._audition_sample = None
+        self._audition_buffer = None
         self._files = [None] * TRACK_COUNT
         self._streamed = [False] * TRACK_COUNT
         self._sizes = [0] * TRACK_COUNT
@@ -298,7 +308,9 @@ class Sequencer:
         else:
             try:
                 handle.seek(0)
-                self._samples[track] = WaveFile(handle, bytearray(STREAM_BUFFER))
+                buffer = bytearray(STREAM_BUFFER)
+                self._samples[track] = WaveFile(handle, buffer)
+                self._stream_buffers[track] = buffer
             except (OSError, ValueError, MemoryError):
                 # MemoryError as well: read_format only checks the chunk
                 # headers it needs, so a file it accepts can still upset
@@ -399,9 +411,10 @@ class Sequencer:
         self._sizes[track] = 0
         self._streamed[track] = False
         self._samples[track] = None
-        # Released only after the sample, so the buffer never outlives its
+        # Released only after the sample, so a buffer never outlives its
         # owner in the other direction either.
         self._audio[track] = None
+        self._stream_buffers[track] = None
         handle = self._files[track]
         self._files[track] = None
         if handle is not None:
@@ -524,8 +537,9 @@ class Sequencer:
             handle = open(path, "rb")
         except OSError:
             return False
+        buffer = bytearray(STREAM_BUFFER)
         try:
-            sample = WaveFile(handle, bytearray(STREAM_BUFFER))
+            sample = WaveFile(handle, buffer)
         except (OSError, ValueError, MemoryError):
             # Close it here: a browser paging through a card full of bad files
             # would otherwise leak a descriptor for every one of them.
@@ -534,6 +548,10 @@ class Sequencer:
         self.start_stream()
         voice = self.mixer.voice[AUDITION_VOICE]
         voice.level = 0.5
+        # Held before playing, not after: the sample and the buffer it reads
+        # through must outlive this function, and nothing else owns them.
+        self._audition_sample = sample
+        self._audition_buffer = buffer
         voice.play(sample)
         return True
 

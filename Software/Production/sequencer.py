@@ -32,7 +32,7 @@ from engine import quantize
 from engine.clock import Clock, ticks_diff
 from engine.song import DEFAULT_VELOCITY, TRACK_COUNT, Song
 from engine.transport import LIVE, SEQ, Transport
-from setup import midi_serial, midi_usb, sync_in, sync_out
+from setup import midi_serial, midi_uart, midi_usb, sync_in, sync_out
 
 # Where samples are looked for, in order. The SD card comes first: it is
 # where kits and patterns live, it is the only writable store (CIRCUITPY is
@@ -126,6 +126,12 @@ DEFAULT_VOLUME = 0.25
 # the ports are drained on a timer instead. Sync input, which genuinely needs
 # every pass, is untouched.
 MIDI_POLL_MS = 2
+
+# USB MIDI is polled on its own timer because, unlike the serial port, it
+# cannot be asked whether anything is waiting: receive() allocates on every
+# call regardless. Transport messages are rare enough that 20 ms is
+# imperceptible, and it turns 64 bytes every 2 ms into 64 bytes every 20.
+USB_MIDI_POLL_MS = 20
 
 
 def list_samples(lister=None, dirs=SAMPLE_DIRS):
@@ -268,6 +274,7 @@ class Sequencer:
         self._sync_in_high = True
         self._last_step = None
         self._last_midi_poll = 0
+        self._last_usb_midi_poll = 0
         self.last_error = None
 
     # --- kit --------------------------------------------------------------
@@ -642,7 +649,7 @@ class Sequencer:
         self._poll_sync_in(now)
         if ticks_diff(now, self._last_midi_poll) >= MIDI_POLL_MS:
             self._last_midi_poll = now
-            self.poll_midi_in()
+            self.poll_midi_in(now)
         self._update_sync_out(now)
 
         fired = self.clock.update(now)
@@ -664,7 +671,7 @@ class Sequencer:
 
     # --- sync -------------------------------------------------------------
 
-    def poll_midi_in(self):
+    def poll_midi_in(self, now=None):
         """Act on MIDI transport messages from either port.
 
         Start, Stop and Continue are the standard way a sequencer is driven
@@ -672,18 +679,41 @@ class Sequencer:
         stream of sync pulses cannot: the badge can stay out of the way of a
         clock it is merely listening to, while still obeying a real Start.
         """
-        for port in (midi_serial, midi_usb):
-            message = port.receive()
-            if message is None:
-                continue
-            if isinstance(message, Start):
-                self._remote_start(reset=True)
-            elif isinstance(message, Continue):
-                self._remote_start(reset=False)
-            elif isinstance(message, Stop):
-                if self.transport.playing:
-                    self.transport.stop()
-                    self.clock.stop()
+        # receive() allocates whether or not a message arrives: measured on
+        # the badge at 32 bytes a call for the serial port and 64 for USB.
+        # Called on a 2 ms timer that is about 15 KB of garbage a second, and
+        # the heap it churns through is the same heap the audio path needs -
+        # free memory was seen dipping to a couple of hundred bytes while a
+        # pattern played. Nothing was connected to either port.
+        #
+        # The serial port can be asked whether anything is waiting, for free.
+        if midi_uart.in_waiting:
+            self._handle_midi(midi_serial.receive())
+
+        # USB has no equivalent - PortIn offers only read and readinto - so it
+        # is polled on its own slower timer instead. Transport messages are
+        # rare and a few milliseconds late costs nothing; a clock arriving
+        # over USB is handled by the sync path, not here.
+        #
+        # `now` comes from the caller, which already has it: asking for the
+        # time again would be another call on the hottest path in the loop.
+        if now is None:
+            now = ticks_ms()
+        if ticks_diff(now, self._last_usb_midi_poll) >= USB_MIDI_POLL_MS:
+            self._last_usb_midi_poll = now
+            self._handle_midi(midi_usb.receive())
+
+    def _handle_midi(self, message):
+        if message is None:
+            return
+        if isinstance(message, Start):
+            self._remote_start(reset=True)
+        elif isinstance(message, Continue):
+            self._remote_start(reset=False)
+        elif isinstance(message, Stop):
+            if self.transport.playing:
+                self.transport.stop()
+                self.clock.stop()
 
     def _remote_start(self, reset):
         if self.transport.playing:

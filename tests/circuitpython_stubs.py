@@ -229,6 +229,12 @@ class UART:
         self.rx = rx
         self.baudrate = baudrate
         self.timeout = timeout
+        # Bytes waiting to be read. The firmware asks before calling into
+        # adafruit_midi, because receive() allocates whether or not anything
+        # arrived, and on a 2 ms timer that is the largest source of garbage
+        # on the board. Defaults to nothing waiting, which is the case that
+        # matters: no cable plugged in.
+        self.in_waiting = 0
 
 
 class Group:
@@ -494,11 +500,24 @@ class MIDI:
     def receive(self):
         if not self.incoming:
             return None
-        return self.incoming.pop(0)
+        message = self.incoming.pop(0)
+        # Keep the port's own "bytes waiting" honest. The firmware asks the
+        # UART before calling in here, so a stub that queues a message
+        # without also saying bytes are waiting would be testing a path the
+        # badge never takes.
+        if not self.incoming and hasattr(self.midi_in, "in_waiting"):
+            self.midi_in.in_waiting = 0
+        return message
 
     def post(self, message):
-        """Test helper: queue a message for the firmware to receive."""
+        """Test helper: queue a message for the firmware to receive.
+
+        Also marks bytes waiting on the underlying port, because that is what
+        the firmware checks before it will call receive at all.
+        """
         self.incoming.append(message)
+        if hasattr(self.midi_in, "in_waiting"):
+            self.midi_in.in_waiting = len(self.incoming) * 3
 
 
 class _MidiMessage:

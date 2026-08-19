@@ -594,7 +594,7 @@ def test_a_ram_loaded_sample_is_sixteen_bit(seq, tmp_path):
 def test_midi_is_polled_on_a_timer_not_every_pass(seq, monkeypatch):
     """Reading the ports costs about 430us; the loop is otherwise ~200us."""
     calls = []
-    monkeypatch.setattr(seq, "poll_midi_in", lambda: calls.append(1))
+    monkeypatch.setattr(seq, "poll_midi_in", lambda now=None: calls.append(1))
 
     times = iter([0, 1, 1, 2, 3, 4, 5])
     monkeypatch.setattr(sequencer_module, "ticks_ms", lambda: next(times))
@@ -1093,3 +1093,81 @@ def test_a_full_chord_of_four_reaches_full_scale_but_no_further(seq):
     for track in range(4):
         song.set_step(track, 0, MAX_VELOCITY)
     assert worst_simultaneous_level(seq) <= 1.0
+
+
+# --- what the MIDI poll costs when nothing is connected -------------------
+#
+# receive() allocates whether or not a message arrives - measured on the
+# badge at 32 bytes a call on the serial port and 64 on USB. On a 2 ms timer
+# that is about 15 KB of garbage a second, from the same heap the audio path
+# needs, with nothing plugged into either port. Free memory was seen dipping
+# to a couple of hundred bytes while a pattern played.
+
+
+def test_the_serial_port_is_not_read_when_nothing_is_waiting(seq):
+    """The UART can be asked, for free. Ask before allocating."""
+    calls = []
+    real = sequencer_module.midi_serial.receive
+    sequencer_module.midi_uart.in_waiting = 0
+
+    def counted():
+        calls.append(1)
+        return real()
+
+    sequencer_module.midi_serial.receive = counted
+    try:
+        for _ in range(50):
+            seq.poll_midi_in(now=0)
+    finally:
+        sequencer_module.midi_serial.receive = real
+    assert calls == []
+
+
+def test_the_serial_port_is_read_when_bytes_are_waiting(seq):
+    sequencer_module.midi_serial.post(circuitpython_stubs.Start())
+    seq.poll_midi_in(now=0)
+    assert seq.transport.playing
+
+
+def test_usb_is_polled_on_its_own_slower_timer(seq):
+    """USB cannot be asked whether anything is waiting, so poll it less."""
+    calls = []
+    real = sequencer_module.midi_usb.receive
+
+    def counted():
+        calls.append(1)
+        return real()
+
+    sequencer_module.midi_usb.receive = counted
+    try:
+        seq.poll_midi_in(now=0)
+        first = len(calls)
+        for step in range(1, sequencer_module.USB_MIDI_POLL_MS):
+            seq.poll_midi_in(now=step)
+        assert len(calls) == first, "USB polled faster than its own timer"
+        seq.poll_midi_in(now=sequencer_module.USB_MIDI_POLL_MS)
+        assert len(calls) == first + 1
+    finally:
+        sequencer_module.midi_usb.receive = real
+
+
+def test_usb_transport_messages_still_arrive(seq):
+    sequencer_module.midi_usb.post(circuitpython_stubs.Start())
+    seq.poll_midi_in(now=sequencer_module.USB_MIDI_POLL_MS * 2)
+    assert seq.transport.playing
+
+
+def test_the_usb_timer_survives_the_tick_rollover(seq):
+    """ticks_ms wraps at 2**29; a plain subtraction stops polling at the wrap."""
+    # Five milliseconds before the wrap, asked again well after it: the gap
+    # is 35 ms, comfortably past the interval, but a plain subtraction reads
+    # it as hugely negative and never fires again.
+    seq._last_usb_midi_poll = (1 << 29) - 5
+    calls = []
+    real = sequencer_module.midi_usb.receive
+    sequencer_module.midi_usb.receive = lambda: calls.append(1)
+    try:
+        seq.poll_midi_in(now=30)
+    finally:
+        sequencer_module.midi_usb.receive = real
+    assert calls, "USB stopped being polled across the wrap"

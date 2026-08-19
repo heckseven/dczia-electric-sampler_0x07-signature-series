@@ -103,6 +103,18 @@ def test_triggering_a_silent_track_is_harmless(seq):
 # --- voice routing --------------------------------------------------------
 
 
+def test_poly_is_the_default(seq):
+    """Cutting a ringing sample clicks, and no fade is available here."""
+    assert seq.poly is True
+
+
+def test_the_first_hit_uses_the_tracks_first_voice(seq, kit):
+    seq.load_kit(kit)
+    seq.poly = True
+    assert seq._voice_for(0) == 0
+    assert seq._voice_for(1) == VOICES_PER_TRACK
+
+
 def test_mono_mode_reuses_one_voice_per_track(seq, kit):
     """A retrigger cuts its own previous hit, as a 909 does."""
     seq.load_kit(kit)
@@ -148,6 +160,7 @@ def test_audition_does_not_use_a_track_voice(seq, kit):
 
 def test_velocity_scales_the_voice_level(seq, kit):
     seq.load_kit(kit)
+    seq.poly = False  # pin the voice so the level can be read back
     seq.trigger(0, 127)
     assert seq.mixer.voice[0].level == pytest.approx(1.0)
     seq.trigger(0, 64)
@@ -191,10 +204,23 @@ def test_a_punched_in_hit_is_recorded(seq, kit):
     assert seq.song.is_on(3, 0)
 
 
+def track_is_sounding(seq, track):
+    """True if any of the track's voices is playing.
+
+    Which one is deliberately not asserted: with two voices per track the
+    engine alternates, so pinning a specific index would break every time the
+    voice strategy changed without anything actually being wrong.
+    """
+    base = track * VOICES_PER_TRACK
+    return any(
+        seq.mixer.voice[base + offset].playing for offset in range(VOICES_PER_TRACK)
+    )
+
+
 def test_a_pad_hit_sounds_even_when_not_recording(seq, kit):
     seq.load_kit(kit)
     seq.pad_hit(0)
-    assert seq.mixer.voice[0].playing
+    assert track_is_sounding(seq, 0)
 
 
 def test_pads_do_not_record_in_seq_mode(seq, kit):
@@ -238,7 +264,7 @@ def test_a_step_sounds_when_its_tick_arrives(seq, kit):
     seq.song.set_step(0, 0, 100)
     seq.toggle_play()
     seq._on_tick(0)
-    assert seq.mixer.voice[0].playing
+    assert track_is_sounding(seq, 0)
 
 
 def test_a_muted_track_stays_silent(seq, kit):
@@ -247,7 +273,7 @@ def test_a_muted_track_stays_silent(seq, kit):
     seq.song.toggle_mute(0)
     seq.toggle_play()
     seq._on_tick(0)
-    assert not seq.mixer.voice[0].playing
+    assert not track_is_sounding(seq, 0)
 
 
 def test_current_step_follows_the_clock(seq):
@@ -545,7 +571,7 @@ def test_a_ram_loaded_sample_can_actually_be_played(seq, tmp_path):
     seq.load_track(0, path)
     assert seq.is_streamed(0) is False
     assert seq.trigger(0, 100) is True
-    assert seq.mixer.voice[0].playing
+    assert track_is_sounding(seq, 0)
 
 
 def test_a_ram_loaded_sample_is_sixteen_bit(seq, tmp_path):

@@ -354,8 +354,13 @@ class Sequencer:
         base = track * VOICES_PER_TRACK
         if not self.poly:
             return base
+        # Use the current voice and advance afterwards, so a track's first hit
+        # lands on its first voice. Incrementing first would start on the
+        # second one, which is harmless in sound but makes the mapping
+        # needlessly surprising to anyone reading a voice index.
+        voice = base + self._next_voice[track]
         self._next_voice[track] ^= 1
-        return base + self._next_voice[track]
+        return voice
 
     def trigger(self, track, velocity):
         """Sound one hit. Used by both the sequencer and live pads."""

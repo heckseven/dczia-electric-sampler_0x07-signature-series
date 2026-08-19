@@ -83,7 +83,12 @@ def run(state, machine=None):
 def test_a_pad_triggers_its_track(state):
     press(2)
     run(state)
-    assert sequencer_module.engine.mixer.voice[2 * 2].playing
+    engine = sequencer_module.engine
+    base = 2 * sequencer_module.VOICES_PER_TRACK
+    assert any(
+        engine.mixer.voice[base + i].playing
+        for i in range(sequencer_module.VOICES_PER_TRACK)
+    )
 
 
 def test_a_pad_does_not_record_when_not_armed(state):

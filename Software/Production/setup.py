@@ -1,6 +1,5 @@
 import adafruit_displayio_ssd1306
 import adafruit_midi
-import adafruit_sdcard
 import board
 import busio
 import digitalio
@@ -8,6 +7,7 @@ import displayio
 import keypad
 import neopixel
 import rotaryio
+import sdcardio
 import storage
 import terminalio
 import time
@@ -74,12 +74,16 @@ midi_usb = adafruit_midi.MIDI(
     midi_in=usb_midi.ports[0], midi_out=usb_midi.ports[1], out_channel=0
 )
 
-# Setup the SD card and mount it as /sd
+# Setup the SD card and mount it as /sd.
+# sdcardio is built into CircuitPython and is a native driver, so it is both
+# faster than the pure-Python adafruit_sdcard and costs nothing on a volume
+# with very little room left. Dropping adafruit_sdcard also drops
+# adafruit_bus_device, which existed only to support it.
 try:
     # busio.SPI(clock:, MOSI: , MISO:)
     spi = busio.SPI(board.GP10, board.GP11, board.GP12)
     cs = digitalio.DigitalInOut(board.GP13)
-    sdcard = adafruit_sdcard.SDCard(spi, cs)
+    sdcard = sdcardio.SDCard(spi, cs)
     vfs = storage.VfsFat(sdcard)
     storage.mount(vfs, "/sd")
 except:

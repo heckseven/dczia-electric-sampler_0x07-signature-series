@@ -374,3 +374,53 @@ def test_per_track_strength_reaches_the_engine(seq):
     seq.set_track_strength(2, 0.0)
     assert seq.strength_for(2) == 0.0
     assert seq.strength_for(3) == 1.0
+
+
+# --- sample locations -----------------------------------------------------
+
+
+def fake_lister(tree):
+    def lister(directory):
+        if directory not in tree:
+            raise OSError("no such directory")
+        return tree[directory]
+
+    return lister
+
+
+def test_samples_are_found_across_both_stores():
+    lister = fake_lister({"/sd/samples": ["a.wav"], "/samples": ["b.wav"]})
+    found = sequencer_module.list_samples(lister)
+    assert [n for n, _ in found] == ["a.wav", "b.wav"]
+
+
+def test_the_sd_card_shadows_flash_for_the_same_name():
+    lister = fake_lister({"/sd/samples": ["kick.wav"], "/samples": ["kick.wav"]})
+    found = sequencer_module.list_samples(lister)
+    assert found == [("kick.wav", "/sd/samples/kick.wav")]
+
+
+def test_a_missing_directory_is_not_an_error():
+    """A badge with no card must still list its onboard samples."""
+    lister = fake_lister({"/samples": ["kick.wav"]})
+    assert sequencer_module.list_samples(lister) == [("kick.wav", "/samples/kick.wav")]
+
+
+def test_non_wav_files_are_ignored():
+    lister = fake_lister({"/samples": ["kick.wav", "readme.txt", ".hidden.wav"]})
+    assert [n for n, _ in sequencer_module.list_samples(lister)] == ["kick.wav"]
+
+
+def test_a_bare_name_resolves_to_a_full_path():
+    lister = fake_lister({"/sd/samples": ["kick.wav"]})
+    assert sequencer_module.resolve_sample("kick.wav", lister) == "/sd/samples/kick.wav"
+
+
+def test_an_absolute_path_is_left_alone():
+    lister = fake_lister({})
+    assert sequencer_module.resolve_sample("/x/y.wav", lister) == "/x/y.wav"
+
+
+def test_an_unknown_name_resolves_to_nothing():
+    lister = fake_lister({"/samples": []})
+    assert sequencer_module.resolve_sample("nope.wav", lister) is None

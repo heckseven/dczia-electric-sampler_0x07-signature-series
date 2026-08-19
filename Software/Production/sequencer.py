@@ -32,6 +32,12 @@ from engine.song import DEFAULT_VELOCITY, TRACK_COUNT, Song
 from engine.transport import LIVE, SEQ, Transport
 from setup import midi_serial, midi_usb, sync_in, sync_out
 
+# Where samples are looked for, in order. The SD card comes first: it is
+# where kits and patterns live, it is the only writable store (CIRCUITPY is
+# read-only to the badge while USB is attached), and moving samples there is
+# what frees room on a 490 KB volume for the firmware itself.
+SAMPLE_DIRS = ("/sd/samples", "/samples")
+
 SAMPLE_RATE = 22050
 CHANNELS = 1
 BITS = 16
@@ -49,6 +55,42 @@ MIXER_VOICES = METRONOME_VOICE + 1
 # Sync output pulse width. Long enough for anything downstream to see the
 # edge, far shorter than a step at any usable tempo.
 SYNC_PULSE_MS = 5
+
+
+def list_samples(lister=None, dirs=SAMPLE_DIRS):
+    """Every .wav across the sample directories, as (name, full path).
+
+    Earlier directories win, so a sample on the SD card shadows one of the
+    same name in flash. A directory that does not exist is simply skipped -
+    a badge with no card is not an error.
+    """
+    if lister is None:
+        from os import listdir as lister
+    found = []
+    seen = set()
+    for directory in dirs:
+        try:
+            names = lister(directory)
+        except OSError:
+            continue
+        for name in sorted(names):
+            if not name.endswith(".wav") or name.startswith("."):
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            found.append((name, directory + "/" + name))
+    return found
+
+
+def resolve_sample(name, lister=None, dirs=SAMPLE_DIRS):
+    """Find a sample by bare filename, so a kit survives moving between stores."""
+    if name.startswith("/"):
+        return name
+    for found_name, path in list_samples(lister, dirs):
+        if found_name == name:
+            return path
+    return None
 
 
 class Sequencer:
@@ -92,10 +134,16 @@ class Sequencer:
     # --- kit --------------------------------------------------------------
 
     def load_track(self, track, path):
-        """Point a track at a sample. A failure leaves the track silent."""
+        """Point a track at a sample. A failure leaves the track silent.
+
+        A bare filename is resolved across the sample directories, so a kit
+        saved when samples lived in flash still loads once they are on the
+        card.
+        """
         self._release_track(track)
         if not path:
             return False
+        path = resolve_sample(path) or path
         try:
             handle = open(path, "rb")
         except OSError:

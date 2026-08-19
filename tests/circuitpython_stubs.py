@@ -255,7 +255,11 @@ class I2SOut:
 
 
 class SDCard:
-    def __init__(self, spi, cs):
+    """Native sdcardio driver. No card is present under test, so mounting
+    fails the same way it does on a badge with an empty slot - which is the
+    path setup.py has to survive."""
+
+    def __init__(self, spi, cs, baudrate=8000000):
         raise OSError("no SD card in the test environment")
 
 
@@ -472,6 +476,7 @@ def install():
             "adafruit_displayio_ssd1306", SSD1306=SSD1306
         ),
         "adafruit_sdcard": _module("adafruit_sdcard", SDCard=SDCard),
+        "sdcardio": _module("sdcardio", SDCard=SDCard),
         "adafruit_midi": _module("adafruit_midi", MIDI=MIDI),
         "adafruit_midi.note_on": _module("adafruit_midi.note_on", NoteOn=NoteOn),
         "adafruit_midi.note_off": _module("adafruit_midi.note_off", NoteOff=NoteOff),

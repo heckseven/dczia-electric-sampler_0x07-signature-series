@@ -45,6 +45,7 @@ def test_starting_an_already_running_transport_is_a_no_op(transport):
 
 def test_arming_while_stopped_waits_for_a_pad(transport):
     transport.toggle_record()
+    assert transport.record == ARMED
     assert transport.armed
     assert transport.stopped, "arming must not start the pattern by itself"
 
@@ -53,7 +54,7 @@ def test_the_first_pad_hit_starts_the_take(transport):
     transport.toggle_record()
     assert transport.pad_hit(LIVE) is True
     assert transport.playing
-    assert transport.recording
+    assert transport.record == ON
 
 
 def test_that_first_hit_is_itself_recorded(transport):
@@ -73,7 +74,7 @@ def test_a_pad_in_seq_mode_does_not_punch_in(transport):
 
 def test_arming_twice_while_stopped_cancels(transport):
     transport.toggle_record()
-    assert transport.armed
+    assert transport.record == ARMED
     transport.toggle_record()
     assert transport.record == OFF
     assert transport.stopped
@@ -93,7 +94,7 @@ def test_play_while_armed_starts_and_records(transport):
 def test_arming_while_running_latches_immediately(transport):
     transport.toggle_play()
     transport.toggle_record()
-    assert transport.recording
+    assert transport.record == ON
     assert transport.playing
 
 

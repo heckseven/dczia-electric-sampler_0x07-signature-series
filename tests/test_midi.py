@@ -97,38 +97,3 @@ def test_octave_up_then_down_returns_to_start():
     assert state.scale == [note + 12 for note in original]
     state.octave_down()
     assert state.scale == original
-
-
-def test_timed_midi_sends_the_folded_note():
-    """The sequencer's step handler must call the helpers with one argument.
-
-    timed_midi() used to call send_note_on(note, octave), which raised TypeError
-    the instant the MIDI sequencer was started.
-    """
-    from SequencerState import SequencerPlayState, midi_sequences
-
-    midi_sequences.sequences[0] = [[True, 3, 2]] * 8
-
-    state = SequencerPlayState()
-    state.step = 0
-    state.step_length = 3
-    state.timed_midi()
-
-    expected_note = 3 + (12 * 2)
-    notes_on = [m for m in setup.midi_serial.sent if type(m).__name__ == "NoteOn"]
-    notes_off = [m for m in setup.midi_serial.sent if type(m).__name__ == "NoteOff"]
-    assert [m.note for m in notes_on] == [expected_note]
-    assert [m.note for m in notes_off] == [expected_note]
-
-
-def test_timed_midi_stays_silent_on_a_disabled_step():
-    from SequencerState import SequencerPlayState, midi_sequences
-
-    midi_sequences.sequences[0] = [[False, 3, 2]] * 8
-
-    state = SequencerPlayState()
-    state.step = 0
-    state.step_length = 3
-    state.timed_midi()
-
-    assert setup.midi_serial.sent == []

@@ -16,12 +16,8 @@ class MenuState(State):
             "pretty": "Flashy",
         },
         {
-            "name": "sampler_menu",
+            "name": "sampler",
             "pretty": "Sampler",
-        },
-        {
-            "name": "sequencer_menu",
-            "pretty": "Sequencer",
         },
         {
             "name": "midi_controller",
@@ -30,10 +26,6 @@ class MenuState(State):
         {
             "name": "hid",
             "pretty": "USB HID Mode",
-        },
-        {
-            "name": "startup",
-            "pretty": "Startup State (test)",
         },
     ]
 

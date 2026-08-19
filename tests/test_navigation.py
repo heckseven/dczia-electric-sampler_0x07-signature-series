@@ -125,14 +125,28 @@ def test_selecting_the_first_entry_enters_flashy():
 
 
 def test_every_menu_entry_names_a_registered_state():
-    """Guards against a menu entry pointing at a state that does not exist."""
+    """Guards against a menu entry pointing at a state that does not exist.
+
+    The names are taken from the state classes themselves rather than a list
+    written out here, so renaming a state without updating the menu fails.
+    main.py cannot be imported - its event loop runs at module scope - so the
+    same classes it registers are imported directly.
+    """
+    from HIDState import HIDState
+    from MIDIState import MIDIState
+    from SamplerState import SamplerState
+    from StartupState import StartupState
+
     known = {
-        "flashy",
-        "sampler_menu",
-        "sequencer_menu",
-        "midi_controller",
-        "hid",
-        "startup",
+        state.name
+        for state in (
+            FlashyState(),
+            MenuState(),
+            MIDIState(),
+            HIDState(),
+            SamplerState(),
+            StartupState(),
+        )
     }
     for item in MenuState.menu_items:
         assert item["name"] in known, item

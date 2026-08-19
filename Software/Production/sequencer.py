@@ -166,7 +166,21 @@ class Sequencer:
         self.mode = LIVE
         self.selected_track = 0
         self.page = 0
-        self.poly = False  # one voice per track; retrigger cuts, as a 909 does
+        # Two voices per track, alternating, so a retrigger never cuts a
+        # sample that is still ringing. Cutting one mid-waveform is a
+        # full-scale discontinuity and it clicks audibly - confirmed by ear on
+        # the badge, where the same pattern was clean with two voices and
+        # clicked with one.
+        #
+        # A fade would be the textbook alternative, and it is not available
+        # here: MixerVoice exposes only `level`, a level change lands on a
+        # buffer boundary, and the smallest buffer is 8 ms against the 1-3 ms
+        # such declicks need. Tested at 8 and 16 ms and both still clicked.
+        #
+        # Two is enough. Going to three or four made no audible difference,
+        # even though a voice is reused before a long sample has finished, and
+        # voices are nearly free - 48 of them cost 1328 bytes.
+        self.poly = True
 
         # Whether pulses arriving on the sync jack should start a stopped
         # transport, or only set tempo and phase for a transport the player

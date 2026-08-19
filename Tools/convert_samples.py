@@ -86,10 +86,30 @@ def clamp(values):
     return [max(-32768, min(32767, value)) for value in values]
 
 
-def convert(in_path, out_path, target_rate=DEFAULT_RATE):
+NORMALISE_PEAK = 0.97
+
+
+def normalise(values, target=NORMALISE_PEAK):
+    """Scale so the loudest sample sits just below full scale.
+
+    Worth doing: the samples this project shipped peak at 48%, 32% and 26% of
+    full scale, which throws away 6 to 12 dB on a badge with a very small
+    speaker. Gain applied here costs nothing, whereas gain applied at the mixer
+    eats the headroom two overlapping voices need.
+    """
+    peak = max(max(values), -min(values)) if values else 0
+    if peak <= 0:
+        return values
+    gain = (32767 * target) / peak
+    return [int(value * gain) for value in values]
+
+
+def convert(in_path, out_path, target_rate=DEFAULT_RATE, do_normalise=False):
     values, rate, channels = read_frames(in_path)
     values = to_mono(values, channels)
     values = resample(values, rate, target_rate)
+    if do_normalise:
+        values = normalise(values)
     values = clamp(values)
 
     with wave.open(out_path, "wb") as target:
@@ -110,6 +130,12 @@ def main():
         "-o", "--output-dir", required=True, help="directory to write converted files"
     )
     parser.add_argument(
+        "-n",
+        "--normalise",
+        action="store_true",
+        help="scale each sample so its peak sits just below full scale",
+    )
+    parser.add_argument(
         "-r",
         "--rate",
         type=int,
@@ -126,7 +152,9 @@ def main():
         name = os.path.basename(in_path)
         out_path = os.path.join(args.output_dir, name)
         try:
-            rate, channels, frames = convert(in_path, out_path, args.rate)
+            rate, channels, frames = convert(
+                in_path, out_path, args.rate, args.normalise
+            )
         except (OSError, ValueError, wave.Error) as error:
             print("SKIP %s: %s" % (name, error), file=sys.stderr)
             failures += 1

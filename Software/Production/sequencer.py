@@ -226,6 +226,9 @@ class Sequencer:
         self.last_audio_error = None
 
         self._samples = [None] * TRACK_COUNT
+        # The bytes behind each RAM sample, held so they cannot be collected
+        # while the I2S DMA is still reading them. See _load_to_ram.
+        self._audio = [None] * TRACK_COUNT
         self._files = [None] * TRACK_COUNT
         self._streamed = [False] * TRACK_COUNT
         self._sizes = [0] * TRACK_COUNT
@@ -285,10 +288,11 @@ class Sequencer:
             )
             return False
 
-        sample = self._load_to_ram(handle, offset, size)
+        sample, audio = self._load_to_ram(handle, offset, size)
         if sample is not None:
             handle.close()
             self._samples[track] = sample
+            self._audio[track] = audio
             self._streamed[track] = False
             self._sizes[track] = size
         else:
@@ -310,16 +314,21 @@ class Sequencer:
         return True
 
     def _load_to_ram(self, handle, offset, size):
-        """Read the audio into memory, or return None to fall back to streaming."""
+        """Read the audio into memory.
+
+        Returns (sample, buffer), or (None, None) to fall back to streaming.
+        The buffer is returned rather than dropped because the caller has to
+        keep it: see the comment on the RawSample below.
+        """
         if size > MAX_RAM_SAMPLE or self._ram_used + size > RAM_BUDGET:
-            return None
+            return None, None
         try:
             handle.seek(offset)
             data = handle.read(size)
         except (OSError, MemoryError):
-            return None
+            return None, None
         if len(data) < size:
-            return None
+            return None, None
         try:
             # RawSample infers bit depth from the buffer's element size: raw
             # bytes mean 8-bit, which the mixer rejects at play() with "the
@@ -336,9 +345,17 @@ class Sequencer:
             # TypeError as well: cast("h") rejects a buffer whose length is not
             # a multiple of two, and like MemoryError it is not caught by the
             # handlers above, so it would reach the main loop.
-            return None
+            return None, None
         self._ram_used += size
-        return sample
+        # `data` goes back to the caller deliberately. The sample refers to
+        # this memory and the I2S DMA reads it for as long as the sample can
+        # play, but nothing here is a reference the garbage collector can
+        # see: once the last name for `data` goes out of scope the bytes are
+        # collectable, and playing a sample whose buffer has been reused is a
+        # read of memory that is now something else. That is a hard fault,
+        # not an exception - the badge drops to safe mode with no traceback,
+        # which is what it did.
+        return sample, data
 
     def is_streamed(self, track):
         """True when a track plays from storage rather than RAM."""
@@ -382,6 +399,9 @@ class Sequencer:
         self._sizes[track] = 0
         self._streamed[track] = False
         self._samples[track] = None
+        # Released only after the sample, so the buffer never outlives its
+        # owner in the other direction either.
+        self._audio[track] = None
         handle = self._files[track]
         self._files[track] = None
         if handle is not None:

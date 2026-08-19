@@ -945,3 +945,50 @@ def test_the_next_hit_can_still_start_the_stream(seq, kit):
     seq.mixer.voice[0].play = good
     assert seq.trigger(0, 100) is True
     assert seq._streaming is True
+
+
+# --- the memory the audio actually lives in -------------------------------
+#
+# A RAM sample is a RawSample wrapping a memoryview of bytes read off the
+# card. The I2S DMA reads that memory for as long as the sample can play, but
+# the reference the sample holds is not one the garbage collector traces. If
+# the bytes are only a local, they become collectable the moment loading
+# returns, and playing the sample later reads memory that has since been
+# reused. That is a hard fault rather than an exception: the badge drops
+# straight to safe mode with no traceback, which is exactly what it did.
+
+
+def test_a_ram_sample_keeps_its_audio_alive(seq, kit):
+    seq.load_kit(kit)
+    for track in range(TRACK_COUNT):
+        assert not seq.is_streamed(track), "this test is about the RAM path"
+        assert seq._audio[track] is not None, "track %d holds no buffer" % track
+
+
+def test_the_buffer_is_the_audio_that_was_read(seq, kit):
+    """Holding the wrong object would satisfy a reference count and nothing else."""
+    seq.load_kit(kit)
+    assert len(seq._audio[0]) == seq._sizes[0]
+
+
+def test_releasing_a_track_lets_its_audio_go(seq, kit):
+    """Held too long is a leak; on this board that is 24 KB a track."""
+    seq.load_kit(kit)
+    seq._release_track(0)
+    assert seq._audio[0] is None
+
+
+def test_reloading_a_track_replaces_its_buffer(seq, kit):
+    seq.load_kit(kit)
+    first = seq._audio[0]
+    seq.load_track(0, kit[1])
+    assert seq._audio[0] is not None
+    assert seq._audio[0] is not first
+
+
+def test_a_streamed_track_holds_no_buffer(seq, kit, monkeypatch):
+    """Only the RAM path has audio to keep; streaming reads as it goes."""
+    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
+    seq.load_kit(kit)
+    assert seq.is_streamed(0)
+    assert seq._audio[0] is None

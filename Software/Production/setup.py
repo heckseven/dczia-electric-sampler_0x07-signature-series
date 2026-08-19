@@ -53,10 +53,14 @@ select_enc = rotaryio.IncrementalEncoder(board.GP16, board.GP17)
 volume_enc = rotaryio.IncrementalEncoder(board.GP4, board.GP5)
 
 # MIDI setup
-midi_uart = busio.UART(tx=board.GP8, baudrate=31250)
+# GP9 is the receive side of the opto-isolated MIDI IN jack (U5, TLP2361).
+midi_uart = busio.UART(tx=board.GP8, rx=board.GP9, baudrate=31250)
 midi_serial_channel = 1
 midi_serial = adafruit_midi.MIDI(
-    midi_out=midi_uart, out_channel=midi_serial_channel - 1
+    midi_in=midi_uart,
+    midi_out=midi_uart,
+    in_channel=midi_serial_channel - 1,
+    out_channel=midi_serial_channel - 1,
 )
 
 midi_usb = adafruit_midi.MIDI(

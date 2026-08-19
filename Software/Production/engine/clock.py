@@ -1,0 +1,245 @@
+"""The sampler's master clock.
+
+Runs at 24 pulses per quarter note. Every step division the sequencer offers
+divides 24 exactly - 1/4 is 24 ticks, 1/8 is 12, 1/8T is 8, 1/16 is 6, 1/16T is
+4, 1/32 is 3 - so no grid accumulates rounding error against another.
+
+The clock is polled, never blocking. update() is handed the current time and
+reports how many ticks have elapsed since the last call, so the main loop stays
+free to read keys and redraw while a pattern plays. The old sequencer spun in
+`while ticks_ms() < deadline: pass` for the whole of every step, which is why
+input was dropped and the display could not be touched during playback.
+
+Two clock sources:
+
+* Internal, where the tick period comes from the tempo.
+* External, taken from pulses on the sync jack. The first pulse latches the
+  clock to external until the transport stops. Tempo is measured from the gap
+  between pulses, and the phase is snapped to each arriving pulse.
+
+If external pulses stop arriving the clock does not stall: it keeps running at
+the last tempo it measured, and re-synchronises when pulses return. A master
+that pauses briefly, or a flaky cable, does not halt the badge mid-pattern.
+
+Time is passed in rather than read here, so this module imports nothing from
+CircuitPython and can be tested directly.
+"""
+
+PPQN = 24
+
+# supervisor.ticks_ms wraps at 2**29 ms, roughly every 6.2 days, and the
+# adafruit_ticks helper is not in this firmware build. Comparing raw values
+# across a wrap would produce a vast negative interval and stall the clock, so
+# all time arithmetic goes through ticks_diff.
+TICKS_PERIOD = 1 << 29
+TICKS_MAX = TICKS_PERIOD - 1
+TICKS_HALFPERIOD = TICKS_PERIOD // 2
+
+INTERNAL = "int"
+EXTERNAL = "ext"
+
+# Pulses per quarter note the sync jacks can speak. 2 is the Volca and Pocket
+# Operator convention and the default; 24 matches MIDI clock and DIN sync.
+SYNC_RATES = (1, 2, 4, 24)
+DEFAULT_SYNC_PPQN = 2
+
+MIN_BPM = 20
+MAX_BPM = 300
+
+# Pulse gaps outside this range are treated as noise or a restarted master
+# rather than a tempo, so a glitch cannot throw the clock to an absurd speed.
+MIN_PULSE_MS = 2
+MAX_PULSE_MS = 3000
+
+# Tempo is averaged over several pulses rather than taken from one gap.
+# Timestamps arrive in whole milliseconds, so a single interval is only as
+# accurate as that resolution allows: at 2 PPQN the gap is 250 ms at 120 BPM and
+# 1 ms of error is 0.4%, but at 24 PPQN the gap is 20.8 ms and the same 1 ms is
+# nearly 5%. Averaging across a window divides that error by the number of
+# intervals in it. The window scales with the rate so a slow sync stays
+# responsive to tempo changes while a fast one gets the accuracy it needs.
+MIN_PULSE_WINDOW = 2
+MAX_PULSE_WINDOW = 8
+
+# After this long with no pulse the clock is running on its own memory of the
+# tempo. It keeps playing; this only drives the "flywheeling" indicator.
+FLYWHEEL_AFTER_MS = 1000
+
+# A stall (garbage collection, a slow redraw) must not produce a burst of
+# catch-up ticks that all fire in one update.
+MAX_CATCHUP_TICKS = 8
+
+
+def ticks_diff(later, earlier):
+    """Signed millisecond difference that survives the 2**29 wrap."""
+    diff = (later - earlier) & TICKS_MAX
+    return ((diff + TICKS_HALFPERIOD) & TICKS_MAX) - TICKS_HALFPERIOD
+
+
+def clamp(value, low, high):
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+
+
+class Clock:
+    def __init__(self, bpm=120, sync_ppqn=DEFAULT_SYNC_PPQN):
+        self._bpm = clamp(bpm, MIN_BPM, MAX_BPM)
+        self.sync_ppqn = sync_ppqn if sync_ppqn in SYNC_RATES else DEFAULT_SYNC_PPQN
+        self.tick = 0
+        self.running = False
+        self.source = INTERNAL
+        self._accum = 0.0
+        self._last_update = 0
+        self._last_pulse = None
+        self._pulse_history = []
+
+    # --- tempo ------------------------------------------------------------
+
+    @property
+    def bpm(self):
+        return self._bpm
+
+    def set_bpm(self, value):
+        """Set the internal tempo. Ignored while slaved to an external clock."""
+        if self.source == EXTERNAL:
+            return self._bpm
+        self._bpm = clamp(int(value), MIN_BPM, MAX_BPM)
+        return self._bpm
+
+    @property
+    def tick_period_ms(self):
+        return 60000.0 / (self._bpm * PPQN)
+
+    # --- transport --------------------------------------------------------
+
+    def start(self, now):
+        self.running = True
+        self._last_update = now
+        self._accum = 0.0
+
+    def stop(self):
+        """Stop, and release any external latch so the knob works again."""
+        self.running = False
+        self.source = INTERNAL
+        self._last_pulse = None
+        self._pulse_history = []
+        self._accum = 0.0
+
+    def reset(self):
+        self.tick = 0
+        self._accum = 0.0
+
+    # --- the poll ---------------------------------------------------------
+
+    def update(self, now):
+        """Advance the clock. Returns how many ticks fired since the last call."""
+        if not self.running:
+            self._last_update = now
+            return 0
+
+        elapsed = ticks_diff(now, self._last_update)
+        self._last_update = now
+        if elapsed <= 0:
+            return 0
+
+        self._accum += elapsed
+        period = self.tick_period_ms
+        fired = 0
+        while self._accum >= period and fired < MAX_CATCHUP_TICKS:
+            self._accum -= period
+            self.tick += 1
+            fired += 1
+        if fired >= MAX_CATCHUP_TICKS:
+            # Fell far behind; drop the backlog rather than firing a burst.
+            self._accum = 0.0
+        return fired
+
+    # --- external sync ----------------------------------------------------
+
+    @property
+    def ticks_per_pulse(self):
+        return PPQN // self.sync_ppqn
+
+    def set_sync_ppqn(self, rate):
+        if rate in SYNC_RATES:
+            self.sync_ppqn = rate
+            self._pulse_history = []
+        return self.sync_ppqn
+
+    @property
+    def pulse_window(self):
+        """How many pulses to average tempo over at the current sync rate."""
+        return clamp(self.sync_ppqn, MIN_PULSE_WINDOW, MAX_PULSE_WINDOW)
+
+    def external_pulse(self, now):
+        """Handle one edge on the sync input.
+
+        Latches the clock to external, takes the tempo from the gap since the
+        previous pulse, and snaps the phase so this pulse lands on a boundary.
+        """
+        if self._last_pulse is None:
+            self._pulse_history = [now]
+        else:
+            gap = ticks_diff(now, self._last_pulse)
+            if gap < MIN_PULSE_MS or gap > MAX_PULSE_MS:
+                # Noise, or a master that stopped and restarted. Discard the
+                # history and keep the tempo already measured rather than
+                # believing a gap that cannot be a tempo.
+                self._pulse_history = [now]
+            else:
+                self._pulse_history.append(now)
+                while len(self._pulse_history) > self.pulse_window:
+                    self._pulse_history.pop(0)
+                if len(self._pulse_history) >= 2:
+                    span = ticks_diff(self._pulse_history[-1], self._pulse_history[0])
+                    intervals = len(self._pulse_history) - 1
+                    average = span / float(intervals)
+                    measured = 60000.0 / (average * self.sync_ppqn)
+                    self._bpm = clamp(measured, MIN_BPM, MAX_BPM)
+        self._last_pulse = now
+        self.source = EXTERNAL
+
+        # Snap to the nearest pulse boundary. Drift between pulses is small
+        # because the clock free-runs at the measured tempo, so this is a
+        # correction of a tick or two rather than an audible jump.
+        per_pulse = self.ticks_per_pulse
+        remainder = self.tick % per_pulse
+        if remainder:
+            if remainder * 2 >= per_pulse:
+                self.tick += per_pulse - remainder
+            else:
+                self.tick -= remainder
+        self._accum = 0.0
+        # The span since the last poll has been consumed by the snap above.
+        # Without this, update() would count it a second time and fire a burst
+        # of catch-up ticks.
+        self._last_update = now
+
+    def is_flywheeling(self, now):
+        """External clock latched, but running on the last measured tempo."""
+        if self.source != EXTERNAL or self._last_pulse is None:
+            return False
+        return ticks_diff(now, self._last_pulse) > FLYWHEEL_AFTER_MS
+
+    # --- sync output ------------------------------------------------------
+
+    def sync_out_due(self, tick=None):
+        """True when this tick lands on a sync-output pulse."""
+        if tick is None:
+            tick = self.tick
+        return tick % self.ticks_per_pulse == 0
+
+    # --- step mapping -----------------------------------------------------
+
+    def step_for_tick(self, ticks_per_step, length, tick=None):
+        if tick is None:
+            tick = self.tick
+        return (tick // ticks_per_step) % length
+
+    def is_step_boundary(self, ticks_per_step, tick=None):
+        if tick is None:
+            tick = self.tick
+        return tick % ticks_per_step == 0

@@ -12,10 +12,10 @@ jobs:
     name: Lint
     steps:
       - name: Check out source repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
 
       - name: Set up Python environment
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -66,10 +66,10 @@ jobs:
     name: Tests
     steps:
       - name: Check out source repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
 
       - name: Set up Python environment
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -90,10 +90,10 @@ jobs:
     name: Byte-compile
     steps:
       - name: Check out source repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
 
       - name: Set up Python environment
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 

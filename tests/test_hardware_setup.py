@@ -95,8 +95,10 @@ def test_the_sd_clock_is_negotiated_fastest_first():
     is tried first with slower ones as fallback, so a card that cannot cope
     still mounts rather than failing outright.
     """
-    assert setup.SD_BAUDRATES[0] > setup.SD_BAUDRATES[-1]
-    assert setup.SD_BAUDRATES[-1] <= 8_000_000
+    rates = list(setup.SD_BAUDRATES)
+    assert rates == sorted(rates, reverse=True), "must actually descend"
+    assert rates[-1] <= 8_000_000, "slowest fallback must be conservative"
+    assert len(set(rates)) == len(rates), "no duplicate rates"
 
 
 def test_a_card_that_will_not_mount_is_not_fatal():

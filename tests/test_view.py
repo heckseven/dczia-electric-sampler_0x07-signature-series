@@ -12,6 +12,7 @@ from engine.transport import Transport
 from engine.view import (
     ARMED,
     CLOCK_EXTERNAL,
+    CLOCK_FLYWHEEL,
     LIVE,
     MODE_LIVE,
     MODE_SEQ,
@@ -284,3 +285,34 @@ def test_step_row_blanks_past_the_loop_point(song):
 
 def test_step_row_is_one_page_wide(song):
     assert len(step_row(song, 0, 0)) == STEPS_PER_PAGE
+
+
+def test_a_flywheeling_clock_blinks_rather_than_sitting_solid():
+    """An external clock that stopped sending pulses must look different.
+
+    This needs `now`, because flywheeling is a question about elapsed time.
+    Reading it as an attribute silently returns False forever and the
+    indicator never lights.
+    """
+    clock = Clock(sync_ppqn=2)
+    clock.start(0)
+    clock.external_pulse(1000)
+    late = 1000 + 5000  # long past the flywheel threshold
+    assert clock.is_flywheeling(late) is True
+    assert function_indicator(LIVE, clock, blink=True, now=late) == CLOCK_FLYWHEEL
+    assert function_indicator(LIVE, clock, blink=False, now=late) == OFF
+
+
+def test_a_live_external_clock_stays_solid():
+    clock = Clock(sync_ppqn=2)
+    clock.start(0)
+    clock.external_pulse(1000)
+    assert function_indicator(LIVE, clock, blink=True, now=1010) == CLOCK_EXTERNAL
+
+
+def test_without_a_time_an_external_clock_still_reads_as_external():
+    """Callers that cannot supply `now` get the solid colour, not a wrong blink."""
+    clock = Clock(sync_ppqn=2)
+    clock.start(0)
+    clock.external_pulse(1000)
+    assert function_indicator(LIVE, clock, blink=True) == CLOCK_EXTERNAL

@@ -1,6 +1,7 @@
 from adafruit_led_animation.animation.rainbow import Rainbow
 from supervisor import ticks_ms
 
+from engine.clock import ticks_diff
 from State import State
 from utils import show_menu
 from setup import (
@@ -85,7 +86,9 @@ class MenuState(State):
         # Coalesce: scrolling fast must not queue a frame per detent.
         if self._dirty:
             now = ticks_ms()
-            if abs(now - self._last_draw) >= REDRAW_INTERVAL_MS:
+            # ticks_ms wraps at 2**29; a plain subtraction reads as hugely
+            # overdue at the wrap and forces a needless frame, which pops.
+            if ticks_diff(now, self._last_draw) >= REDRAW_INTERVAL_MS:
                 show_menu(self.menu_items, self.highlight, self.shift)
                 self._last_draw = now
                 self._dirty = False

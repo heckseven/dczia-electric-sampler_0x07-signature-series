@@ -110,10 +110,15 @@ def play_indicator(transport, blink=False):
     return STOPPED
 
 
-def function_indicator(mode, clock=None, blink=False):
-    """The pixel at the Function button: which view, and where the clock is."""
+def function_indicator(mode, clock=None, blink=False, now=None):
+    """The pixel at the Function button: which view, and where the clock is.
+
+    `now` is needed to tell a live external clock from one that has stopped
+    sending pulses, because flywheeling is a question about elapsed time
+    rather than a stored flag.
+    """
     if clock is not None and clock.source == "ext":
-        if getattr(clock, "flywheeling", False):
+        if now is not None and clock.is_flywheeling(now):
             return CLOCK_FLYWHEEL if blink else OFF
         return CLOCK_EXTERNAL
     return MODE_SEQ if mode == SEQ else MODE_LIVE

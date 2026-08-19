@@ -64,6 +64,10 @@ BITS = 16
 # The budget is deliberately conservative against the ~86 KB free measured with
 # the engine loaded. A sample too big for it still plays, by streaming, which is
 # fine for the one long sound in a kit and bad only if every track is long.
+# Loaded at startup so the badge makes a sound out of the box. Bare names, so
+# they resolve wherever the samples actually live - card first, then flash.
+DEFAULT_KIT = ("Kick.wav", "Snare.wav", "Tom.wav")
+
 RAM_BUDGET = 48 * 1024
 MAX_RAM_SAMPLE = 24 * 1024
 
@@ -87,6 +91,21 @@ MIXER_VOICES = METRONOME_VOICE + 1
 # Sync output pulse width. Long enough for anything downstream to see the
 # edge, far shorter than a step at any usable tempo.
 SYNC_PULSE_MS = 5
+
+# How long the I2S stream keeps running after the last sound before it is
+# stopped.
+#
+# The stream is not left running while idle. An active stream makes the
+# amplifier sensitive to traffic on the shared supply, and the display is on
+# that supply: with the stream running, redrawing the screen pops audibly;
+# with it stopped, the identical redrawing is silent. Confirmed on the badge.
+# The original firmware only ever created its I2S output on entering the
+# sampler, so browsing menus was quiet - this restores that while keeping the
+# engine always available.
+#
+# The linger stops the stream flapping between hits, and means the start pop
+# lands under a drum hit rather than in silence.
+STREAM_LINGER_MS = 750
 
 # How often the MIDI ports are drained. Reading them costs about 430 us a pass
 # on this board, mostly USB, against a main loop that is otherwise around
@@ -198,7 +217,10 @@ class Sequencer:
             bits_per_sample=BITS,
             samples_signed=True,
         )
-        self.audio.play(self.mixer)
+        # Deliberately not started here. Streaming silence while nothing plays
+        # makes every screen redraw pop; see STREAM_LINGER_MS.
+        self._streaming = False
+        self._last_sound = 0
 
         self._samples = [None] * TRACK_COUNT
         self._files = [None] * TRACK_COUNT
@@ -311,6 +333,25 @@ class Sequencer:
     def ram_used(self):
         return self._ram_used
 
+    def load_demo_pattern(self):
+        """A plain beat, so Play does something on a badge straight out of a box.
+
+        Deliberately simple and easy to take apart: four on the floor, a
+        backbeat, and offbeat toms. Function plus a Volume click clears a
+        track when it is in the way.
+        """
+        song = self.song
+        song.clear_all()
+        song.set_length(16)
+        song.set_division(3)  # 1/16
+        for step in (0, 4, 8, 12):
+            song.set_step(0, step, 110)
+        for step in (4, 12):
+            song.set_step(1, step, 100)
+        for step in (2, 6, 10, 14):
+            song.set_step(2, step, 70)
+        return song
+
     def load_kit(self, paths):
         loaded = 0
         for track in range(TRACK_COUNT):
@@ -362,11 +403,50 @@ class Sequencer:
         self._next_voice[track] ^= 1
         return voice
 
+    def start_stream(self):
+        """Begin streaming if it is not already running."""
+        self._last_sound = ticks_ms()
+        if self._streaming:
+            return False
+        self.audio.play(self.mixer)
+        self._streaming = True
+        return True
+
+    def stop_stream(self):
+        if not self._streaming:
+            return False
+        self.audio.stop()
+        self._streaming = False
+        return True
+
+    @property
+    def streaming(self):
+        return self._streaming
+
+    def _anything_sounding(self):
+        for voice in self.mixer.voice:
+            if voice.playing:
+                return True
+        return False
+
+    def _update_stream(self, now):
+        """Stop streaming once nothing has sounded for a while."""
+        if not self._streaming:
+            return
+        if self.transport.playing or self._anything_sounding():
+            self._last_sound = now
+            return
+        if ticks_diff(now, self._last_sound) >= STREAM_LINGER_MS:
+            self.stop_stream()
+
     def trigger(self, track, velocity):
         """Sound one hit. Used by both the sequencer and live pads."""
         sample = self._samples[track]
         if sample is None:
             return False
+        # Starting here means the stream's own transient lands under a drum
+        # hit rather than in silence, where it would be obvious.
+        self.start_stream()
         voice = self.mixer.voice[self._voice_for(track)]
         voice.level = velocity / 127.0
         voice.play(sample)
@@ -381,6 +461,7 @@ class Sequencer:
             sample = WaveFile(handle)
         except (OSError, ValueError):
             return False
+        self.start_stream()
         voice = self.mixer.voice[AUDITION_VOICE]
         voice.level = 0.5
         voice.play(sample)
@@ -400,6 +481,7 @@ class Sequencer:
             self.clock.reset()
             self.clock.start(now)
             self._last_step = None
+            self.start_stream()
         else:
             self.clock.stop()
         return self.transport.playing
@@ -454,6 +536,7 @@ class Sequencer:
         fired = self.clock.update(now)
         for _ in range(fired):
             self._on_tick(now)
+        self._update_stream(now)
 
     def _on_tick(self, now):
         tick = self.clock.tick
@@ -562,5 +645,7 @@ class Sequencer:
 
 
 # The singleton. Importing this module allocates the audio path once, for the
-# lifetime of the program.
+# lifetime of the program. Nothing streams until something is played.
 engine = Sequencer()
+engine.load_kit(DEFAULT_KIT)
+engine.load_demo_pattern()

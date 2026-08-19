@@ -679,3 +679,119 @@ def test_a_track_still_fails_when_no_copy_is_usable(seq, tmp_path, monkeypatch):
     )
     assert seq.load_track(0, "bad.wav") is False
     assert not seq.has_sample(0)
+
+
+# --- the stream only runs when there is something to play -----------------
+
+
+def test_no_stream_is_running_at_rest(seq):
+    """An idle stream makes every screen redraw pop the amplifier.
+
+    Confirmed on hardware: identical display traffic is silent with the
+    stream stopped and pops with it running. The original firmware only
+    created its I2S output on entering the sampler, so menus were quiet.
+    """
+    assert seq.streaming is False
+
+
+def test_triggering_starts_the_stream(seq, kit):
+    seq.load_kit(kit)
+    seq.trigger(0, 100)
+    assert seq.streaming is True
+
+
+def test_starting_the_transport_starts_the_stream(seq):
+    seq.toggle_play()
+    assert seq.streaming is True
+
+
+def test_auditioning_starts_the_stream(seq, kit):
+    seq.audition(kit[0])
+    assert seq.streaming is True
+
+
+def test_the_stream_keeps_running_while_the_transport_plays(seq, kit):
+    seq.load_kit(kit)
+    seq.toggle_play()
+    seq._update_stream(sequencer_module.STREAM_LINGER_MS * 10)
+    assert seq.streaming is True
+
+
+def test_the_stream_keeps_running_while_a_voice_sounds(seq, kit):
+    seq.load_kit(kit)
+    seq.trigger(0, 100)
+    seq._update_stream(sequencer_module.STREAM_LINGER_MS * 10)
+    assert seq.streaming is True, "a decaying hit must not be cut off"
+
+
+def test_the_stream_stops_once_everything_is_quiet(seq, kit):
+    seq.load_kit(kit)
+    seq.trigger(0, 100)
+    for voice in seq.mixer.voice:
+        voice.playing = False
+    seq._update_stream(seq._last_sound + sequencer_module.STREAM_LINGER_MS + 1)
+    assert seq.streaming is False
+
+
+def test_the_stream_lingers_briefly_rather_than_flapping(seq, kit):
+    """Stopping between hits would stop and start it constantly."""
+    seq.load_kit(kit)
+    seq.trigger(0, 100)
+    for voice in seq.mixer.voice:
+        voice.playing = False
+    seq._update_stream(seq._last_sound + sequencer_module.STREAM_LINGER_MS // 2)
+    assert seq.streaming is True
+
+
+def test_a_hit_after_the_stream_stopped_starts_it_again(seq, kit):
+    seq.load_kit(kit)
+    seq.stop_stream()
+    assert seq.streaming is False
+    seq.trigger(0, 100)
+    assert seq.streaming is True
+
+
+# --- out of the box -------------------------------------------------------
+
+
+def test_a_fresh_engine_comes_up_playable(seq, kit):
+    """A badge out of the box must not give eight silent pads and no pattern.
+
+    This repeats what the module does at import rather than inspecting the
+    live singleton, whose song and kit other tests legitimately change. The
+    kit here is temporary files: whether /samples/Kick.wav exists is a
+    property of the badge, not of this code.
+    """
+    fresh = Sequencer()
+    assert fresh.load_kit(kit) > 0, "kit loading is broken"
+    fresh.load_demo_pattern()
+    assert any(fresh.has_sample(t) for t in range(TRACK_COUNT))
+    assert not fresh.song.is_empty(), "Play would do nothing"
+
+
+def test_the_default_kit_is_named_by_bare_filenames(seq):
+    """So it resolves wherever the samples live, card or flash."""
+    assert sequencer_module.DEFAULT_KIT
+    assert not any(name.startswith("/") for name in sequencer_module.DEFAULT_KIT)
+
+
+def test_the_demo_pattern_is_a_recognisable_beat(seq):
+    seq.load_demo_pattern()
+    song = seq.song
+    assert song.length == 16
+    assert [s for s in range(16) if song.is_on(0, s)] == [0, 4, 8, 12]
+    assert [s for s in range(16) if song.is_on(1, s)] == [4, 12]
+    assert [s for s in range(16) if song.is_on(2, s)] == [2, 6, 10, 14]
+
+
+def test_the_demo_pattern_replaces_whatever_was_there(seq):
+    seq.song.set_step(7, 3, 100)
+    seq.load_demo_pattern()
+    assert not seq.song.is_on(7, 3)
+
+
+def test_loading_the_demo_pattern_does_not_start_the_stream(seq):
+    """Only playing should start it; building a pattern is silent."""
+    seq.stop_stream()
+    seq.load_demo_pattern()
+    assert seq.streaming is False

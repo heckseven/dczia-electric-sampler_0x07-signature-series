@@ -291,7 +291,6 @@ class SamplerMenuState(State):
             display.show(text_area)
 
             file_sequences.show_sequence(selected_sequence)
-            neopixels.show()
 
             while editing_sequence is True:
                 # Code to edit a sequence here
@@ -307,7 +306,6 @@ class SamplerMenuState(State):
                             key,
                         )
                         file_sequences.show_sequence(selected_sequence)
-                        neopixels.show()
 
                 # Exit on click of select encoder
                 if key_event and key_event.pressed and key_event.key_number == 10:

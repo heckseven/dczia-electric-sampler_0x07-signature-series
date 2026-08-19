@@ -19,7 +19,10 @@ that logic to the mixer, the MIDI ports, the LEDs and the sync jacks.
 import audiobusio
 import audiomixer
 import board
+from adafruit_midi.midi_continue import Continue
 from adafruit_midi.note_on import NoteOn
+from adafruit_midi.start import Start
+from adafruit_midi.stop import Stop
 from audiocore import WaveFile
 from supervisor import ticks_ms
 
@@ -58,6 +61,14 @@ class Sequencer:
         self.selected_track = 0
         self.page = 0
         self.poly = False  # one voice per track; retrigger cuts, as a 909 does
+
+        # Whether pulses arriving on the sync jack should start a stopped
+        # transport, or only set tempo and phase for a transport the player
+        # started. Off by default: a stray clock on a busy patch should not
+        # decide the badge is playing. There is no way to do better
+        # automatically - the sync jack's switch contacts (J4 pads 1-3) are
+        # unconnected on this board, so cable insertion cannot be detected.
+        self.sync_starts_transport = False
 
         self.audio = audiobusio.I2SOut(board.GP0, board.GP1, board.GP2)
         self.mixer = audiomixer.Mixer(
@@ -217,6 +228,7 @@ class Sequencer:
     def tick(self):
         """Call once per main loop pass. Never blocks."""
         now = ticks_ms()
+        self.poll_midi_in()
         self._poll_sync_in(now)
         self._update_sync_out(now)
 
@@ -238,6 +250,37 @@ class Sequencer:
 
     # --- sync -------------------------------------------------------------
 
+    def poll_midi_in(self):
+        """Act on MIDI transport messages from either port.
+
+        Start, Stop and Continue are the standard way a sequencer is driven
+        remotely, and they give an explicit play intent that an anonymous
+        stream of sync pulses cannot: the badge can stay out of the way of a
+        clock it is merely listening to, while still obeying a real Start.
+        """
+        for port in (midi_serial, midi_usb):
+            message = port.receive()
+            if message is None:
+                continue
+            if isinstance(message, Start):
+                self._remote_start(reset=True)
+            elif isinstance(message, Continue):
+                self._remote_start(reset=False)
+            elif isinstance(message, Stop):
+                if self.transport.playing:
+                    self.transport.stop()
+                    self.clock.stop()
+
+    def _remote_start(self, reset):
+        if self.transport.playing:
+            return
+        now = ticks_ms()
+        self.transport.start()
+        if reset:
+            self.clock.reset()
+        self.clock.start(now)
+        self._last_step = None
+
     def _poll_sync_in(self, now):
         """Detect a falling edge on the sync input.
 
@@ -251,8 +294,7 @@ class Sequencer:
         high = sync_in.value
         if self._sync_in_high and not high:
             self.clock.external_pulse(now)
-            if not self.transport.playing:
-                # An external clock arriving is itself a reason to run.
+            if not self.transport.playing and self.sync_starts_transport:
                 self.transport.start()
                 self.clock.start(now)
         self._sync_in_high = high
@@ -271,8 +313,15 @@ class Sequencer:
     # --- settings ---------------------------------------------------------
 
     def set_strength(self, value):
+        """The global quantise strength. Tracks may override it individually."""
         self.strength = quantize.clamp_strength(value)
         return self.strength
+
+    def set_track_strength(self, track, value):
+        return self.song.set_track_strength(track, value)
+
+    def strength_for(self, track):
+        return self.song.strength_for(track, self.strength)
 
     def nudge_strength(self, direction):
         return self.set_strength(self.strength + direction * quantize.STRENGTH_STEP)

@@ -69,7 +69,11 @@ def step_fires_at(song, track, step, strength):
 
 
 def hits_due(song, tick, strength, include_muted=False):
-    """Every (track, step, velocity) that should sound on this tick."""
+    """Every (track, step, velocity) that should sound on this tick.
+
+    `strength` is the global setting; a track carrying its own override uses
+    that instead, so one track can swing while the rest stay straight.
+    """
     ticks = song.ticks_per_step
     length = song.length
     total = pattern_ticks(length, ticks)
@@ -83,7 +87,8 @@ def hits_due(song, tick, strength, include_muted=False):
             continue
         if song.muted[track] and not include_muted:
             continue
-        if step_fires_at(song, track, step, strength) == position:
+        track_strength = song.strength_for(track, strength)
+        if step_fires_at(song, track, step, track_strength) == position:
             due.append((track, step, velocity))
     return due
 

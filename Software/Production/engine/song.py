@@ -66,6 +66,10 @@ class Song:
         self.kit = [None] * TRACK_COUNT
         self.kit_name = None
         self.muted = [False] * TRACK_COUNT
+        # Per-track quantise strength. None means "follow the global setting",
+        # which is what every track does until one is deliberately given its
+        # own feel - a swung hat over a straight kick, say.
+        self.track_strength = [None] * TRACK_COUNT
         self._length = clamp(length, MIN_LENGTH, MAX_STEPS)
         self._division = clamp(division, 0, len(DIVISIONS) - 1)
         self._bpm = clamp(bpm, MIN_BPM, MAX_BPM)
@@ -204,6 +208,24 @@ class Song:
         self.muted[track] = not self.muted[track]
         return self.muted[track]
 
+    # --- per-track settings -----------------------------------------------
+
+    def strength_for(self, track, global_strength):
+        """The quantise strength this track plays at. Track overrides global."""
+        override = self.track_strength[track]
+        return global_strength if override is None else override
+
+    def set_track_strength(self, track, value):
+        """Give a track its own strength, or pass None to follow the global."""
+        if value is None:
+            self.track_strength[track] = None
+        else:
+            self.track_strength[track] = clamp(value, 0.0, 1.0)
+        return self.track_strength[track]
+
+    def has_track_strength(self, track):
+        return self.track_strength[track] is not None
+
     # --- persistence ------------------------------------------------------
 
     def to_dict(self):
@@ -216,6 +238,7 @@ class Song:
             "kit_name": self.kit_name,
             "kit": list(self.kit),
             "muted": list(self.muted),
+            "track_strength": list(self.track_strength),
             "steps": [bytes(row) for row in self.steps],
             "offsets": [bytes(row) for row in self.offsets],
         }
@@ -234,6 +257,9 @@ class Song:
         muted = data.get("muted") or []
         for track in range(min(TRACK_COUNT, len(muted))):
             song.muted[track] = bool(muted[track])
+        strengths = data.get("track_strength") or []
+        for track in range(min(TRACK_COUNT, len(strengths))):
+            song.set_track_strength(track, strengths[track])
         for name in ("steps", "offsets"):
             rows = data.get(name) or []
             target = song.steps if name == "steps" else song.offsets

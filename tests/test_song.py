@@ -249,3 +249,42 @@ def test_from_dict_on_an_empty_payload_gives_a_usable_song():
     restored = Song.from_dict({})
     assert restored.is_empty()
     assert restored.length >= 1
+
+
+# --- per-track settings ---------------------------------------------------
+
+
+def test_tracks_follow_the_global_strength_by_default(song):
+    assert song.strength_for(0, 1.0) == 1.0
+    assert song.strength_for(0, 0.25) == 0.25
+    assert not song.has_track_strength(0)
+
+
+def test_a_track_can_override_the_global_strength(song):
+    song.set_track_strength(2, 0.0)
+    assert song.strength_for(2, 1.0) == 0.0
+    assert song.has_track_strength(2)
+
+
+def test_an_override_affects_only_its_own_track(song):
+    song.set_track_strength(2, 0.0)
+    assert song.strength_for(3, 1.0) == 1.0
+
+
+def test_an_override_can_be_cleared(song):
+    song.set_track_strength(2, 0.0)
+    song.set_track_strength(2, None)
+    assert not song.has_track_strength(2)
+    assert song.strength_for(2, 0.75) == 0.75
+
+
+def test_track_strength_is_clamped(song):
+    assert song.set_track_strength(0, 5) == 1.0
+    assert song.set_track_strength(1, -3) == 0.0
+
+
+def test_track_strength_survives_a_round_trip(song):
+    song.set_track_strength(4, 0.25)
+    restored = Song.from_dict(song.to_dict())
+    assert restored.strength_for(4, 1.0) == 0.25
+    assert restored.strength_for(5, 1.0) == 1.0

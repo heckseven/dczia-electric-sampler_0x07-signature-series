@@ -278,12 +278,19 @@ class MIDI:
         self.in_channel = in_channel
         self.out_channel = out_channel
         self.sent = []
+        self.incoming = []
 
     def send(self, message):
         self.sent.append(message)
 
     def receive(self):
-        return None
+        if not self.incoming:
+            return None
+        return self.incoming.pop(0)
+
+    def post(self, message):
+        """Test helper: queue a message for the firmware to receive."""
+        self.incoming.append(message)
 
 
 class _MidiMessage:
@@ -307,6 +314,29 @@ class NoteOn(_MidiMessage):
 
 
 class NoteOff(_MidiMessage):
+    pass
+
+
+class _SystemMessage:
+    """MIDI system real-time: Start, Stop and Continue carry no data."""
+
+    def __repr__(self):
+        return "%s()" % type(self).__name__
+
+
+class Start(_SystemMessage):
+    pass
+
+
+class Stop(_SystemMessage):
+    pass
+
+
+class Continue(_SystemMessage):
+    pass
+
+
+class TimingClock(_SystemMessage):
     pass
 
 
@@ -448,6 +478,14 @@ def install():
         "adafruit_midi.control_change": _module(
             "adafruit_midi.control_change", ControlChange=ControlChange
         ),
+        "adafruit_midi.start": _module("adafruit_midi.start", Start=Start),
+        "adafruit_midi.stop": _module("adafruit_midi.stop", Stop=Stop),
+        "adafruit_midi.midi_continue": _module(
+            "adafruit_midi.midi_continue", Continue=Continue
+        ),
+        "adafruit_midi.timing_clock": _module(
+            "adafruit_midi.timing_clock", TimingClock=TimingClock
+        ),
         "adafruit_display_text": _module("adafruit_display_text"),
         "adafruit_display_text.label": _module(
             "adafruit_display_text.label", Label=Label
@@ -494,6 +532,12 @@ def install():
     sys.modules["adafruit_midi"].control_change = sys.modules[
         "adafruit_midi.control_change"
     ]
+    for submodule in ("start", "stop", "midi_continue", "timing_clock"):
+        setattr(
+            sys.modules["adafruit_midi"],
+            submodule,
+            sys.modules["adafruit_midi." + submodule],
+        )
     for submodule in (
         "keyboard",
         "keycode",

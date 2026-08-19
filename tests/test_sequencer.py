@@ -9,6 +9,7 @@ import struct
 
 import pytest
 
+import circuitpython_stubs
 import sequencer as sequencer_module
 from engine.song import DEFAULT_VELOCITY, TRACK_COUNT
 from engine.transport import LIVE, SEQ
@@ -304,3 +305,72 @@ def test_page_wraps_within_the_pattern(seq):
     assert seq.set_page(0) == 0
     assert seq.set_page(1) == 1
     assert seq.set_page(2) == 0
+
+
+# --- sync and MIDI transport ----------------------------------------------
+
+
+def test_sync_does_not_start_a_stopped_transport_by_default(seq):
+    """A stray clock on a busy patch should not decide the badge is playing."""
+    assert seq.sync_starts_transport is False
+
+
+def test_sync_can_be_allowed_to_start_the_transport(seq):
+    import setup
+
+    seq.sync_starts_transport = True
+    setup.sync_in.value = True
+    seq._poll_sync_in(0)
+    setup.sync_in.value = False
+    seq._poll_sync_in(10)
+    assert seq.transport.playing
+    setup.sync_in.value = True
+
+
+def test_sync_sets_tempo_without_starting_when_not_allowed(seq):
+    import setup
+
+    seq.sync_starts_transport = False
+    setup.sync_in.value = True
+    seq._poll_sync_in(0)
+    setup.sync_in.value = False
+    seq._poll_sync_in(10)
+    assert not seq.transport.playing
+    assert seq.clock.source == "ext", "still latched for tempo and phase"
+    setup.sync_in.value = True
+
+
+def test_midi_start_starts_the_transport(seq):
+    from setup import midi_serial
+
+    midi_serial.post(circuitpython_stubs.Start())
+    seq.poll_midi_in()
+    assert seq.transport.playing
+    assert seq.clock.tick == 0
+
+
+def test_midi_stop_stops_the_transport(seq):
+    from setup import midi_serial
+
+    midi_serial.post(circuitpython_stubs.Start())
+    seq.poll_midi_in()
+    midi_serial.post(circuitpython_stubs.Stop())
+    seq.poll_midi_in()
+    assert not seq.transport.playing
+
+
+def test_midi_continue_does_not_reset_the_playhead(seq):
+    from setup import midi_serial
+
+    seq.clock.tick = 40
+    midi_serial.post(circuitpython_stubs.Continue())
+    seq.poll_midi_in()
+    assert seq.transport.playing
+    assert seq.clock.tick == 40
+
+
+def test_per_track_strength_reaches_the_engine(seq):
+    seq.set_strength(1.0)
+    seq.set_track_strength(2, 0.0)
+    assert seq.strength_for(2) == 0.0
+    assert seq.strength_for(3) == 1.0

@@ -234,3 +234,38 @@ def test_capture_then_schedule_round_trips(song):
         song.clear_all()
         song.set_step(0, step, 100, offset=offset)
         assert step_fires_at(song, 0, step, 0.0) == tick
+
+
+# --- per-track overrides --------------------------------------------------
+
+
+def test_a_track_override_beats_the_global_strength(song):
+    """One track can keep its feel while the rest are pulled to the grid."""
+    song.set_step(0, 4, 100, offset=2)
+    song.set_step(1, 4, 100, offset=2)
+    song.set_track_strength(1, 0.0)
+
+    on_grid = hits_due(song, 4 * 6, 1.0)
+    assert [t for t, _, _ in on_grid] == [0], "only the global track snaps"
+
+    late = hits_due(song, 4 * 6 + 2, 1.0)
+    assert [t for t, _, _ in late] == [1], "the override plays as performed"
+
+
+def test_an_override_of_full_strength_snaps_against_a_loose_global(song):
+    song.set_step(0, 4, 100, offset=2)
+    song.set_track_strength(0, 1.0)
+    assert hits_due(song, 4 * 6, 0.0) == [(0, 4, 100)]
+
+
+def test_overrides_do_not_drop_or_double_any_hit(song):
+    song.set_step(0, 0, 100, offset=-2)
+    song.set_step(1, 5, 100, offset=1)
+    song.set_track_strength(1, 0.0)
+    total = song.length * song.ticks_per_step
+    fired = {}
+    for tick in range(total):
+        for track, step, _ in hits_due(song, tick, 1.0):
+            fired[(track, step)] = fired.get((track, step), 0) + 1
+    assert sorted(fired) == [(0, 0), (1, 5)]
+    assert set(fired.values()) == {1}

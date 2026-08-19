@@ -1,0 +1,306 @@
+"""Tests for the sequencer singleton: the layer binding engine to hardware.
+
+These need the CircuitPython stubs, unlike the engine tests. The stub mixer
+enforces its voice count and the stub NeoPixel its length, so routing mistakes
+raise here the same way they would on the badge.
+"""
+
+import struct
+
+import pytest
+
+import sequencer as sequencer_module
+from engine.song import DEFAULT_VELOCITY, TRACK_COUNT
+from engine.transport import LIVE, SEQ
+from sequencer import AUDITION_VOICE, MIXER_VOICES, VOICES_PER_TRACK, Sequencer
+
+
+def write_wav(path, frames=64):
+    data = struct.pack("<%dh" % frames, *([0] * frames))
+    header = (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, 22050, 44100, 2, 16)
+        + b"data"
+        + struct.pack("<I", len(data))
+    )
+    path.write_bytes(header + data)
+    return str(path)
+
+
+@pytest.fixture
+def seq():
+    return Sequencer()
+
+
+@pytest.fixture
+def kit(tmp_path):
+    return [write_wav(tmp_path / ("t%d.wav" % t)) for t in range(TRACK_COUNT)]
+
+
+# --- audio path -----------------------------------------------------------
+
+
+def test_audio_is_allocated_once_at_import():
+    """The singleton owns the I2S output for the life of the program."""
+    assert sequencer_module.engine.audio is not None
+    assert sequencer_module.engine.mixer is not None
+
+
+def test_mixer_has_room_for_polyphonic_mode(seq):
+    """Built with headroom so the mode toggle never rebuilds it mid-pattern."""
+    assert len(seq.mixer.voice) == MIXER_VOICES
+    assert MIXER_VOICES >= TRACK_COUNT * VOICES_PER_TRACK + 2
+
+
+def test_mixer_matches_the_sample_format(seq):
+    assert seq.mixer.config["sample_rate"] == 22050
+    assert seq.mixer.config["channel_count"] == 1
+    assert seq.mixer.config["bits_per_sample"] == 16
+
+
+# --- kit loading ----------------------------------------------------------
+
+
+def test_loading_a_kit(seq, kit):
+    assert seq.load_kit(kit) == TRACK_COUNT
+    assert all(seq.has_sample(t) for t in range(TRACK_COUNT))
+
+
+def test_a_missing_sample_leaves_the_track_silent(seq):
+    assert seq.load_track(0, "/nope/missing.wav") is False
+    assert not seq.has_sample(0)
+
+
+def test_a_malformed_sample_leaves_the_track_silent(seq, tmp_path):
+    bad = tmp_path / "bad.wav"
+    bad.write_bytes(b"not a wav at all")
+    assert seq.load_track(0, str(bad)) is False
+    assert not seq.has_sample(0)
+
+
+def test_a_bad_sample_does_not_disturb_other_tracks(seq, kit):
+    seq.load_kit(kit)
+    seq.load_track(3, "/nope/missing.wav")
+    assert not seq.has_sample(3)
+    assert seq.has_sample(2) and seq.has_sample(4)
+
+
+def test_reloading_a_track_closes_the_old_file(seq, kit):
+    seq.load_track(0, kit[0])
+    first = seq._files[0]
+    seq.load_track(0, kit[1])
+    assert first.closed
+
+
+def test_triggering_a_silent_track_is_harmless(seq):
+    assert seq.trigger(0, 100) is False
+
+
+# --- voice routing --------------------------------------------------------
+
+
+def test_mono_mode_reuses_one_voice_per_track(seq, kit):
+    """A retrigger cuts its own previous hit, as a 909 does."""
+    seq.load_kit(kit)
+    seq.poly = False
+    assert seq._voice_for(0) == seq._voice_for(0) == 0
+    assert seq._voice_for(1) == VOICES_PER_TRACK
+
+
+def test_poly_mode_alternates_between_two_voices(seq, kit):
+    """The old hit decays instead of being cut, which removes the click."""
+    seq.load_kit(kit)
+    seq.poly = True
+    first = seq._voice_for(0)
+    second = seq._voice_for(0)
+    assert first != second
+    assert {first, second} == {0, 1}
+    assert seq._voice_for(0) == first, "should alternate back"
+
+
+def test_every_track_routes_inside_the_mixer(seq):
+    for poly in (False, True):
+        seq.poly = poly
+        for track in range(TRACK_COUNT):
+            for _ in range(3):
+                assert 0 <= seq._voice_for(track) < MIXER_VOICES
+
+
+def test_tracks_never_share_a_voice(seq):
+    seq.poly = True
+    seen = {}
+    for track in range(TRACK_COUNT):
+        for _ in range(2):
+            voice = seq._voice_for(track)
+            assert seen.get(voice, track) == track, "voice %d shared" % voice
+            seen[voice] = track
+
+
+def test_audition_does_not_use_a_track_voice(seq, kit):
+    assert AUDITION_VOICE >= TRACK_COUNT * VOICES_PER_TRACK
+    seq.audition(kit[0])
+    assert seq.mixer.voice[AUDITION_VOICE].playing
+
+
+def test_velocity_scales_the_voice_level(seq, kit):
+    seq.load_kit(kit)
+    seq.trigger(0, 127)
+    assert seq.mixer.voice[0].level == pytest.approx(1.0)
+    seq.trigger(0, 64)
+    assert seq.mixer.voice[0].level == pytest.approx(64 / 127.0, abs=0.01)
+
+
+# --- transport wiring -----------------------------------------------------
+
+
+def test_play_starts_the_clock(seq):
+    seq.toggle_play()
+    assert seq.transport.playing
+    assert seq.clock.running
+
+
+def test_stop_stops_the_clock(seq):
+    seq.toggle_play()
+    seq.toggle_play()
+    assert not seq.transport.playing
+    assert not seq.clock.running
+
+
+def test_starting_resets_the_playhead(seq):
+    seq.clock.tick = 40
+    seq.toggle_play()
+    assert seq.clock.tick == 0
+
+
+def test_a_pad_hit_punches_in_when_armed(seq, kit):
+    seq.load_kit(kit)
+    seq.toggle_record()
+    assert seq.pad_hit(0) is True
+    assert seq.transport.playing
+    assert seq.clock.running
+
+
+def test_a_punched_in_hit_is_recorded(seq, kit):
+    seq.load_kit(kit)
+    seq.toggle_record()
+    seq.pad_hit(3)
+    assert seq.song.is_on(3, 0)
+
+
+def test_a_pad_hit_sounds_even_when_not_recording(seq, kit):
+    seq.load_kit(kit)
+    seq.pad_hit(0)
+    assert seq.mixer.voice[0].playing
+
+
+def test_pads_do_not_record_in_seq_mode(seq, kit):
+    seq.load_kit(kit)
+    seq.toggle_play()
+    seq.toggle_record()
+    seq.mode = SEQ
+    seq.pad_hit(2)
+    assert seq.song.is_empty()
+
+
+# --- capture and erase ----------------------------------------------------
+
+
+def test_capture_writes_at_the_current_position(seq):
+    seq.clock.tick = 4 * seq.song.ticks_per_step
+    assert seq.capture(1) == 4
+    assert seq.song.velocity(1, 4) == DEFAULT_VELOCITY
+
+
+def test_erase_clears_at_the_current_position(seq):
+    seq.song.set_step(1, 4, 100)
+    seq.clock.tick = 4 * seq.song.ticks_per_step
+    seq.erase(1)
+    assert not seq.song.is_on(1, 4)
+
+
+def test_erase_leaves_other_steps_alone(seq):
+    seq.song.set_step(1, 4, 100)
+    seq.song.set_step(1, 5, 100)
+    seq.clock.tick = 4 * seq.song.ticks_per_step
+    seq.erase(1)
+    assert seq.song.is_on(1, 5)
+
+
+# --- playback -------------------------------------------------------------
+
+
+def test_a_step_sounds_when_its_tick_arrives(seq, kit):
+    seq.load_kit(kit)
+    seq.song.set_step(0, 0, 100)
+    seq.toggle_play()
+    seq._on_tick(0)
+    assert seq.mixer.voice[0].playing
+
+
+def test_a_muted_track_stays_silent(seq, kit):
+    seq.load_kit(kit)
+    seq.song.set_step(0, 0, 100)
+    seq.song.toggle_mute(0)
+    seq.toggle_play()
+    seq._on_tick(0)
+    assert not seq.mixer.voice[0].playing
+
+
+def test_current_step_follows_the_clock(seq):
+    seq.song.set_length(16)
+    seq.clock.tick = 6 * 5
+    assert seq.current_step == 5
+
+
+# --- MIDI out -------------------------------------------------------------
+
+
+def test_midi_out_is_off_by_default(seq, kit):
+    """The engine keeps running in MIDI mode, so it must not blurt by default."""
+    seq.load_kit(kit)
+    seq.trigger(0, 100)
+    assert seq.midi_out == [False] * TRACK_COUNT
+
+
+def test_enabling_midi_out_sends_a_note(seq, kit):
+    from setup import midi_serial
+
+    seq.load_kit(kit)
+    midi_serial.sent.clear()
+    seq.midi_out[0] = True
+    seq.trigger(0, 100)
+    assert len(midi_serial.sent) == 1
+
+
+# --- settings -------------------------------------------------------------
+
+
+def test_strength_is_clamped(seq):
+    assert seq.set_strength(-1) == 0.0
+    assert seq.set_strength(9) == 1.0
+
+
+def test_strength_nudges_by_a_step(seq):
+    seq.set_strength(0.5)
+    seq.nudge_strength(-1)
+    assert seq.strength < 0.5
+
+
+def test_mode_toggles(seq):
+    assert seq.mode == LIVE
+    assert seq.toggle_mode() == SEQ
+    assert seq.toggle_mode() == LIVE
+
+
+def test_track_selection_wraps(seq):
+    assert seq.select_track(TRACK_COUNT) == 0
+    assert seq.select_track(3) == 3
+
+
+def test_page_wraps_within_the_pattern(seq):
+    seq.song.set_length(16)  # two pages
+    assert seq.set_page(0) == 0
+    assert seq.set_page(1) == 1
+    assert seq.set_page(2) == 0

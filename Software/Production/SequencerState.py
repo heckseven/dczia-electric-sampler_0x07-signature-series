@@ -176,6 +176,12 @@ class SamplerMenuState(State):
         # Reset menu status
         self.highlight = 1
         self.shift = 0
+        if len(self.samples) == 0:
+            text = "No Samples Found"
+            text_area = label.Label(terminalio.FONT, text=text, x=2, y=15)
+            display.show(text_area)
+            time.sleep(0.5)
+            return None
         # Show valid files, select with encoder knob/button
         show_menu(self.samples, self.highlight, self.shift)
         while True:
@@ -355,7 +361,8 @@ class SamplerMenuState(State):
             machine.go_to_state("sequencer_play")
         if selection == "add_sequence":
             wav_file = self.select_wav()
-            file_sequences.add_sequence(wav_file)
+            if wav_file is not None:
+                file_sequences.add_sequence(wav_file)
             show_menu(self.menu_items, self.highlight, self.shift)
 
         if selection == "remove_sequence":

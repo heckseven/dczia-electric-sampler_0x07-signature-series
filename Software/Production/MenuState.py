@@ -49,7 +49,13 @@ class MenuState(State):
 
     def enter(self, machine):
         self.last_position = 0
-        self._last_draw = 0
+        # A real timestamp, not a zero sentinel. ticks_ms counts from an
+        # unspecified reference point, so zero is not "long ago" - it is a
+        # particular instant that may be more than half the tick period
+        # behind, at which point ticks_diff reports a negative age and the
+        # redraw below never becomes due. Entering draws the menu anyway, so
+        # now is both honest and correct.
+        self._last_draw = ticks_ms()
         self._dirty = False
         if machine.animation is None:
             machine.animation = Rainbow(neopixels, speed=0.1)

@@ -347,3 +347,31 @@ def test_scrolling_does_not_reattach_the_display():
         setup.display.show = real
     assert calls == [], "show_menu reattached the display"
     assert setup.display.shown is attached
+
+
+def test_the_menu_still_redraws_late_in_the_tick_period():
+    """ticks_ms counts from an unspecified point and wraps at 2**29.
+
+    A zero sentinel for "not drawn yet" is not neutral: once the counter is
+    more than half a period past it, the wrap-safe difference goes negative
+    and the redraw is never due again, so scrolling stops updating the
+    screen for as long as that state is on.
+    """
+    import utils
+
+    ticks = circuitpython_stubs.ticks
+    before = ticks.value
+    try:
+        ticks.value = (1 << 28) + 5000  # past half the tick period
+        machine = FakeMachine()
+        menu = MenuState()
+        menu.enter(machine)
+        utils._menu_screen.set_line(0, "stale")
+
+        setup.select_enc.position = 1
+        for _ in range(500):
+            menu.update(machine)
+
+        assert utils._menu_screen.line(0) != "stale", "menu never redrew"
+    finally:
+        ticks.value = before

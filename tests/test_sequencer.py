@@ -850,3 +850,59 @@ def test_a_failed_stream_does_not_leak_the_file_handle(seq, kit, monkeypatch):
     monkeypatch.setattr(sequencer_module, "WaveFile", out_of_memory)
     seq.load_kit(kit)
     assert all(handle is None for handle in seq._files)
+
+
+# --- the audio path failing underneath us ---------------------------------
+#
+# Observed on the badge: voice.play raised OSError(EIO) from inside the main
+# loop and ended the program mid-pattern. The badge is an instrument; one
+# hit that will not sound is recoverable, the instrument stopping is not.
+
+
+def _exploding_voice(seq, exc):
+    voice = seq.mixer.voice[0]
+
+    def boom(sample, **kwargs):
+        raise exc
+
+    voice.play = boom
+    return voice
+
+
+def test_a_failing_voice_does_not_stop_the_sequencer(seq, kit):
+    seq.load_kit(kit)
+    _exploding_voice(seq, OSError(5, "Input/output error"))
+    assert seq.trigger(0, 100) is False
+    assert seq.audio_errors == 1
+
+
+def test_a_failing_voice_is_recorded_for_diagnosis(seq, kit):
+    """A silent skip turns a hardware fault into mysteriously missing hits."""
+    seq.load_kit(kit)
+    _exploding_voice(seq, OSError(5, "Input/output error"))
+    seq.trigger(0, 100)
+    assert isinstance(seq.last_audio_error, OSError)
+
+
+def test_other_tracks_still_sound_after_one_fails(seq, kit):
+    seq.load_kit(kit)
+    _exploding_voice(seq, OSError(5, "boom"))
+    seq.trigger(0, 100)
+    assert seq.trigger(1, 100) is True
+
+
+def test_a_tick_survives_a_failing_voice(seq, kit):
+    """The failure arrived through tick(), so that is what must not raise."""
+    seq.load_kit(kit)
+    seq.song.set_step(0, 0, 100)
+    _exploding_voice(seq, OSError(5, "boom"))
+    seq.toggle_play()
+    for _ in range(50):
+        seq.tick()
+
+
+def test_a_working_voice_is_not_reported_as_an_error(seq, kit):
+    seq.load_kit(kit)
+    assert seq.trigger(0, 100) is True
+    assert seq.audio_errors == 0
+    assert seq.last_audio_error is None

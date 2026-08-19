@@ -221,6 +221,9 @@ class Sequencer:
         # makes every screen redraw pop; see STREAM_LINGER_MS.
         self._streaming = False
         self._last_sound = 0
+        # Counted rather than raised: see trigger().
+        self.audio_errors = 0
+        self.last_audio_error = None
 
         self._samples = [None] * TRACK_COUNT
         self._files = [None] * TRACK_COUNT
@@ -452,16 +455,34 @@ class Sequencer:
             self.stop_stream()
 
     def trigger(self, track, velocity):
-        """Sound one hit. Used by both the sequencer and live pads."""
+        """Sound one hit. Used by both the sequencer and live pads.
+
+        A hit that will not sound must not stop the sequencer. Observed on
+        the badge: `voice.play` raised OSError(EIO) from inside the main
+        loop, which ended the program and left the instrument dead in the
+        middle of a pattern. The audio path runs on peripherals - I2S, DMA,
+        and whatever the background tasks are doing to the same buses - so it
+        can fail underneath a call that looks like pure computation. Losing
+        one drum hit is recoverable; losing the badge is not.
+        """
         sample = self._samples[track]
         if sample is None:
             return False
-        # Starting here means the stream's own transient lands under a drum
-        # hit rather than in silence, where it would be obvious.
-        self.start_stream()
         voice = self.mixer.voice[self._voice_for(track)]
         voice.level = velocity / 127.0
-        voice.play(sample)
+        try:
+            # Starting here means the stream's own transient lands under a
+            # drum hit rather than in silence, where it would be obvious.
+            self.start_stream()
+            voice.play(sample)
+        except OSError as error:
+            self.audio_errors += 1
+            self.last_audio_error = error
+            # Say so once. A silent skip would turn a hardware fault into a
+            # pattern that quietly drops hits, which is far harder to chase.
+            if self.audio_errors == 1:
+                print("audio error on track %d: %r" % (track, error))
+            return False
         if self.midi_out[track]:
             self._send_midi(track, velocity)
         return True

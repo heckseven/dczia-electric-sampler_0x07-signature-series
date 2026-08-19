@@ -795,3 +795,58 @@ def test_loading_the_demo_pattern_does_not_start_the_stream(seq):
     seq.stop_stream()
     seq.load_demo_pattern()
     assert seq.streaming is False
+
+
+# --- a sample the badge cannot play ----------------------------------------
+#
+# The kit loads at import, so any exception that escapes a load handler fails
+# the badge at boot rather than skipping one bad file. CircuitPython's own WAV
+# parser runs inside WaveFile() and can raise things engine.wav never sees,
+# so the handlers have to cover more than engine.wav's own errors.
+
+
+def _forcing_streaming(monkeypatch):
+    """Push every sample down the streaming branch instead of the RAM one."""
+    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
+
+
+def test_a_sample_that_exhausts_ram_while_streaming_is_skipped(seq, kit, monkeypatch):
+    """MemoryError is neither OSError nor ValueError, so it needs naming."""
+    _forcing_streaming(monkeypatch)
+
+    def out_of_memory(file_obj, buffer=None):
+        raise MemoryError("no room")
+
+    monkeypatch.setattr(sequencer_module, "WaveFile", out_of_memory)
+    assert seq.load_kit(kit) == 0
+    assert not seq.has_sample(0)
+
+
+def test_a_bad_sample_does_not_take_the_whole_kit_down(seq, kit, monkeypatch):
+    """One unreadable file must cost one track, not the badge."""
+    _forcing_streaming(monkeypatch)
+    real = sequencer_module.WaveFile
+    calls = []
+
+    def sometimes(file_obj, buffer=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise MemoryError("no room")
+        return real(file_obj, buffer)
+
+    monkeypatch.setattr(sequencer_module, "WaveFile", sometimes)
+    assert seq.load_kit(kit) == TRACK_COUNT - 1
+    assert not seq.has_sample(0)
+    assert seq.has_sample(1)
+
+
+def test_a_failed_stream_does_not_leak_the_file_handle(seq, kit, monkeypatch):
+    """Handles are the scarce resource; a load that fails must return one."""
+    _forcing_streaming(monkeypatch)
+
+    def out_of_memory(file_obj, buffer=None):
+        raise MemoryError("no room")
+
+    monkeypatch.setattr(sequencer_module, "WaveFile", out_of_memory)
+    seq.load_kit(kit)
+    assert all(handle is None for handle in seq._files)

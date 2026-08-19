@@ -263,7 +263,11 @@ class Sequencer:
 
         try:
             rate, channels, bits, offset, size = wav.read_format(handle)
-        except (OSError, wav.WavError):
+        except (OSError, wav.WavError, MemoryError):
+            # MemoryError is caught deliberately. It is neither OSError nor
+            # WavError, so without this a corrupt header escapes to the main
+            # loop, and the default kit loads at import - which would fail the
+            # badge on every boot rather than merely silencing one track.
             handle.close()
             return False
 
@@ -288,7 +292,12 @@ class Sequencer:
             try:
                 handle.seek(0)
                 self._samples[track] = WaveFile(handle, bytearray(STREAM_BUFFER))
-            except (OSError, ValueError):
+            except (OSError, ValueError, MemoryError):
+                # MemoryError as well: read_format only checks the chunk
+                # headers it needs, so a file it accepts can still upset
+                # CircuitPython's own WAV parser here. This runs for every
+                # kit sample too big for RAM, and the kit loads at import,
+                # so an escape from this handler fails the badge at boot.
                 handle.close()
                 return False
             self._files[track] = handle
@@ -320,7 +329,10 @@ class Sequencer:
                 channel_count=CHANNELS,
                 sample_rate=SAMPLE_RATE,
             )
-        except (ValueError, MemoryError):
+        except (ValueError, MemoryError, TypeError):
+            # TypeError as well: cast("h") rejects a buffer whose length is not
+            # a multiple of two, and like MemoryError it is not caught by the
+            # handlers above, so it would reach the main loop.
             return None
         self._ram_used += size
         return sample
@@ -458,8 +470,14 @@ class Sequencer:
         """Preview a sample without disturbing any track."""
         try:
             handle = open(path, "rb")
-            sample = WaveFile(handle)
-        except (OSError, ValueError):
+        except OSError:
+            return False
+        try:
+            sample = WaveFile(handle, bytearray(STREAM_BUFFER))
+        except (OSError, ValueError, MemoryError):
+            # Close it here: a browser paging through a card full of bad files
+            # would otherwise leak a descriptor for every one of them.
+            handle.close()
             return False
         self.start_stream()
         voice = self.mixer.voice[AUDITION_VOICE]

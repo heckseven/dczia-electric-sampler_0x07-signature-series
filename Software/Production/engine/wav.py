@@ -21,6 +21,15 @@ pure logic and tested directly.
 
 import struct
 
+# A PCM fmt chunk is 16 bytes, 18 with an extension size, 40 for extensible.
+# The size field is read from the file, so it has to be bounded before it is
+# used to allocate: a corrupted or bit-flipped length is a 32-bit number, and
+# asking CircuitPython for hundreds of megabytes on a board with 264 KB raises
+# MemoryError, which is neither OSError nor WavError and so escapes every
+# handler up to the main loop. A corrupt sample in the default kit would then
+# fail the badge on every boot, since the kit loads at import.
+MAX_FMT_CHUNK = 64
+
 
 class WavError(ValueError):
     """The file is not a WAV this badge can play."""
@@ -46,6 +55,8 @@ def read_format(fileobj, max_scan=64):
         size = struct.unpack("<I", chunk[4:8])[0]
         offset += 8
         if chunk_id == b"fmt ":
+            if size > MAX_FMT_CHUNK:
+                raise WavError("implausible fmt chunk: %d bytes" % size)
             body = fileobj.read(size)
             if len(body) < 16:
                 raise WavError("truncated fmt chunk")
@@ -58,6 +69,12 @@ def read_format(fileobj, max_scan=64):
         elif chunk_id == b"data":
             if rate is None:
                 raise WavError("data before fmt")
+            if bits == 16 and size % 2:
+                # An odd byte count cannot be whole 16-bit frames. Rejecting it
+                # here keeps the caller's memoryview cast from raising
+                # TypeError, which is neither OSError nor WavError and would
+                # escape to the main loop.
+                raise WavError("odd data length for 16-bit audio: %d" % size)
             return rate, channels, bits, offset, size
         else:
             fileobj.seek(offset + size)

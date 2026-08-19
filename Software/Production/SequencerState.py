@@ -486,11 +486,6 @@ class SequencerPlayState(State):
         if current_midi[0] is True:
             send_note_off(note)
 
-    def play_voices(self):
-        for index, item in enumerate(self.sampler_voices):
-            self.mixer.voice[index].level = self.volume  # * sample volume
-            self.mixer.voice[index].play(item)
-
     def stop_voices(self):
         for index, item in enumerate(self.sampler_voices):
             self.mixer.voice[index].stop()

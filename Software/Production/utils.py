@@ -1,6 +1,4 @@
-import displayio
-import terminalio
-from adafruit_display_text import label
+import screen
 
 from setup import (
     display,
@@ -37,64 +35,30 @@ def selector_calcs(menu, highlight, shift, last_position, position):
     return (highlight, shift)
 
 
+# One screen reused across calls. Rebuilding the scene graph time would
+# resend the whole display, which pops the amplifier; see screen.py.
+_menu_screen = None
+
+
 def show_menu(menu, highlight, shift):
-    """Shows the menu on the screen"""
+    """Shows the menu on the screen.
 
-    display_group = displayio.Group()
-    # bring in the global variables
-
-    # menu variables
-    line = 1
-    line_height = 10
-    offset = 5
+    Drawn as three independent lines with a ">" cursor rather than a filled
+    highlight bar. The bar was a 128x10 block switching on and off with every
+    scroll step, which is the largest possible change on this panel and the
+    noisiest thing the display can do to the audio.
+    """
+    global _menu_screen
     total_lines = 3
+    if _menu_screen is None:
+        _menu_screen = screen.TextScreen(lines=total_lines)
+        _menu_screen.attach(display)
 
-    color_bitmap = displayio.Bitmap(display.width, line_height, 1)
-    color_palette = displayio.Palette(1)
-    color_palette[0] = 0xFFFFFF  # White
-
-    # Shift the list of files so that it shows on the display
-    short_list = []
-    for index in range(shift, shift + total_lines):
+    for line in range(total_lines):
+        index = shift + line
         try:
-            short_list.append(menu[index]["pretty"])
+            pretty = menu[index]["pretty"]
         except IndexError:
-            pass
-            # Supressing this because it can show up just with short lists
-            # print("show_menu: Bad Index")
-    for item in short_list:
-        if highlight == line:
-            white_rectangle = displayio.TileGrid(
-                color_bitmap,
-                pixel_shader=color_palette,
-                x=0,
-                y=((line - 1) * line_height),
-            )
-            display_group.append(white_rectangle)
-            text_arrow = ">"
-            text_arrow = label.Label(
-                terminalio.FONT,
-                text=text_arrow,
-                color=0x000000,
-                x=0,
-                y=((line - 1) * line_height) + offset,
-            )
-            display_group.append(text_arrow)
-            text_item = label.Label(
-                terminalio.FONT,
-                text=item,
-                color=0x000000,
-                x=10,
-                y=((line - 1) * line_height) + offset,
-            )
-            display_group.append(text_item)
-        else:
-            text_item = label.Label(
-                terminalio.FONT,
-                text=item,
-                x=10,
-                y=((line - 1) * line_height) + offset,
-            )
-            display_group.append(text_item)
-        line += 1
-    display.show(display_group)
+            pretty = ""
+        cursor = ">" if pretty and highlight == line + 1 else " "
+        _menu_screen.set_line(line, "%s%s" % (cursor, pretty))

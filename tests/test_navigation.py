@@ -250,3 +250,43 @@ def test_startup_clears_the_strip_on_entry():
     setup.neopixels.fill((9, 9, 9))
     StartupState().enter(machine)
     assert setup.neopixels[0] == (0, 0, 0)
+
+
+# --- the menu draws without a full-width highlight bar --------------------
+
+
+def test_the_menu_marks_the_selection_with_a_cursor(setup_menu=None):
+    """A filled highlight bar is a 128x10 block switching on every scroll step.
+
+    That is the largest change this panel can make and the noisiest thing the
+    display can do to the audio, so the selection is marked with a character.
+    """
+    import utils
+
+    utils._menu_screen = None
+    items = [{"pretty": "alpha"}, {"pretty": "beta"}, {"pretty": "gamma"}]
+    utils.show_menu(items, 2, 0)
+    lines = [utils._menu_screen.line(i) for i in range(3)]
+    assert lines[1].startswith(">"), lines
+    assert lines[0].startswith(" ") and lines[2].startswith(" "), lines
+
+
+def test_the_menu_reuses_one_screen_across_calls():
+    """Rebuilding the scene graph each call would resend the whole display."""
+    import utils
+
+    utils._menu_screen = None
+    items = [{"pretty": "alpha"}, {"pretty": "beta"}]
+    utils.show_menu(items, 1, 0)
+    first = utils._menu_screen
+    utils.show_menu(items, 2, 0)
+    assert utils._menu_screen is first
+
+
+def test_the_menu_blanks_lines_past_the_end_of_a_short_list():
+    import utils
+
+    utils._menu_screen = None
+    utils.show_menu([{"pretty": "only"}], 1, 0)
+    assert utils._menu_screen.line(1) == " "
+    assert utils._menu_screen.line(2) == " "

@@ -11,9 +11,7 @@ redrawing on every pass would spend almost all of the badge's time pushing
 identical pixels and would drag the sequencer with it.
 """
 
-import terminalio
-from adafruit_display_text import label
-
+import screen as screen_module
 from engine import view
 from engine.controls import (
     ARM_RECORD,
@@ -32,7 +30,7 @@ from engine.controls import (
 from engine.song import MAX_VELOCITY, MIN_VELOCITY
 from engine.transport import SEQ
 from sequencer import engine as sequencer
-from setup import display, keys, neopixels, select_enc, volume_enc
+from setup import display, keys, neopixels, select_enc, volume_enc  # noqa: F401
 from State import State
 from utils import neoindex
 
@@ -72,6 +70,10 @@ class SamplerState(State):
         self._passes = 0
         self._shown = None
         self._last_pixels = None
+        # One label per line. A single label spanning the screen would make
+        # every change a full-screen resend, which is audible; see screen.py.
+        self._screen = screen_module.TextScreen(lines=3)
+        self._attached = False
         State.__init__(self)
 
     # --- lifecycle --------------------------------------------------------
@@ -84,11 +86,14 @@ class SamplerState(State):
         self._shown = None
         self._last_pixels = None
         self._edited = set()
+        self._screen.attach(display)
+        self._attached = True
         self._render(force=True)
         State.enter(self, machine)
 
     def exit(self, machine):
         # The beat keeps playing; only the display and pads stop being ours.
+        self._attached = False
         State.exit(self, machine)
 
     # --- input ------------------------------------------------------------
@@ -263,8 +268,6 @@ class SamplerState(State):
         # frames pop the amplifier. The playhead lives on the pad LEDs
         # instead, which cost about 2 ms and are electrically quiet.
         bottom = view.step_row(song, sequencer.selected_track, sequencer.page)
-        text = "%s\n%s\n%s" % (top, middle, bottom)
-        if text == self._shown:
-            return
-        self._shown = text
-        display.show(label.Label(terminalio.FONT, text=text, x=2, y=6))
+        # Set each line separately: only lines that differ are resent.
+        self._screen.set_lines((top, middle, bottom))
+        self._shown = "%s\n%s\n%s" % (top, middle, bottom)

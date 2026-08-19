@@ -14,60 +14,22 @@ input was dropped and the display could not be touched during playback.
 import microcontroller
 from watchdog import WatchDogMode
 
-from FlashyState import FlashyState
-from HIDState import HIDState
-from MenuState import MenuState
-from MIDIState import MIDIState
-from SamplerState import SamplerState
 from sequencer import engine
-from StartupState import StartupState
+from statemachine import StateMachine
 
-
-class StateMachine(object):
-    def __init__(self):
-        self.state = None
-        self.states = {}
-        self.animation = None
-        self.last_state = None
-
-    def add_state(self, state):
-        self.states[state.name] = state
-
-    def go_to_state(self, state_name):
-        if self.state:
-            self.state.exit(self)
-            self.last_state = self.state.name
-        self.state = self.states[state_name]
-        self.state.enter(self)
-
-    def update(self):
-        if self.state:
-            self.state.update(self)
-
-
-# The badge has hung with the CPU parked inside a peripheral driver, where
-# a KeyboardInterrupt cannot reach it: still powered, still enumerated, but
-# frozen on whatever was last drawn, and only unplugging it would help. The
-# reset button is not reachable when the badge is mounted in a rack, so the
-# only honest recovery is for the badge to notice and restart itself.
-#
-# The timeout is generous on purpose. The main loop turns over thousands of
-# times a second and the longest thing it does deliberately - drawing a line
-# of text - is measured in tens of milliseconds, so two seconds is a hundred
-# times the worst legitimate pass and cannot fire on a slow one.
+# Generous on purpose: the loop turns over thousands of times a second and the
+# longest thing it does deliberately, drawing a line of text, is measured in
+# tens of milliseconds. The badge has hung with the CPU inside a peripheral
+# driver where a KeyboardInterrupt cannot reach it, and the reset button is
+# not reachable when the badge is mounted, so restarting itself is the only
+# recovery the player has.
 WATCHDOG_TIMEOUT = 2.0
 
 machine = StateMachine()
-machine.add_state(StartupState())
-machine.add_state(FlashyState())
-machine.add_state(MIDIState())
-machine.add_state(HIDState())
-machine.add_state(MenuState())
-machine.add_state(SamplerState())
 machine.go_to_state("startup")
 
-# Started after setup and the first state are done: loading a kit reads the
-# card, which is legitimately slower than anything the loop does later.
+# Armed after the kit has loaded: reading the card is legitimately slower than
+# anything the loop does later.
 watchdog = microcontroller.watchdog
 watchdog.timeout = WATCHDOG_TIMEOUT
 watchdog.mode = WatchDogMode.RESET

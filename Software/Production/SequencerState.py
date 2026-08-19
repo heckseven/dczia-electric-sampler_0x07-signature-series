@@ -184,6 +184,7 @@ class SamplerMenuState(State):
         self.highlight = 1
         self.shift = 0
         # Show valid files, select with encoder knob/button
+        show_menu(self.samples, self.highlight, self.shift)
         while True:
             if self.last_position != select_enc.position:
                 (self.highlight, self.shift) = selector_calcs(
@@ -194,7 +195,7 @@ class SamplerMenuState(State):
                     select_enc.position,
                 )
                 self.last_position = select_enc.position
-            show_menu(self.samples, self.highlight, self.shift)
+                show_menu(self.samples, self.highlight, self.shift)
             key_event = keys.events.get()
             if key_event and key_event.pressed:
                 selection = self.samples[self.highlight - 1 + self.shift]["name"]
@@ -212,6 +213,7 @@ class SamplerMenuState(State):
         for index, seq in enumerate(sequence_array):
             seq_select.append({"name": f"{index}", "pretty": f"{index}: {seq}"})
 
+        show_menu(seq_select, self.highlight, self.shift)
         while True:
             if self.last_position != select_enc.position:
                 (self.highlight, self.shift) = selector_calcs(
@@ -222,7 +224,7 @@ class SamplerMenuState(State):
                     select_enc.position,
                 )
                 self.last_position = select_enc.position
-            show_menu(seq_select, self.highlight, self.shift)
+                show_menu(seq_select, self.highlight, self.shift)
             key_event = keys.events.get()
             if key_event and key_event.pressed:
 
@@ -237,10 +239,10 @@ class SamplerMenuState(State):
         vel_change = False
         select_position = select_enc.position
         # Display current value
+        text = f"Step {key_val}: {value[key_val][1]:.2f}"
+        text_area = label.Label(terminalio.FONT, text=text, x=2, y=5)
+        display.show(text_area)
         while selection:
-            text = f"Step {key_val}: {value[key_val][1]:.2f}"
-            text_area = label.Label(terminalio.FONT, text=text, x=2, y=5)
-            display.show(text_area)
             key_event = keys.events.get()
 
             # Modify value on encoder input
@@ -258,6 +260,9 @@ class SamplerMenuState(State):
                         value[key_val][1] = max_val
                 select_position = select_enc.position
                 vel_change = True
+                text = f"Step {key_val}: {value[key_val][1]:.2f}"
+                text_area = label.Label(terminalio.FONT, text=text, x=2, y=5)
+                display.show(text_area)
 
             # Exit selection menu if key released
             if key_event and key_event.released:

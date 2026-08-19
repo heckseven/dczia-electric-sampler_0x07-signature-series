@@ -381,13 +381,34 @@ class SequencerPlayState(State):
     volume = 0.2
     step = 0
     sequencer_mode = "sampler"
-    sampler_files = []
-    sampler_voices = []
     bpm = 300
+
+    def __init__(self):
+        self.audio = None
+        self.mixer = None
+        self.sampler_files = []
+        self.sampler_voices = []
+        State.__init__(self)
 
     @property
     def name(self):
         return "sequencer_play"
+
+    def release_audio(self):
+        """Release the I2S output and any sample files from a previous run."""
+        try:
+            self.audio.deinit()
+        except AttributeError:
+            pass
+        self.audio = None
+        self.mixer = None
+        for sample_file in self.sampler_files:
+            try:
+                sample_file.close()
+            except OSError:
+                pass
+        self.sampler_files = []
+        self.sampler_voices = []
 
     def enter(self, machine):
         # Clear key states
@@ -408,7 +429,8 @@ class SequencerPlayState(State):
         # Sampler sequence setup
         elif machine.last_state == "sampler_menu":
             self.sequencer_mode = "sampler"
-            # Setup audio
+            # Setup audio, releasing anything still held from a previous visit
+            self.release_audio()
             self.audio = audiobusio.I2SOut(board.GP0, board.GP1, board.GP2)
             num_voices = 10
             self.mixer = audiomixer.Mixer(
@@ -430,6 +452,7 @@ class SequencerPlayState(State):
         State.enter(self, machine)
 
     def exit(self, machine):
+        self.release_audio()
         neopixels.fill((255, 0, 0))
         self.color = (0, 0, 0)
         State.exit(self, machine)
@@ -517,10 +540,6 @@ class SequencerPlayState(State):
         if key_event and key_event.pressed:
             # Return to sequencer menu if select pressed
             if key_event.key_number == 10:
-                try:
-                    self.audio.deinit()
-                except:
-                    pass
                 keys.events.clear()
                 if self.sequencer_mode == "midi":
                     state_machine.go_to_state("sequencer_menu")

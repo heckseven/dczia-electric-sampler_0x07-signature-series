@@ -17,9 +17,13 @@ from adafruit_display_text import label
 
 # OLED Screen ( display )
 displayio.release_displays()
-# 400 kHz fast mode: a full 128x32 frame is 512 bytes plus overhead, so
-# the default 100 kHz makes every display.show() cost roughly 50 ms.
-i2c = busio.I2C(board.GP15, board.GP14, frequency=400_000)
+# A full 128x32 frame is 512 bytes plus overhead, so the CircuitPython
+# default of 100 kHz makes every frame cost roughly 50 ms.
+# 1 MHz rather than the SSD1306 datasheet's 400 kHz maximum: the panel on
+# this badge runs it without flicker or corruption, and it takes the worst
+# stall while scrolling during playback from 26 ms to 21 ms against an audio
+# buffer that holds 32 ms. Revert to 400_000 if a panel ever misbehaves.
+i2c = busio.I2C(board.GP15, board.GP14, frequency=1_000_000)
 display_bus = displayio.I2CDisplay(i2c, device_address=0x3C)
 display = adafruit_displayio_ssd1306.SSD1306(display_bus, width=128, height=32)
 

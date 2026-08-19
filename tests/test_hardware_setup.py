@@ -8,9 +8,16 @@ each global label there maps to the Pico pad the firmware must drive.
 import setup
 
 
-def test_display_i2c_runs_at_fast_mode():
-    """100 kHz makes every full-frame redraw cost roughly 50 ms."""
-    assert setup.i2c.frequency == 400_000
+def test_display_i2c_runs_faster_than_the_default():
+    """Every frame competes with the audio, which has 32 ms of buffer.
+
+    The CircuitPython default of 100 kHz makes a full frame cost about
+    50 ms on its own. Measured on the badge, 1 MHz takes the worst stall
+    while scrolling during playback from 26 ms to 21 ms. That is above the
+    SSD1306 datasheet maximum of 400 kHz and was verified by eye on this
+    panel, so the floor is what this asserts, not the exact number.
+    """
+    assert setup.i2c.frequency >= 400_000
 
 
 def test_display_i2c_uses_the_schematic_pins():

@@ -243,7 +243,7 @@ class SamplerMenuState(State):
             key_event = keys.events.get()
 
             # Modify value on encoder input
-            if select_position is not select_enc.position:
+            if select_position != select_enc.position:
                 if select_enc.position < select_position:
                     if value[key_val][1] > min_val + increment:
                         value[key_val][1] = value[key_val][1] - increment
@@ -489,7 +489,7 @@ class SequencerPlayState(State):
 
     def adjust_bpm(self):
         # Adjust bpm if select_enc state changes
-        if self.select_position is not select_enc.position:
+        if self.select_position != select_enc.position:
             diff = abs(select_enc.position - self.select_position)
             if select_enc.position < self.select_position:
                 if self.bpm >= (20 + diff):
@@ -512,7 +512,7 @@ class SequencerPlayState(State):
         while self.audio.playing:
             pass
         # Adjust volume if volume_enc state changes
-        if self.volume_position is not volume_enc.position:
+        if self.volume_position != volume_enc.position:
             if volume_enc.position < self.volume_position:
                 if self.volume >= 0.05:
                     self.volume = self.volume - 0.05

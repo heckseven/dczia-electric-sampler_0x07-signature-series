@@ -212,11 +212,15 @@ class Label:
 
 
 class WaveFile:
-    def __init__(self, file_obj):
+    def __init__(self, file_obj, buffer=None):
+        if buffer is not None and not (8 <= len(buffer) <= 1024):
+            # CircuitPython enforces this range; exceeding it is a ValueError.
+            raise ValueError("buffer length must be 8-1024")
         header = file_obj.read(12)
         if header[:4] != b"RIFF" or header[8:12] != b"WAVE":
             raise ValueError("not a RIFF/WAVE file")
         self.file = file_obj
+        self.buffer = buffer
 
 
 class RawSample:

@@ -85,3 +85,20 @@ def test_the_midi_uart_does_not_block():
     and dropped the sequencer to about a seventh of its tempo.
     """
     assert setup.midi_uart.timeout == 0
+
+
+def test_the_sd_clock_is_negotiated_fastest_first():
+    """Streaming capacity is set by the SD clock, and cards differ.
+
+    Measured on this board: 8 MHz gives 292 KB/s in 1 KB reads and 24 MHz
+    gives 333 KB/s, against 43.1 KB/s needed per playing voice. The fastest
+    is tried first with slower ones as fallback, so a card that cannot cope
+    still mounts rather than failing outright.
+    """
+    assert setup.SD_BAUDRATES[0] > setup.SD_BAUDRATES[-1]
+    assert setup.SD_BAUDRATES[-1] <= 8_000_000
+
+
+def test_a_card_that_will_not_mount_is_not_fatal():
+    """No card is a normal state; the badge runs from flash."""
+    assert setup.sdcard is None or setup.sd_baudrate in setup.SD_BAUDRATES

@@ -57,6 +57,13 @@ BITS = 16
 RAM_BUDGET = 48 * 1024
 MAX_RAM_SAMPLE = 24 * 1024
 
+# Read buffer for tracks that are too big for RAM and must stream. CircuitPython
+# caps WaveFile's buffer at 1024 bytes - larger raises "buffer length must be
+# 8-1024" - and the cap costs real throughput: the card sustains 679 KB/s in
+# 4 KB reads but only 333 KB/s in 1 KB ones. 1024 is therefore simply the most
+# the runtime allows, and streaming capacity is set by that, not by the card.
+STREAM_BUFFER = 1024
+
 # Two voices per track plus two spare. Mono per track is the default, but
 # voices are nearly free - 24 of them measured at about 1.1KB against 141KB
 # free - so the mixer is built with room for the polyphonic mode from the
@@ -204,7 +211,7 @@ class Sequencer:
         else:
             try:
                 handle.seek(0)
-                self._samples[track] = WaveFile(handle)
+                self._samples[track] = WaveFile(handle, bytearray(STREAM_BUFFER))
             except (OSError, ValueError):
                 handle.close()
                 return False

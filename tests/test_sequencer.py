@@ -571,3 +571,17 @@ def test_sync_input_is_still_polled_every_pass(seq, monkeypatch):
     for _ in range(6):
         seq.tick()
     assert len(polls) == 6
+
+
+def test_streamed_tracks_use_the_largest_allowed_buffer(seq, tmp_path):
+    """CircuitPython caps WaveFile's buffer at 1024 bytes.
+
+    That cap is what limits streaming: the card sustains 679 KB/s in 4 KB
+    reads but only 333 KB/s in 1 KB ones. Asking for more raises ValueError,
+    so this pins the value at the maximum the runtime permits.
+    """
+    assert sequencer_module.STREAM_BUFFER == 1024
+    path = write_wav_sized(tmp_path / "big3.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
+    assert seq.load_track(0, path) is True
+    assert seq.is_streamed(0) is True
+    assert len(seq._samples[0].buffer) == sequencer_module.STREAM_BUFFER

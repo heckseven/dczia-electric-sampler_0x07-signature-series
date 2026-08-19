@@ -84,15 +84,44 @@ midi_usb = adafruit_midi.MIDI(
 # faster than the pure-Python adafruit_sdcard and costs nothing on a volume
 # with very little room left. Dropping adafruit_sdcard also drops
 # adafruit_bus_device, which existed only to support it.
-try:
-    # busio.SPI(clock:, MOSI: , MISO:)
-    spi = busio.SPI(board.GP10, board.GP11, board.GP12)
-    # sdcardio takes the chip-select Pin itself and drives it, unlike
-    # adafruit_sdcard which expected a DigitalInOut wrapped around it.
-    sdcard = sdcardio.SDCard(spi, board.GP13)
-    vfs = storage.VfsFat(sdcard)
-    storage.mount(vfs, "/sd")
-except:
+#
+# The clock matters a great deal for streaming samples. Measured on this board
+# reading a real file, in KB/s:
+#
+#                    512 byte reads   1024 byte reads
+#      8 MHz              184              292
+#     24 MHz              207              333
+#
+# and audio needs 43.1 KB/s per voice at 22050. Cards vary in what they will
+# accept, so the fastest clock is tried first and slower ones after, rather
+# than assuming any particular card copes.
+SD_BAUDRATES = (24_000_000, 16_000_000, 8_000_000)
+
+spi = busio.SPI(board.GP10, board.GP11, board.GP12)
+sdcard = None
+sd_baudrate = None
+sd_error = None
+for _baudrate in SD_BAUDRATES:
+    try:
+        # sdcardio takes the chip-select Pin itself and drives it, unlike
+        # adafruit_sdcard which expected a DigitalInOut wrapped around it.
+        sdcard = sdcardio.SDCard(spi, board.GP13, baudrate=_baudrate)
+        vfs = storage.VfsFat(sdcard)
+        storage.mount(vfs, "/sd")
+        sd_baudrate = _baudrate
+        break
+    except OSError as error:
+        sd_error = error
+        if sdcard is not None:
+            try:
+                sdcard.deinit()
+            except OSError:
+                pass
+            sdcard = None
+
+if sdcard is None:
+    # No card, or none this board can talk to. Everything else still works;
+    # samples simply come from flash.
     text = "No SD Card Found!"
     text_area = label.Label(terminalio.FONT, text=text, color=0xFFFF00, x=2, y=15)
     display.show(text_area)

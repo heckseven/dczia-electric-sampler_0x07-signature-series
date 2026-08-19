@@ -265,11 +265,6 @@ class SamplerMenuState(State):
                         value[key_val][0] = not value[key_val][0]
                     selection = False
 
-    def add_sequence(self, fsequences):
-        wav_file = self.select_wav()
-        file_sequences.files.append(wav_file)
-        file_sequences.add_sequence()
-
     def edit_sequence(self, fsequences):
         # Check if sequences exist
         if len(file_sequences.files) == 0:

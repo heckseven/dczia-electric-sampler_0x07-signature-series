@@ -397,10 +397,8 @@ class SequencerPlayState(State):
 
     def release_audio(self):
         """Release the I2S output and any sample files from a previous run."""
-        try:
+        if self.audio is not None:
             self.audio.deinit()
-        except AttributeError:
-            pass
         self.audio = None
         self.mixer = None
         for sample_file in self.sampler_files:
@@ -432,7 +430,9 @@ class SequencerPlayState(State):
         # Sampler sequence setup
         elif machine.last_state == "sampler_menu":
             self.sequencer_mode = "sampler"
-            # Setup audio, releasing anything still held from a previous visit
+            # Setup audio. exit() already releases everything on the way
+            # out, so this is defensive against a future path reaching
+            # enter() without a matching exit().
             self.release_audio()
             self.audio = audiobusio.I2SOut(board.GP0, board.GP1, board.GP2)
             num_voices = 10

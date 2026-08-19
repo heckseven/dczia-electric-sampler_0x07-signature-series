@@ -46,7 +46,7 @@ _menu_screen = None
 def _ensure_menu_screen(lines=MENU_LINES):
     global _menu_screen
     if _menu_screen is None:
-        _menu_screen = screen.TextScreen(lines=lines)
+        _menu_screen = screen.TextScreen(display, lines=lines)
     return _menu_screen
 
 
@@ -62,17 +62,22 @@ def attach_menu():
     per-line drawing exists to avoid.
     """
     menu_screen = _ensure_menu_screen()
-    menu_screen.attach(display)
+    menu_screen.attach()
+    # Deliberately not drawn here. Callers set their own text immediately
+    # after this and flush it themselves; drawing now would only push the
+    # previous state's text to the panel for one frame.
     return menu_screen
 
 
 def show_menu(menu, highlight, shift):
-    """Shows the menu on the screen.
+    """Set the menu text. Returns the screen, which the caller flushes.
 
-    Drawn as three independent lines with a ">" cursor rather than a filled
-    highlight bar. The bar was a 128x10 block switching on and off with every
-    scroll step, which is the largest possible change on this panel and the
-    noisiest thing the display can do to the audio.
+    Drawn as lines of text with a ">" cursor rather than a filled highlight
+    bar. The bar was a 128x10 block switching on and off with every scroll
+    step, which is the largest possible change this panel can make.
+
+    Nothing is pushed to the display here. Scrolling competes with the audio,
+    so drawing is paced by the caller's flush; see screen.py.
     """
     menu_screen = _ensure_menu_screen()
 
@@ -84,3 +89,4 @@ def show_menu(menu, highlight, shift):
             pretty = ""
         cursor = ">" if pretty and highlight == line + 1 else " "
         menu_screen.set_line(line, "%s%s" % (cursor, pretty))
+    return menu_screen

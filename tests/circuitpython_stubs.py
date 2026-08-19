@@ -174,16 +174,64 @@ class Bitmap:
 class Palette:
     def __init__(self, count):
         self._colors = [0] * count
+        self.transparent = set()
 
     def __setitem__(self, index, value):
         self._colors[index] = value
 
+    def __getitem__(self, index):
+        return self._colors[index]
+
+    def make_transparent(self, index):
+        self.transparent.add(index)
+
+    def make_opaque(self, index):
+        self.transparent.discard(index)
+
 
 class TileGrid:
-    def __init__(self, bitmap, pixel_shader=None, x=0, y=0):
+    """Models the parts of displayio.TileGrid the firmware relies on.
+
+    Indexing is by (column, row) and out-of-range raises, as it does on the
+    badge; a screen that miscalculates its geometry then fails in a test
+    rather than silently drawing off the panel.
+    """
+
+    def __init__(
+        self,
+        bitmap,
+        pixel_shader=None,
+        width=1,
+        height=1,
+        tile_width=None,
+        tile_height=None,
+        x=0,
+        y=0,
+    ):
         self.bitmap = bitmap
+        self.pixel_shader = pixel_shader
+        self.width = width
+        self.height = height
+        self.tile_width = tile_width
+        self.tile_height = tile_height
         self.x = x
         self.y = y
+        self.tiles = {}
+        self.writes = 0
+
+    def _check(self, key):
+        column, row = key
+        if not (0 <= column < self.width) or not (0 <= row < self.height):
+            raise IndexError("tile index out of range: %r" % (key,))
+
+    def __setitem__(self, key, value):
+        self._check(key)
+        self.tiles[key] = value
+        self.writes += 1
+
+    def __getitem__(self, key):
+        self._check(key)
+        return self.tiles.get(key, 0)
 
 
 class I2CDisplay:
@@ -200,6 +248,49 @@ class SSD1306:
 
     def show(self, group):
         self.shown = group
+        self.root_group = group
+
+    def refresh(self, **kwargs):
+        return True
+
+
+class Glyph:
+    def __init__(self, tile_index):
+        self.tile_index = tile_index
+
+
+class BuiltinFont:
+    """Stands in for terminalio.FONT.
+
+    The real builtin font is a strip of glyphs addressed by tile index, with
+    the printable ASCII range starting at 0x20. Measured on the badge its
+    bounding box is 6x12 and "A" resolves to tile 33, which is what this
+    reproduces - the screen derives all its geometry from these two calls, so
+    getting them wrong here would hide a real layout bug.
+    """
+
+    FIRST = 0x20
+    LAST = 0x7E
+
+    def __init__(self, width=6, height=12, tile_offset=0):
+        self._width = width
+        self._height = height
+        # Not every font puts its space glyph at tile zero. The builtin one
+        # does, which quietly hides code that assumes an untouched tile is
+        # blank, so the offset exists to let a test say otherwise.
+        self.tile_offset = tile_offset
+        self.bitmap = Bitmap(width * (self.LAST - self.FIRST + 1), height, 2)
+
+    def get_bounding_box(self):
+        return (self._width, self._height)
+
+    def get_glyph(self, codepoint):
+        if self.FIRST <= codepoint <= self.LAST:
+            return Glyph(codepoint - self.FIRST + self.tile_offset)
+        return None
+
+
+FONT = BuiltinFont()
 
 
 class Label:
@@ -495,7 +586,7 @@ def install():
             Palette=Palette,
             TileGrid=TileGrid,
         ),
-        "terminalio": _module("terminalio", FONT=object()),
+        "terminalio": _module("terminalio", FONT=FONT),
         "storage": _module(
             "storage",
             VfsFat=VfsFat,

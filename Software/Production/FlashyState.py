@@ -4,7 +4,7 @@ from adafruit_led_animation.animation.rainbowchase import RainbowChase
 from adafruit_led_animation.animation.rainbowcomet import RainbowComet
 from adafruit_led_animation.animation.rainbowsparkle import RainbowSparkle
 from adafruit_led_animation.animation.sparklepulse import SparklePulse
-from utils import show_menu
+from utils import attach_menu, show_menu
 from setup import (
     keys,
     neopixels,
@@ -49,7 +49,11 @@ class FlashyState(State):
     def enter(self, machine):
         self.last_position = 0
         select_enc.position = 0
+        # Take the display back from whatever state had it, then draw at
+        # once: show_menu only records the text, it does not draw.
+        self._screen = attach_menu()
         show_menu(self.menu_items, self.highlight, self.shift)
+        self._screen.flush_all()
         State.enter(self, machine)
 
     def exit(self, machine):
@@ -78,6 +82,7 @@ class FlashyState(State):
             self.animation_selector(machine, selection)
         if machine.animation:
             machine.animation.animate()
+        self._screen.flush()
         self.last_position = position
         key = keys.events.get()
         if key and key.pressed:

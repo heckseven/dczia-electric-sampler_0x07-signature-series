@@ -82,7 +82,7 @@ class SamplerState(State):
         self._pixels_dirty = True
         # One label per line. A single label spanning the screen would make
         # every change a full-screen resend, which is audible; see screen.py.
-        self._screen = screen_module.TextScreen(lines=3)
+        self._screen = screen_module.TextScreen(display, lines=3)
         self._attached = False
         State.__init__(self)
 
@@ -98,9 +98,12 @@ class SamplerState(State):
         self._last_blink = None
         self._pixels_dirty = True
         self._edited = set()
-        self._screen.attach(display)
+        self._screen.attach()
         self._attached = True
         self._render(force=True)
+        # After rendering, so there is something to draw: entering should show
+        # the whole screen rather than reveal it a line per pass.
+        self._screen.flush_all()
         State.enter(self, machine)
 
     def exit(self, machine):
@@ -260,7 +263,11 @@ class SamplerState(State):
             self._last_blink = blink
             self._pixels_dirty = False
         if force or self._passes % REDRAW_EVERY == 0:
+            # Only rebuilds the strings; drawing is the line below.
             self._render_display()
+        # One changed line per pass at most, so the audio buffer always has
+        # room to refill between them. See screen.py for the measurements.
+        self._screen.flush()
 
     def _render_pixels(self, playhead, blink):
         song = sequencer.song
@@ -307,6 +314,6 @@ class SamplerState(State):
         # frames pop the amplifier. The playhead lives on the pad LEDs
         # instead, which cost about 2 ms and are electrically quiet.
         bottom = view.step_row(song, sequencer.selected_track, sequencer.page)
-        # Set each line separately: only lines that differ are resent, and a
-        # line whose text is unchanged sends nothing at all.
+        # Only ask for the text. Drawing is paced by flush below, so a
+        # three-line change never lands in one pass of the main loop.
         self._screen.set_lines((top, middle, bottom))

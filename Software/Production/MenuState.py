@@ -1,7 +1,4 @@
 from adafruit_led_animation.animation.rainbow import Rainbow
-from supervisor import ticks_ms
-
-from engine.clock import ticks_diff
 from State import State
 from utils import attach_menu, show_menu
 from setup import (
@@ -9,12 +6,6 @@ from setup import (
     select_enc,
     keys,
 )
-
-# Sending a frame costs about 32 ms of I2C traffic and audibly pops the
-# amplifier through the shared supply. Scrolling quickly would otherwise queue
-# a frame per detent, so redraws are coalesced: the position is always current,
-# but the screen is only pushed this often.
-REDRAW_INTERVAL_MS = 120
 
 
 class MenuState(State):
@@ -49,19 +40,13 @@ class MenuState(State):
 
     def enter(self, machine):
         self.last_position = 0
-        # A real timestamp, not a zero sentinel. ticks_ms counts from an
-        # unspecified reference point, so zero is not "long ago" - it is a
-        # particular instant that may be more than half the tick period
-        # behind, at which point ticks_diff reports a negative age and the
-        # redraw below never becomes due. Entering draws the menu anyway, so
-        # now is both honest and correct.
-        self._last_draw = ticks_ms()
         self._dirty = False
         if machine.animation is None:
             machine.animation = Rainbow(neopixels, speed=0.1)
         # Whatever ran before this had the display pointed at its own group.
-        attach_menu()
+        self._screen = attach_menu()
         show_menu(self.menu_items, self.highlight, self.shift)
+        self._screen.flush_all()
         State.enter(self, machine)
 
     def exit(self, machine):
@@ -91,15 +76,12 @@ class MenuState(State):
             self._dirty = True
         self.last_position = position
 
-        # Coalesce: scrolling fast must not queue a frame per detent.
         if self._dirty:
-            now = ticks_ms()
-            # ticks_ms wraps at 2**29; a plain subtraction reads as hugely
-            # overdue at the wrap and forces a needless frame, which pops.
-            if ticks_diff(now, self._last_draw) >= REDRAW_INTERVAL_MS:
-                show_menu(self.menu_items, self.highlight, self.shift)
-                self._last_draw = now
-                self._dirty = False
+            # Cheap: this only records the text. Nothing reaches the panel
+            # until flush below, which draws at most one line per pass.
+            show_menu(self.menu_items, self.highlight, self.shift)
+            self._dirty = False
+        self._screen.flush()
 
         key = keys.events.get()
         if key and key.pressed:

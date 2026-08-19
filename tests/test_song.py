@@ -145,11 +145,22 @@ def test_bpm_is_clamped(song):
 # --- micro-timing ---------------------------------------------------------
 
 
-def test_offset_is_clamped_to_half_a_step(song):
+def test_offset_is_clamped_inside_half_a_step(song):
     song.set_division(3)  # 1/16 -> 6 ticks per step
-    assert song.max_offset == 3
-    assert song.set_offset(0, 0, 99) == 3
-    assert song.set_offset(0, 1, -99) == -3
+    assert song.max_offset == 2
+    assert song.set_offset(0, 0, 99) == 2
+    assert song.set_offset(0, 1, -99) == -2
+
+
+def test_offset_never_reaches_exactly_half_a_step(song):
+    """At exactly half a step a hit is equidistant between two grid lines.
+
+    Scheduling could not then say which step owns the tick: it would be
+    attributed to the neighbour and the hit would never fire.
+    """
+    for index in range(len(DIVISIONS)):
+        song.set_division(index)
+        assert song.max_offset * 2 < song.ticks_per_step
 
 
 def test_offset_clamping_keeps_the_nearest_pad_correct(song):
@@ -158,14 +169,14 @@ def test_offset_clamping_keeps_the_nearest_pad_correct(song):
         song.set_division(index)
         limit = song.max_offset
         song.set_offset(0, 5, 1000)
-        assert abs(song.offset(0, 5)) <= song.ticks_per_step / 2.0
+        assert abs(song.offset(0, 5)) < song.ticks_per_step / 2.0
         assert song.offset(0, 5) == limit
 
 
 def test_offsets_are_reclamped_when_the_grid_gets_finer(song):
-    song.set_division(0)  # 1/4 -> 24 ticks, offsets to +/-12
+    song.set_division(0)  # 1/4 -> 24 ticks, offsets to +/-11
     song.set_step(0, 0, 100, offset=12)
-    assert song.offset(0, 0) == 12
+    assert song.offset(0, 0) == 11
     song.set_division(5)  # 1/32 -> 3 ticks, offsets to +/-1
     assert song.offset(0, 0) == 1
 

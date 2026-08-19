@@ -101,8 +101,16 @@ class Song:
 
     @property
     def max_offset(self):
-        """Half a step, the furthest a hit can sit from its own grid line."""
-        return self.ticks_per_step // 2
+        """The furthest a hit can sit from its own grid line.
+
+        Strictly less than half a step, not exactly half. A hit at exactly
+        half a step is equidistant between two grid lines, so scheduling
+        cannot say which step owns it: the tick gets attributed to the
+        neighbour and the hit never fires, and two steps can claim the same
+        tick. One tick short of the boundary keeps every tick owned by
+        exactly one step at every division.
+        """
+        return (self.ticks_per_step - 1) // 2
 
     @property
     def bpm(self):

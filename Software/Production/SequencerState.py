@@ -508,9 +508,6 @@ class SequencerPlayState(State):
             # display.show(text_area)
 
     def adjust_volume(self):
-        self.audio.stop()
-        while self.audio.playing:
-            pass
         # Adjust volume if volume_enc state changes
         if self.volume_position != volume_enc.position:
             if volume_enc.position < self.volume_position:
@@ -528,7 +525,6 @@ class SequencerPlayState(State):
             # text = f"Volume: {self.volume}"
             # text_area = label.Label(terminalio.FONT, text=text, x=2, y=10)
             # display.show(text_area)
-        self.audio.play(self.mixer)
 
     def key_check(self, state_machine):
         key_event = keys.events.get()

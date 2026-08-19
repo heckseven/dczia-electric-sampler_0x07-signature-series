@@ -404,6 +404,8 @@ class SequencerPlayState(State):
         self.audio = None
         self.mixer = None
         for sample_file in self.sampler_files:
+            if sample_file is None:
+                continue
             try:
                 sample_file.close()
             except OSError:
@@ -442,10 +444,23 @@ class SequencerPlayState(State):
                 samples_signed=True,
             )
 
-            # Load files
+            # Load files. A sample that has been deleted since the sequence
+            # was created, or whose header is malformed, must not take the
+            # badge down mid-set. Voice indices are shared with
+            # file_sequences.sequences, so a failure has to stay in the list
+            # as a None placeholder rather than shifting everything after it.
             for item in file_sequences.files:
-                self.sampler_files.append(open(f"/samples/{item}", "rb"))
-                self.sampler_voices.append(WaveFile(self.sampler_files[-1]))
+                sample_file = None
+                voice = None
+                try:
+                    sample_file = open(f"/samples/{item}", "rb")
+                    voice = WaveFile(sample_file)
+                except (OSError, ValueError):
+                    if sample_file is not None:
+                        sample_file.close()
+                        sample_file = None
+                self.sampler_files.append(sample_file)
+                self.sampler_voices.append(voice)
 
             # Delay to avoid audio click
             time.sleep(0.1)
@@ -486,6 +501,10 @@ class SequencerPlayState(State):
         # Play
         for index, sequence in enumerate(file_sequences.sequences):
             if sequence[self.step][0] is True:
+                # Placeholder for a sample that failed to load: leave the
+                # voice silent rather than playing the wrong track's sound.
+                if self.sampler_voices[index] is None:
+                    continue
                 self.mixer.voice[index].level = self.volume * sequence[self.step][1]
                 self.mixer.voice[index].play(self.sampler_voices[index])
         step_start = ticks_ms()

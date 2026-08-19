@@ -11,6 +11,8 @@ The engine's tick never blocks. The previous sequencer spun in
 input was dropped and the display could not be touched during playback.
 """
 
+import gc
+
 import microcontroller
 from watchdog import WatchDogMode
 
@@ -25,6 +27,22 @@ from statemachine import StateMachine
 # recovery the player has.
 WATCHDOG_TIMEOUT = 2.0
 
+# Collect before the heap is empty rather than when it is.
+#
+# A loop pass allocates about two bytes, which sounds like nothing until it
+# is multiplied by a few thousand passes a second. Left alone, MicroPython
+# runs the heap down to nothing and collects only when an allocation fails -
+# measured on the badge, free memory reaching 112 bytes between collections
+# while a pattern played. The audio path allocates from the same heap, from
+# a background task, at a moment nothing here controls, and an allocation
+# that fails there is not an exception that can be caught: it is a hard
+# fault, which is how this badge has been dying.
+#
+# Checking is free - gc.mem_free() allocates nothing and is fast - so the
+# floor is checked every pass and a collection happens while there is still
+# room, at a point in the loop where nothing is mid-flight.
+GC_FLOOR = 16 * 1024
+
 machine = StateMachine()
 machine.go_to_state("startup")
 
@@ -36,6 +54,8 @@ watchdog.mode = WatchDogMode.RESET
 
 while True:
     watchdog.feed()
+    if gc.mem_free() < GC_FLOOR:
+        gc.collect()
     # The beat runs regardless of what is on screen.
     engine.tick()
     machine.update()

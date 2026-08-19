@@ -20,6 +20,8 @@ search for which pad to light.
 This module imports nothing from CircuitPython so it can be tested directly.
 """
 
+from engine.util import clamp
+
 TRACK_COUNT = 8
 MAX_STEPS = 64
 STEPS_PER_PAGE = 8
@@ -46,14 +48,6 @@ DIVISIONS = (
     ("1/32", 3),
 )
 DEFAULT_DIVISION = 3  # 1/16
-
-
-def clamp(value, low, high):
-    if value < low:
-        return low
-    if value > high:
-        return high
-    return value
 
 
 class Song:
@@ -245,26 +239,73 @@ class Song:
 
     @classmethod
     def from_dict(cls, data):
+        """Rebuild a song from a decoded file.
+
+        Everything here came off an SD card the badge does not control, so no
+        value is trusted: each field is coerced to the type it must be and
+        clamped to the range the rest of the engine assumes. A file that is
+        corrupt, hand-edited, or written by a different version should load
+        as a slightly wrong song, never as an exception on the main loop.
+        """
         song = cls(
             length=data.get("length", 16),
             division=data.get("division", DEFAULT_DIVISION),
             bpm=data.get("bpm", 120),
         )
-        song.kit_name = data.get("kit_name")
+        song.kit_name = _as_name(data.get("kit_name"))
         kit = data.get("kit") or []
         for track in range(min(TRACK_COUNT, len(kit))):
-            song.kit[track] = kit[track]
+            # A kit entry ends up at open() and at name.startswith("/"), so
+            # anything that is not a string has to be dropped here rather
+            # than raising somewhere further away.
+            song.kit[track] = _as_name(kit[track])
         muted = data.get("muted") or []
         for track in range(min(TRACK_COUNT, len(muted))):
             song.muted[track] = bool(muted[track])
         strengths = data.get("track_strength") or []
         for track in range(min(TRACK_COUNT, len(strengths))):
-            song.set_track_strength(track, strengths[track])
-        for name in ("steps", "offsets"):
-            rows = data.get(name) or []
-            target = song.steps if name == "steps" else song.offsets
-            for track in range(min(TRACK_COUNT, len(rows))):
-                row = rows[track]
-                for step in range(min(MAX_STEPS, len(row))):
-                    target[track][step] = row[step]
+            song.set_track_strength(track, _as_number(strengths[track], 1.0))
+        # Copy through the same clamps every other write path uses. A file
+        # written by another version, or a corrupted one, must not be able to
+        # smuggle in a velocity above MAX_VELOCITY or an offset wider than half
+        # a step: scheduling assumes offsets stay inside their own step's
+        # window, and a hit outside it is never found and never fires.
+        steps = data.get("steps") or []
+        offsets = data.get("offsets") or []
+        for track in range(min(TRACK_COUNT, len(steps))):
+            row = steps[track]
+            for step in range(min(MAX_STEPS, len(row))):
+                song.steps[track][step] = clamp(
+                    _as_int(row[step], OFF), OFF, MAX_VELOCITY
+                )
+        for track in range(min(TRACK_COUNT, len(offsets))):
+            row = offsets[track]
+            for step in range(min(MAX_STEPS, len(row))):
+                # Clamp into byte range before the assignment, not after: a
+                # bytearray rejects anything outside 0-255 with a ValueError
+                # at the moment of the store, so _reclamp_offsets below would
+                # never get the chance to run.
+                song.offsets[track][step] = clamp(
+                    _as_int(row[step], OFFSET_BIAS), 0, 255
+                )
+        song._reclamp_offsets()
         return song
+
+
+def _as_int(value, default):
+    """An integer from a decoded file, or the default if it is not one."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value
+
+
+def _as_number(value, default):
+    """A float from a decoded file, or the default if it is not one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return float(value)
+
+
+def _as_name(value):
+    """A filename from a decoded file, or None if it is not one."""
+    return value if isinstance(value, str) else None

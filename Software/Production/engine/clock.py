@@ -25,6 +25,8 @@ Time is passed in rather than read here, so this module imports nothing from
 CircuitPython and can be tested directly.
 """
 
+from engine.util import clamp
+
 PPQN = 24
 
 # supervisor.ticks_ms wraps at 2**29 ms, roughly every 6.2 days, and the
@@ -74,14 +76,6 @@ def ticks_diff(later, earlier):
     """Signed millisecond difference that survives the 2**29 wrap."""
     diff = (later - earlier) & TICKS_MAX
     return ((diff + TICKS_HALFPERIOD) & TICKS_MAX) - TICKS_HALFPERIOD
-
-
-def clamp(value, low, high):
-    if value < low:
-        return low
-    if value > high:
-        return high
-    return value
 
 
 class Clock:

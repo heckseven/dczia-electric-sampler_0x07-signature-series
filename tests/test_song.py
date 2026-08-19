@@ -288,3 +288,78 @@ def test_track_strength_survives_a_round_trip(song):
     restored = Song.from_dict(song.to_dict())
     assert restored.strength_for(4, 1.0) == 0.25
     assert restored.strength_for(5, 1.0) == 1.0
+
+
+# --- loading a file the badge did not write --------------------------------
+#
+# Songs come off an SD card the user owns and the badge does not control, so
+# from_dict is a trust boundary. A bad file should load as a slightly wrong
+# song, never as an exception reaching the main loop.
+
+
+def test_an_offset_outside_byte_range_does_not_raise():
+    """The offsets row is a bytearray, which rejects the store itself.
+
+    Clamping after the assignment is too late: the ValueError happens at the
+    moment of the store, so the reclamp never runs.
+    """
+    data = Song(length=16, division=3).to_dict()
+    data["offsets"] = [[9999] * 16] + [[0] * 16] * (TRACK_COUNT - 1)
+    song = Song.from_dict(data)
+    assert abs(song.offset(0, 0)) <= song.max_offset
+
+
+def test_a_negative_offset_does_not_raise():
+    data = Song(length=16, division=3).to_dict()
+    data["offsets"] = [[-500] * 16] + [[0] * 16] * (TRACK_COUNT - 1)
+    song = Song.from_dict(data)
+    assert abs(song.offset(0, 0)) <= song.max_offset
+
+
+def test_a_velocity_above_the_maximum_is_clamped():
+    data = Song(length=16, division=3).to_dict()
+    data["steps"] = [[250] * 16] + [[0] * 16] * (TRACK_COUNT - 1)
+    song = Song.from_dict(data)
+    assert song.velocity(0, 0) == MAX_VELOCITY
+
+
+def test_a_non_numeric_step_is_ignored_rather_than_raising():
+    data = Song(length=16, division=3).to_dict()
+    data["steps"] = [["loud", None, 100] + [0] * 13] + [[0] * 16] * (TRACK_COUNT - 1)
+    song = Song.from_dict(data)
+    assert song.velocity(0, 0) == 0
+    assert song.velocity(0, 1) == 0
+    assert song.velocity(0, 2) == 100
+
+
+def test_a_non_string_kit_entry_becomes_empty():
+    """Kit entries reach open() and name.startswith(), so they must be text."""
+    data = Song(length=16, division=3).to_dict()
+    data["kit"] = [42, None, ["Kick.wav"]] + [None] * (TRACK_COUNT - 3)
+    song = Song.from_dict(data)
+    assert song.kit[0] is None
+    assert song.kit[2] is None
+
+
+def test_a_non_numeric_strength_falls_back_to_full():
+    data = Song(length=16, division=3).to_dict()
+    data["track_strength"] = ["hard"] + [1.0] * (TRACK_COUNT - 1)
+    song = Song.from_dict(data)
+    assert song.track_strength[0] == 1.0
+
+
+def test_a_good_song_still_round_trips():
+    """The coercion must not quietly damage a file the badge wrote itself."""
+    song = Song(length=32, division=2, bpm=137)
+    song.set_step(0, 3, 90)
+    song.set_offset(0, 3, song.max_offset)
+    song.kit[0] = "Kick.wav"
+    song.toggle_mute(2)
+    song.set_track_strength(1, 0.5)
+    back = Song.from_dict(song.to_dict())
+    assert back.length == 32 and back.division == 2 and int(back.bpm) == 137
+    assert back.velocity(0, 3) == 90
+    assert back.offset(0, 3) == song.max_offset
+    assert back.kit[0] == "Kick.wav"
+    assert back.muted[2] is True
+    assert back.track_strength[1] == 0.5

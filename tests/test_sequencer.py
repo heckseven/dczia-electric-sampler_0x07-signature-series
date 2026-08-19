@@ -548,3 +548,26 @@ def test_a_ram_loaded_sample_is_sixteen_bit(seq, tmp_path):
     path = write_wav_sized(tmp_path / "ram2.wav", 4096)
     seq.load_track(0, path)
     assert seq._samples[0].bits_per_sample == 16
+
+
+def test_midi_is_polled_on_a_timer_not_every_pass(seq, monkeypatch):
+    """Reading the ports costs about 430us; the loop is otherwise ~200us."""
+    calls = []
+    monkeypatch.setattr(seq, "poll_midi_in", lambda: calls.append(1))
+
+    times = iter([0, 1, 1, 2, 3, 4, 5])
+    monkeypatch.setattr(sequencer_module, "ticks_ms", lambda: next(times))
+    for _ in range(6):
+        seq.tick()
+    assert 0 < len(calls) < 6, "polled sometimes, not every pass"
+
+
+def test_sync_input_is_still_polled_every_pass(seq, monkeypatch):
+    """An edge lasts milliseconds; missing one loses the beat."""
+    polls = []
+    monkeypatch.setattr(seq, "_poll_sync_in", lambda now: polls.append(now))
+    times = iter([0, 1, 2, 3, 4, 5])
+    monkeypatch.setattr(sequencer_module, "ticks_ms", lambda: next(times))
+    for _ in range(6):
+        seq.tick()
+    assert len(polls) == 6

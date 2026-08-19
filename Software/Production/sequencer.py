@@ -71,6 +71,15 @@ MIXER_VOICES = METRONOME_VOICE + 1
 # edge, far shorter than a step at any usable tempo.
 SYNC_PULSE_MS = 5
 
+# How often the MIDI ports are drained. Reading them costs about 430 us a pass
+# on this board, mostly USB, against a main loop that is otherwise around
+# 200 us - so polling every iteration triples the loop period and thins the
+# margin for catching a sync pulse by polling. MIDI messages are rare and a
+# couple of milliseconds of latency on a transport command is inaudible, so
+# the ports are drained on a timer instead. Sync input, which genuinely needs
+# every pass, is untouched.
+MIDI_POLL_MS = 2
+
 
 def list_samples(lister=None, dirs=SAMPLE_DIRS):
     """Every .wav across the sample directories, as (name, full path).
@@ -148,6 +157,7 @@ class Sequencer:
         self._sync_out_until = None
         self._sync_in_high = True
         self._last_step = None
+        self._last_midi_poll = 0
         self.last_error = None
 
     # --- kit --------------------------------------------------------------
@@ -367,8 +377,12 @@ class Sequencer:
     def tick(self):
         """Call once per main loop pass. Never blocks."""
         now = ticks_ms()
-        self.poll_midi_in()
+        # Sync in is polled every pass: an edge lasts only milliseconds and
+        # missing one loses the beat. MIDI can wait a moment.
         self._poll_sync_in(now)
+        if ticks_diff(now, self._last_midi_poll) >= MIDI_POLL_MS:
+            self._last_midi_poll = now
+            self.poll_midi_in()
         self._update_sync_out(now)
 
         fired = self.clock.update(now)

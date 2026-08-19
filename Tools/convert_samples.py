@@ -4,7 +4,7 @@
 The sampler builds its audiomixer.Mixer with a fixed format, so every sample it
 plays has to match it exactly:
 
-    22050 Hz, 1 channel (mono), 16-bit signed PCM
+    16000 Hz, 1 channel (mono), 16-bit signed PCM by default
 
 A file at any other rate or channel count either plays at the wrong pitch or is
 rejected outright. The 909 pack under "Samples/909 Samples" ships as 44100 Hz
@@ -16,6 +16,10 @@ Usage:
 Example:
     python3 Tools/convert_samples.py "Samples/909 Samples"/*.wav -o /tmp/909
 
+The rate is settable with --rate, because the firmware's mixer rate is a
+tunable trade: a lower rate costs bandwidth but leaves far more room for
+voices and for holding samples in RAM.
+
 Only the Python standard library is used, so this runs anywhere without a
 virtualenv.
 """
@@ -26,7 +30,7 @@ import struct
 import sys
 import wave
 
-TARGET_RATE = 22050
+DEFAULT_RATE = 16000
 TARGET_CHANNELS = 1
 TARGET_WIDTH = 2  # bytes per sample, i.e. 16-bit
 
@@ -82,16 +86,16 @@ def clamp(values):
     return [max(-32768, min(32767, value)) for value in values]
 
 
-def convert(in_path, out_path):
+def convert(in_path, out_path, target_rate=DEFAULT_RATE):
     values, rate, channels = read_frames(in_path)
     values = to_mono(values, channels)
-    values = resample(values, rate, TARGET_RATE)
+    values = resample(values, rate, target_rate)
     values = clamp(values)
 
     with wave.open(out_path, "wb") as target:
         target.setnchannels(TARGET_CHANNELS)
         target.setsampwidth(TARGET_WIDTH)
-        target.setframerate(TARGET_RATE)
+        target.setframerate(target_rate)
         target.writeframes(struct.pack("<%dh" % len(values), *values))
 
     return rate, channels, len(values)
@@ -105,6 +109,14 @@ def main():
     parser.add_argument(
         "-o", "--output-dir", required=True, help="directory to write converted files"
     )
+    parser.add_argument(
+        "-r",
+        "--rate",
+        type=int,
+        default=DEFAULT_RATE,
+        help="target sample rate (default %d, must match the firmware's mixer)"
+        % DEFAULT_RATE,
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -114,7 +126,7 @@ def main():
         name = os.path.basename(in_path)
         out_path = os.path.join(args.output_dir, name)
         try:
-            rate, channels, frames = convert(in_path, out_path)
+            rate, channels, frames = convert(in_path, out_path, args.rate)
         except (OSError, ValueError, wave.Error) as error:
             print("SKIP %s: %s" % (name, error), file=sys.stderr)
             failures += 1
@@ -122,7 +134,7 @@ def main():
         layout = "mono" if channels == 1 else "%dch" % channels
         print(
             "%-28s %5d Hz %-5s -> %d Hz mono, %d frames"
-            % (name, rate, layout, TARGET_RATE, frames)
+            % (name, rate, layout, args.rate, frames)
         )
 
     return 1 if failures else 0

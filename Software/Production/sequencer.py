@@ -40,7 +40,17 @@ from setup import midi_serial, midi_usb, sync_in, sync_out
 # what frees room on a 490 KB volume for the firmware itself.
 SAMPLE_DIRS = ("/sd/samples", "/samples")
 
-SAMPLE_RATE = 22050
+# The mixer has one fixed format and every sample must match it. The rate is a
+# trade rather than a hardware limit: lower costs bandwidth but leaves more
+# room for voices and for holding samples in RAM. Measured cost per playing
+# voice - 31.25 KB/s here, 43.1 at 22050, 86.2 at 44100 - against a card that
+# streams about 437 KB/s and a RAM budget below.
+#
+# The original firmware wandered over this ground already: 22050 at first,
+# dropped to 16000 in the same commit that took the sampler from one voice to
+# nine, then back to 22050 for the production rewrite. Neither move recorded a
+# measurement. Tools/convert_samples.py --rate converts material to match.
+SAMPLE_RATE = 16000
 CHANNELS = 1
 BITS = 16
 

@@ -17,12 +17,13 @@ from sequencer import AUDITION_VOICE, MIXER_VOICES, VOICES_PER_TRACK, Sequencer
 
 
 def write_wav(path, frames=64):
+    rate = sequencer_module.SAMPLE_RATE
     data = struct.pack("<%dh" % frames, *([0] * frames))
     header = (
         b"RIFF"
         + struct.pack("<I", 36 + len(data))
         + b"WAVEfmt "
-        + struct.pack("<IHHIIHH", 16, 1, 1, 22050, 44100, 2, 16)
+        + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
         + b"data"
         + struct.pack("<I", len(data))
     )
@@ -56,7 +57,7 @@ def test_mixer_has_room_for_polyphonic_mode(seq):
 
 
 def test_mixer_matches_the_sample_format(seq):
-    assert seq.mixer.config["sample_rate"] == 22050
+    assert seq.mixer.config["sample_rate"] == sequencer_module.SAMPLE_RATE
     assert seq.mixer.config["channel_count"] == 1
     assert seq.mixer.config["bits_per_sample"] == 16
 
@@ -429,7 +430,9 @@ def test_an_unknown_name_resolves_to_nothing():
 # --- RAM loading versus streaming -----------------------------------------
 
 
-def write_wav_sized(path, data_bytes, rate=22050, channels=1, bits=16):
+def write_wav_sized(path, data_bytes, rate=None, channels=1, bits=16):
+    if rate is None:
+        rate = sequencer_module.SAMPLE_RATE
     frames = data_bytes // 2
     data = struct.pack("<%dh" % frames, *([0] * frames))
     header = (
@@ -501,6 +504,7 @@ def test_a_wrong_rate_sample_is_refused_with_a_reason(seq, tmp_path):
     assert seq.load_track(0, path) is False
     assert not seq.has_sample(0)
     assert "44100" in seq.last_error
+    assert str(sequencer_module.SAMPLE_RATE) in seq.last_error
 
 
 def test_a_stereo_sample_is_refused(seq, tmp_path):

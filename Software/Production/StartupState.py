@@ -20,10 +20,12 @@ class StartupState(State):
 
     def enter(self, machine):
         neopixels.fill((0, 0, 0))
+        neopixels.show()
         State.enter(self, machine)
 
     def exit(self, machine):
         neopixels.fill((255, 0, 0))
+        neopixels.show()
         self.color = (0, 0, 0)
         self.timer = 0
         self.stage = 0

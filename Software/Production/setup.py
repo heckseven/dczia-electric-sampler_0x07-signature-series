@@ -24,7 +24,12 @@ display_bus = displayio.I2CDisplay(i2c, device_address=0x3C)
 display = adafruit_displayio_ssd1306.SSD1306(display_bus, width=128, height=32)
 
 # Neopixels
-neopixels = neopixel.NeoPixel(board.GP3, 10, brightness=0.1, auto_write=True)
+# auto_write pushes the whole strip on every single pixel assignment, so a
+# multi-pixel update costs one full write per pixel. adafruit_led_animation
+# also sets auto_write False on this object as soon as any animation is
+# constructed, so leaving it True here only made the behaviour inconsistent
+# depending on whether an animation had been created yet. Push explicitly.
+neopixels = neopixel.NeoPixel(board.GP3, 10, brightness=0.1, auto_write=False)
 
 # Board LED
 led = digitalio.DigitalInOut(board.LED)

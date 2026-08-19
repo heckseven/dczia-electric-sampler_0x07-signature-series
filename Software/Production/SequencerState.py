@@ -53,11 +53,10 @@ class file_sequences:
             if item[0]:
                 mapped_neopixel = neoindex(index)
                 neopixels[mapped_neopixel] = (0, 0, 255)
-                neopixels.show()
             elif item[0] is False:
                 mapped_neopixel = neoindex(index)
                 neopixels[mapped_neopixel] = (255, 0, 0)
-                neopixels.show()
+        neopixels.show()
 
 
 # MIDI sequencer class
@@ -101,6 +100,7 @@ class SequencerMenuState:
 
     def enter(self, machine):
         neopixels.fill((0, 0, 0))
+        neopixels.show()
         text = "MIDI Sequencer Menu"
         text_area = label.Label(terminalio.FONT, text=text, x=2, y=10)
         display.show(text_area)
@@ -112,6 +112,7 @@ class SequencerMenuState:
 
     def exit(self, machine):
         neopixels.fill((255, 0, 0))
+        neopixels.show()
         self.color = (0, 0, 0)
         State.exit(self, machine)
 
@@ -449,6 +450,7 @@ class SequencerPlayState(State):
     def exit(self, machine):
         self.release_audio()
         neopixels.fill((255, 0, 0))
+        neopixels.show()
         self.color = (0, 0, 0)
         State.exit(self, machine)
 

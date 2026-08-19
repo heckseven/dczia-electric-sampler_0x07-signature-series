@@ -474,13 +474,17 @@ class SequencerPlayState(State):
 
     def timed_midi(self):
         current_midi = midi_sequences.sequences[0][self.step]
+        # Sequence entries are [play, note, octave]. send_note_on() and
+        # send_note_off() take a single MIDI note number, so fold the
+        # octave in at twelve semitones each before sending.
+        note = current_midi[1] + (12 * current_midi[2])
         if current_midi[0] is True:
-            send_note_on(current_midi[1], current_midi[2])
+            send_note_on(note)
         step_start = ticks_ms()
         while ticks_ms() < step_start + self.step_length:
             pass
         if current_midi[0] is True:
-            send_note_off(current_midi[1], current_midi[1])
+            send_note_off(note)
 
     def play_voices(self):
         for index, item in enumerate(self.sampler_voices):

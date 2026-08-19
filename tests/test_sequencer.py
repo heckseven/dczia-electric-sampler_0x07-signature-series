@@ -589,3 +589,67 @@ def test_streamed_tracks_use_the_largest_allowed_buffer(seq, tmp_path):
     assert seq.load_track(0, path) is True
     assert seq.is_streamed(0) is True
     assert len(seq._samples[0].buffer) == sequencer_module.STREAM_BUFFER
+
+
+# --- falling through to a usable copy -------------------------------------
+
+
+def test_candidates_include_every_store_holding_the_name():
+    lister = fake_lister({"/sd/samples": ["kick.wav"], "/samples": ["kick.wav"]})
+    assert sequencer_module.sample_candidates("kick.wav", lister) == [
+        "/sd/samples/kick.wav",
+        "/samples/kick.wav",
+    ]
+
+
+def test_candidates_keep_the_card_first():
+    lister = fake_lister({"/sd/samples": ["a.wav"], "/samples": ["a.wav"]})
+    assert sequencer_module.sample_candidates("a.wav", lister)[0].startswith("/sd")
+
+
+def test_an_absolute_path_has_exactly_one_candidate():
+    assert sequencer_module.sample_candidates("/x/y.wav", fake_lister({})) == [
+        "/x/y.wav"
+    ]
+
+
+def test_an_unusable_copy_falls_through_to_a_playable_one(seq, tmp_path, monkeypatch):
+    """A stale copy on the card must not make a track silent.
+
+    This is the real situation it was found in: samples left on an SD card at
+    a previous mixer rate shadowed correct copies in flash by name, and every
+    track reported as failing to load.
+    """
+    card = tmp_path / "card"
+    flash = tmp_path / "flash"
+    card.mkdir()
+    flash.mkdir()
+    write_wav_sized(card / "kick.wav", 4096, rate=22050)  # wrong rate, shadows
+    write_wav_sized(flash / "kick.wav", 4096)  # correct rate
+
+    monkeypatch.setattr(
+        sequencer_module, "SAMPLE_DIRS", (str(card), str(flash)), raising=False
+    )
+    monkeypatch.setattr(
+        sequencer_module,
+        "sample_candidates",
+        lambda name, lister=None, dirs=None: [
+            str(card / "kick.wav"),
+            str(flash / "kick.wav"),
+        ],
+    )
+
+    assert seq.load_track(0, "kick.wav") is True
+    assert seq.has_sample(0)
+    assert seq.song.kit[0] == str(flash / "kick.wav"), "should use the playable copy"
+
+
+def test_a_track_still_fails_when_no_copy_is_usable(seq, tmp_path, monkeypatch):
+    bad = write_wav_sized(tmp_path / "bad.wav", 4096, rate=44100)
+    monkeypatch.setattr(
+        sequencer_module,
+        "sample_candidates",
+        lambda name, lister=None, dirs=None: [bad],
+    )
+    assert seq.load_track(0, "bad.wav") is False
+    assert not seq.has_sample(0)

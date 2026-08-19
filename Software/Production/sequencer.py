@@ -124,14 +124,37 @@ def list_samples(lister=None, dirs=SAMPLE_DIRS):
     return found
 
 
-def resolve_sample(name, lister=None, dirs=SAMPLE_DIRS):
-    """Find a sample by bare filename, so a kit survives moving between stores."""
+def sample_candidates(name, lister=None, dirs=SAMPLE_DIRS):
+    """Every path a bare filename could refer to, nearest store first.
+
+    More than one is returned deliberately. A copy on the card shadows one in
+    flash by name, but the shadowing copy may be unusable - left over from a
+    different mixer rate, say - and the badge should fall through to a copy it
+    can actually play rather than reporting the track as silent.
+    """
     if name.startswith("/"):
-        return name
-    for found_name, path in list_samples(lister, dirs):
-        if found_name == name:
-            return path
-    return None
+        return [name]
+    found = []
+    for directory in dirs:
+        try:
+            names = lister(directory) if lister else _listdir(directory)
+        except OSError:
+            continue
+        if name in names:
+            found.append(directory + "/" + name)
+    return found
+
+
+def _listdir(directory):
+    from os import listdir
+
+    return listdir(directory)
+
+
+def resolve_sample(name, lister=None, dirs=SAMPLE_DIRS):
+    """The first path a bare filename refers to, or None."""
+    candidates = sample_candidates(name, lister, dirs)
+    return candidates[0] if candidates else None
 
 
 class Sequencer:
@@ -184,12 +207,19 @@ class Sequencer:
 
         A bare filename is resolved across the sample directories, so a kit
         saved when samples lived in flash still loads once they are on the
-        card.
+        card. Every candidate is tried, not just the first: a stale copy on the
+        card shadows flash by name, and falling through to a playable copy is
+        better than reporting a track silent when a usable sample is present.
         """
         self._release_track(track)
         if not path:
             return False
-        path = resolve_sample(path) or path
+        for candidate in sample_candidates(path) or [path]:
+            if self._load_one(track, candidate):
+                return True
+        return False
+
+    def _load_one(self, track, path):
         try:
             handle = open(path, "rb")
         except OSError:

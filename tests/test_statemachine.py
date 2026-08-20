@@ -24,8 +24,8 @@ def test_nothing_is_built_before_it_is_needed(machine):
 
 
 def test_entering_a_state_builds_only_that_one(machine):
-    machine.go_to_state("menu")
-    assert list(machine.states) == ["menu"]
+    machine.go_to_state("settings")
+    assert list(machine.states) == ["settings"]
 
 
 def test_playing_a_pattern_never_builds_the_screens_it_does_not_use(machine):
@@ -35,7 +35,7 @@ def test_playing_a_pattern_never_builds_the_screens_it_does_not_use(machine):
     the HID library above all - carried for screens nobody is looking at.
     """
     machine.go_to_state("startup")
-    machine.go_to_state("menu")
+    machine.go_to_state("settings")
     machine.go_to_state("sampler")
     for unused in ("flashy", "midi_controller", "hid"):
         assert unused not in machine.states
@@ -49,38 +49,41 @@ def test_the_heavy_modules_are_not_imported_either(machine):
     """
     for module in ("FlashyState", "HIDState", "MIDIState"):
         sys.modules.pop(module, None)
-    machine.go_to_state("menu")
+    machine.go_to_state("settings")
     machine.go_to_state("sampler")
     for module in ("FlashyState", "HIDState", "MIDIState"):
         assert module not in sys.modules, "%s was imported unnecessarily" % module
 
 
 def test_a_state_is_built_once_and_kept(machine):
-    machine.go_to_state("menu")
-    first = machine.states["menu"]
+    machine.go_to_state("settings")
+    first = machine.states["settings"]
     machine.go_to_state("sampler")
-    machine.go_to_state("menu")
-    assert machine.states["menu"] is first
+    machine.go_to_state("settings")
+    assert machine.states["settings"] is first
 
 
 def test_visiting_a_heavy_screen_still_works(machine):
-    machine.go_to_state("menu")
+    machine.go_to_state("settings")
     machine.go_to_state("flashy")
     assert machine.state.name == "flashy"
 
 
 def test_leaving_a_state_records_it(machine):
-    machine.go_to_state("menu")
+    machine.go_to_state("settings")
     machine.go_to_state("sampler")
-    assert machine.last_state == "menu"
+    assert machine.last_state == "settings"
 
 
-def test_every_menu_destination_can_be_built(machine):
-    """A name in the menu with no entry here is a crash on selection."""
-    from MenuState import MenuState
+def test_every_registered_state_can_actually_be_built(machine):
+    """A name in STATES whose module or class is misspelt is a crash on entry.
 
-    for item in MenuState.menu_items:
-        assert item["name"] in STATES, "%s is not buildable" % item["name"]
+    Nothing catches that until a player presses the button that goes there,
+    because the import is deferred - which is the point of the table, and
+    also what makes this test worth having.
+    """
+    for name in STATES:
+        assert machine.state_for(name).name == name
 
 
 def test_updating_before_entering_anything_is_harmless(machine):

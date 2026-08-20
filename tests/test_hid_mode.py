@@ -67,9 +67,9 @@ def test_pad_press_sends_a_keycode():
     assert state.kbd.pressed, "pressing a pad should press a key"
 
 
-def test_select_button_returns_to_menu():
+def test_select_button_returns_to_settings():
     """Key 10 is the select encoder button."""
     state, machine = make_state()
     press(10)
     state.update(machine)
-    assert machine.transitions == ["menu"]
+    assert machine.transitions == ["settings"]

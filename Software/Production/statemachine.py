@@ -20,14 +20,22 @@ returns, which makes it unimportable.
 #     HIDState       9.6 KB   pulls in adafruit_hid
 #     MIDIState      5.1 KB
 #     StartupState   2.3 KB
-#     MenuState      1.2 KB
+#     SettingsState  1.4 KB
 #
-# Playing a pattern needs Startup, Menu and Sampler. The other three are 38 KB
-# the badge was carrying for screens the player is not looking at.
+# Playing a pattern needs Startup, Sampler and Settings. The other three are
+# 38 KB the badge was carrying for screens the player is not looking at.
+#
+# Settings is in that list rather than deferred with the rest because its
+# modules take 1.3 seconds to compile off the card, and the audio buffer
+# holds 32 milliseconds - opening it mid-pattern would be forty buffers of
+# silence. StartupState imports it while the banner is still up, where the
+# time costs nothing. What stays deferred inside it is the card: the rows
+# listing songs, kits and samples are built when they are opened, so a
+# directory listing never lands on the path that opens the screen.
 STATES = {
     "startup": ("StartupState", "StartupState"),
-    "menu": ("MenuState", "MenuState"),
     "sampler": ("SamplerState", "SamplerState"),
+    "settings": ("SettingsState", "SettingsState"),
     "flashy": ("FlashyState", "FlashyState"),
     "midi_controller": ("MIDIState", "MIDIState"),
     "hid": ("HIDState", "HIDState"),

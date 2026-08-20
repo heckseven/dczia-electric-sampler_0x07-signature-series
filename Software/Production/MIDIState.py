@@ -156,7 +156,7 @@ class MIDIState(State):
             elif (key_event.key_number == 9) and key_event.pressed:
                 pass  # TODO Implement function key to shift function of encoder knobs
             elif (key_event.key_number == 10) and key_event.pressed:  # Select Button
-                machine.go_to_state("menu")
+                machine.go_to_state("settings")
                 return
             elif (key_event.key_number == 11) and key_event.pressed:  # Volume Button
                 print("TODO: Decide what the volume button does")

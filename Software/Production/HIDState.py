@@ -109,7 +109,7 @@ class HIDState(State):
                     mapped_neopixel = neoindex(key_event.key_number)
                     neopixels[mapped_neopixel] = (100, 100, 100)
             elif (key_event.key_number == 10) and key_event.pressed:  # Select Button
-                machine.go_to_state("menu")
+                machine.go_to_state("settings")
                 return
             elif (key_event.key_number == 11) and key_event.pressed:  # Volume Button
                 self.consumer_control.send(ConsumerControlCode.MUTE)

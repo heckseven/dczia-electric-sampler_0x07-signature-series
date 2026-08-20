@@ -46,7 +46,7 @@ TOGGLE_TRANSPORT = "toggle_transport"
 ARM_RECORD = "arm_record"
 CLEAR_TRACK = "clear_track"
 MUTE = "mute"
-BACK = "back"
+SETTINGS = "settings"
 
 # Pad meaning depends on which view is showing.
 LIVE = "live"
@@ -123,7 +123,10 @@ class Controls:
             return [(PAD, key_number)]
 
         if key_number == SELECT:
-            return [(BACK, None)]
+            # The click that opens the settings tree. It used to back out to a
+            # menu; the sampler is now where the badge starts, so there is
+            # nothing above it to back out to.
+            return [(SETTINGS, None)]
 
         if key_number == VOLUME:
             if self._function_held:

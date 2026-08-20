@@ -47,6 +47,13 @@ from setup import midi_serial, midi_uart, midi_usb, sync_in, sync_out
 # what frees room on a 490 KB volume for the firmware itself.
 SAMPLE_DIRS = ("/sd/samples", "/samples")
 
+# Most samples a listing will return. A card is written by a computer and a
+# drum library can hold thousands; turning all of them into a list is work
+# and memory the badge has not got. Far above any kit and far below the
+# heap. What the browser does with a list this long is its own problem - see
+# engine/settings.MAX_ROWS.
+MAX_SAMPLES = 512
+
 # The mixer has one fixed format and every sample must match it. The rate is a
 # trade rather than a hardware limit: lower costs bandwidth but leaves more
 # room for voices and for holding samples in RAM. Measured cost per playing
@@ -150,13 +157,20 @@ MIDI_POLL_MS = 2
 USB_MIDI_POLL_MS = 20
 
 
-def list_samples(lister=None, dirs=SAMPLE_DIRS):
+def list_samples(lister=None, dirs=None, limit=MAX_SAMPLES):
     """Every .wav across the sample directories, as (name, full path).
 
     Earlier directories win, so a sample on the SD card shadows one of the
     same name in flash. A directory that does not exist is simply skipped -
-    a badge with no card is not an error.
+    a badge with no card is not an error, and neither is a card holding more
+    than `limit` samples: the list stops there rather than the badge doing.
     """
+    # Read here rather than taken as a default argument: a default is bound
+    # when the function is defined, so SAMPLE_DIRS could never afterwards be
+    # pointed anywhere else - which is exactly what the tests need to do.
+    # `is None` rather than a falsy test, so a caller asking for no
+    # directories at all gets no directories rather than all of them.
+    dirs = SAMPLE_DIRS if dirs is None else dirs
     if lister is None:
         from os import listdir as lister
     found = []
@@ -164,7 +178,11 @@ def list_samples(lister=None, dirs=SAMPLE_DIRS):
     for directory in dirs:
         try:
             names = lister(directory)
-        except OSError:
+        except (OSError, MemoryError):
+            # MemoryError as well: a directory with tens of thousands of
+            # entries is turned into a list of strings before anything can
+            # look at its length, and that is not an error the caller of a
+            # sample browser should have to handle.
             continue
         for name in sorted(names):
             if not name.endswith(".wav") or name.startswith("."):
@@ -173,10 +191,12 @@ def list_samples(lister=None, dirs=SAMPLE_DIRS):
                 continue
             seen.add(name)
             found.append((name, directory + "/" + name))
+            if len(found) >= limit:
+                return found
     return found
 
 
-def sample_candidates(name, lister=None, dirs=SAMPLE_DIRS):
+def sample_candidates(name, lister=None, dirs=None):
     """Every path a bare filename could refer to, nearest store first.
 
     More than one is returned deliberately. A copy on the card shadows one in
@@ -184,6 +204,7 @@ def sample_candidates(name, lister=None, dirs=SAMPLE_DIRS):
     different mixer rate, say - and the badge should fall through to a copy it
     can actually play rather than reporting the track as silent.
     """
+    dirs = SAMPLE_DIRS if dirs is None else dirs
     if name.startswith("/"):
         return [name]
     found = []
@@ -203,7 +224,7 @@ def _listdir(directory):
     return listdir(directory)
 
 
-def resolve_sample(name, lister=None, dirs=SAMPLE_DIRS):
+def resolve_sample(name, lister=None, dirs=None):
     """The first path a bare filename refers to, or None."""
     candidates = sample_candidates(name, lister, dirs)
     return candidates[0] if candidates else None
@@ -467,6 +488,25 @@ class Sequencer:
             if self.load_track(track, path):
                 loaded += 1
         return loaded
+
+    def load_song(self, song):
+        """Play a different song, with its own kit.
+
+        Everything sounding is stopped first. The tracks are about to point
+        at other samples, and a mixer voice holds a raw pointer into the
+        buffer it is playing rather than a reference the collector knows
+        about - so letting go of a buffer while a voice still walks it is a
+        hard fault with no traceback.
+        """
+        self.transport.stop()
+        for track in range(TRACK_COUNT):
+            self.silence_track(track)
+        self.song = song
+        self.page = 0
+        self.clock.set_bpm(song.bpm)
+        # After the song is in place: a failed sample leaves that track
+        # silent, and the pattern is still the one the player asked for.
+        return self.load_kit(song.kit)
 
     def _voices_of(self, track):
         """Every mixer voice this track can be playing on."""

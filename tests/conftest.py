@@ -26,3 +26,32 @@ circuitpython_stubs.install()
 # Software/Production has to be on the path as if it were the filesystem root.
 if PRODUCTION_DIR not in sys.path:
     sys.path.insert(0, PRODUCTION_DIR)
+
+
+class FakeMachine:
+    """A state machine for tests, which records where it was sent.
+
+    It builds states the way the real one does, because StartupState warms
+    the settings screen through `state_for` - a fake without it would only
+    ever exercise the import half of warming and never the card half.
+    """
+
+    def __init__(self):
+        self.animation = None
+        self.last_state = None
+        self.transitions = []
+        self.state = None
+        self._built = {}
+
+    def go_to_state(self, name):
+        self.transitions.append(name)
+
+    def state_for(self, name):
+        import statemachine
+
+        state = self._built.get(name)
+        if state is None:
+            module_name, class_name = statemachine.STATES[name]
+            state = getattr(__import__(module_name), class_name)()
+            self._built[name] = state
+        return state

@@ -11,27 +11,17 @@ import os
 import pytest
 
 import circuitpython_stubs
+from conftest import FakeMachine
 from conftest import PRODUCTION_DIR
 import screen as screen_module
 import setup
 from FlashyState import FlashyState
 from HIDState import HIDState
-from MenuState import MenuState
 from MIDIState import MIDIState
 from StartupState import StartupState
 from utils import selector_calcs, show_menu
 
 TOTAL_LINES = 3
-
-
-class FakeMachine:
-    def __init__(self):
-        self.animation = None
-        self.last_state = None
-        self.transitions = []
-
-    def go_to_state(self, name):
-        self.transitions.append(name)
 
 
 @pytest.fixture(autouse=True)
@@ -95,79 +85,39 @@ def test_show_menu_handles_an_empty_menu():
     assert setup.display.shown is not None
 
 
-# --- MenuState ------------------------------------------------------------
+# --- every state a transition names actually exists ------------------------
 
 
-def test_menu_starts_an_animation_on_entry():
-    machine = FakeMachine()
-    MenuState().enter(machine)
-    assert machine.animation is not None
+def test_every_state_a_screen_moves_to_is_registered():
+    """Guards against a transition naming a state that does not exist.
 
+    go_to_state takes a string, so a renamed state is only caught when a
+    player presses the button that goes there. The names are read out of the
+    state classes themselves rather than written out again here, so renaming
+    one without updating statemachine.STATES fails.
 
-def test_menu_reuses_an_existing_animation():
-    machine = FakeMachine()
-    machine.animation = "already running"
-    MenuState().enter(machine)
-    assert machine.animation == "already running"
-
-
-def test_turning_the_encoder_moves_the_highlight():
-    machine = FakeMachine()
-    state = MenuState()
-    state.enter(machine)
-    before = state.highlight
-    setup.select_enc.position = 1
-    state.update(machine)
-    assert state.highlight == before + 1
-
-
-def test_selecting_the_first_entry_enters_flashy():
-    machine = FakeMachine()
-    state = MenuState()
-    state.enter(machine)
-    press(0)
-    state.update(machine)
-    assert machine.transitions == ["flashy"]
-
-
-def test_every_menu_entry_names_a_registered_state():
-    """Guards against a menu entry pointing at a state that does not exist.
-
-    The names are taken from the state classes themselves rather than a list
-    written out here, so renaming a state without updating the menu fails.
     main.py cannot be imported - its event loop runs at module scope - so the
     same classes it registers are imported directly.
     """
     from HIDState import HIDState
     from MIDIState import MIDIState
     from SamplerState import SamplerState
+    from SettingsState import SettingsState
     from StartupState import StartupState
+    from statemachine import STATES
 
     known = {
         state.name
         for state in (
             FlashyState(),
-            MenuState(),
             MIDIState(),
             HIDState(),
             SamplerState(),
+            SettingsState(),
             StartupState(),
         )
     }
-    for item in MenuState.menu_items:
-        assert item["name"] in known, item
-
-
-def test_scrolling_past_the_window_shifts_the_list():
-    machine = FakeMachine()
-    state = MenuState()
-    state.enter(machine)
-    for step in range(1, 6):
-        setup.select_enc.position = step
-        state.update(machine)
-    assert state.shift > 0
-    index = state.highlight - 1 + state.shift
-    assert index < len(MenuState.menu_items)
+    assert set(STATES) == known
 
 
 # --- FlashyState ----------------------------------------------------------
@@ -200,13 +150,13 @@ def test_flashy_menu_functions_are_all_selectable():
         assert machine.animation is not None, item
 
 
-def test_flashy_returns_to_the_menu_on_keypress():
+def test_flashy_returns_to_the_settings_tree_on_keypress():
     machine = FakeMachine()
     state = FlashyState()
     state.enter(machine)
     press(0)
     state.update(machine)
-    assert machine.transitions == ["menu"]
+    assert machine.transitions == ["settings"]
 
 
 def test_animations_take_ownership_of_auto_write():
@@ -220,7 +170,7 @@ def test_animations_take_ownership_of_auto_write():
 # --- StartupState ---------------------------------------------------------
 
 
-def test_startup_advances_through_its_stages():
+def test_startup_ends_in_the_sampler():
     machine = FakeMachine()
     state = StartupState()
     state.enter(machine)
@@ -228,7 +178,7 @@ def test_startup_advances_through_its_stages():
         state.update(machine)
         if machine.transitions:
             break
-    assert machine.transitions == ["menu"]
+    assert machine.transitions == ["sampler"]
 
 
 def test_startup_is_skipped_by_a_keypress():
@@ -236,8 +186,11 @@ def test_startup_is_skipped_by_a_keypress():
     state = StartupState()
     state.enter(machine)
     press(0)
-    state.update(machine)
-    assert machine.transitions == ["menu"]
+    for _ in range(20):
+        state.update(machine)
+        if machine.transitions:
+            break
+    assert machine.transitions == ["sampler"]
 
 
 def test_startup_never_addresses_a_pixel_it_does_not_have():
@@ -300,28 +253,28 @@ def test_the_menu_blanks_lines_past_the_end_of_a_short_list():
 
 # --- getting the display back ---------------------------------------------
 #
-# Every state points the display at a group of its own, so the menu does not
+# Every state points the display at a group of its own, so a menu does not
 # keep it just because it had it once. A menu that updates labels while the
 # display is showing somebody else's group looks frozen: scrolling and backing
 # out both appear to do nothing, because the drawing is real but invisible.
 
 
-def test_entering_the_menu_puts_the_menu_on_the_display():
+def test_entering_a_menu_puts_it_on_the_display():
     import utils
 
-    menu = MenuState()
+    menu = FlashyState()
     menu.enter(FakeMachine())
     assert setup.display.shown is utils._menu_screen.group
 
 
-def test_the_menu_takes_the_display_back_from_another_state():
+def test_a_menu_takes_the_display_back_from_another_state():
     """Returning from the sampler, or any state that shows its own group."""
     import displayio
 
     import utils
 
     machine = FakeMachine()
-    menu = MenuState()
+    menu = FlashyState()
     menu.enter(machine)  # the menu owns the display
 
     somebody_else = displayio.Group()
@@ -339,7 +292,7 @@ def test_scrolling_does_not_reattach_the_display():
     which happens for every detent.
     """
     machine = FakeMachine()
-    menu = MenuState()
+    menu = FlashyState()
     menu.enter(machine)
     attached = setup.display.shown
 
@@ -363,22 +316,24 @@ def test_the_menu_still_redraws_late_in_the_tick_period():
     and the redraw is never due again, so scrolling stops updating the
     screen for as long as that state is on.
     """
-    import utils
+    from SettingsState import SettingsState
 
     ticks = circuitpython_stubs.ticks
     before = ticks.value
     try:
         ticks.value = (1 << 28) + 5000  # past half the tick period
         machine = FakeMachine()
-        menu = MenuState()
-        menu.enter(machine)
-        utils._menu_screen.set_line(0, "stale")
+        state = SettingsState()
+        state.enter(machine)
+        shared = screen_module.shared(setup.display)
+        shared.set_line(1, "stale")
 
-        setup.select_enc.position = 1
+        setup.select_enc.position += 1
         for _ in range(500):
-            menu.update(machine)
+            ticks.value += 10
+            state.update(machine)
 
-        assert utils._menu_screen.line(0) != "stale", "menu never redrew"
+        assert shared.drawn(1) != "stale", "the settings screen never redrew"
     finally:
         ticks.value = before
 
@@ -392,7 +347,7 @@ def test_the_menu_still_redraws_late_in_the_tick_period():
 
 
 @pytest.mark.parametrize(
-    "state_class", [MenuState, FlashyState, MIDIState, HIDState, StartupState]
+    "state_class", [FlashyState, MIDIState, HIDState, StartupState]
 )
 def test_entering_a_state_puts_its_text_on_the_display(state_class):
     state = state_class()
@@ -403,7 +358,7 @@ def test_entering_a_state_puts_its_text_on_the_display(state_class):
     )
 
 
-@pytest.mark.parametrize("state_class", [MenuState, FlashyState, MIDIState, HIDState])
+@pytest.mark.parametrize("state_class", [FlashyState, MIDIState, HIDState])
 def test_entering_a_state_leaves_nothing_waiting_to_be_drawn(state_class):
     """Entering should show the screen, not reveal it a line per pass."""
     state = state_class()
@@ -471,7 +426,7 @@ def test_only_one_screen_exists_however_states_are_reached():
     from SamplerState import SamplerState
 
     screens = set()
-    for state_class in (MenuState, FlashyState, MIDIState, HIDState, StartupState):
+    for state_class in (FlashyState, MIDIState, HIDState, StartupState):
         state = state_class()
         state.enter(FakeMachine())
         screens.add(id(setup.display.shown))

@@ -17,7 +17,7 @@ import screen as screen_module
 from engine import view
 from engine.controls import (
     ARM_RECORD,
-    BACK,
+    SETTINGS,
     CLEAR_TRACK,
     ERASE,
     MUTE,
@@ -183,8 +183,8 @@ class SamplerState(State):
             sequencer.song.toggle_mute(sequencer.selected_track)
         elif action == CLEAR_TRACK:
             sequencer.song.clear_track(sequencer.selected_track)
-        elif action == BACK:
-            machine.go_to_state("menu")
+        elif action == SETTINGS:
+            machine.go_to_state("settings")
             return True
         self._pixels_dirty = True
         self._text_dirty = True

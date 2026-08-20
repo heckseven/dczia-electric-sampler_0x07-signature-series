@@ -9,6 +9,7 @@ import struct
 import pytest
 
 import circuitpython_stubs
+from conftest import FakeMachine
 import sequencer as sequencer_module
 import setup
 from engine import view
@@ -17,16 +18,6 @@ from engine.song import STEPS_PER_PAGE
 from engine.transport import LIVE, SEQ
 import SamplerState as sampler_module
 from SamplerState import SamplerState
-
-
-class FakeMachine:
-    def __init__(self):
-        self.animation = None
-        self.last_state = None
-        self.transitions = []
-
-    def go_to_state(self, name):
-        self.transitions.append(name)
 
 
 def write_wav(path, frames=64):
@@ -140,11 +131,11 @@ def test_function_plus_pad_selects_a_track(state):
     assert state.controls.mode == LIVE, "selecting must not also switch mode"
 
 
-def test_select_click_returns_to_the_menu(state):
+def test_select_click_returns_to_settings(state):
     machine = FakeMachine()
     press(SELECT)
     state.update(machine)
-    assert machine.transitions == ["menu"]
+    assert machine.transitions == ["settings"]
 
 
 def test_leaving_does_not_stop_the_beat(state):

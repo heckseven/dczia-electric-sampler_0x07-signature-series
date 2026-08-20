@@ -1,0 +1,712 @@
+"""The settings screen: a tree, a knob, and two buttons.
+
+Opened with a click of the Select encoder from the sampler. While it is up,
+Play and Function stop being transport controls and become yes and no - the
+badge has no other buttons to spare, and a menu needs both. Play and the
+encoder click both go in, Function comes back out, and Function at the top
+closes the screen and returns to the sampler.
+
+The beat carries on throughout. The engine is ticked by the main loop rather
+than by whatever is on screen, so saving a song or picking a sample happens
+over a pattern that is still playing.
+
+What the tree contains lives in engine/settings.py, how it is walked in
+engine/menu.py, and the two ways of entering a value in engine/editor.py and
+engine/naming.py. All of those are pure logic and tested without a display.
+This is the part that needs hardware: reading keys, pushing text at the
+screen, and doing what a command means.
+
+Everything here obeys the same budget as the sampler. Drawing is what
+competes with the audio - one line costs about 9 ms against a 32 ms buffer -
+so the rows are rebuilt only when something moves, and pushed through the
+shared screen's paced flush. Spinning the knob cannot outrun the display
+into tearing the sound; the screen simply converges a pass or two later.
+"""
+
+from supervisor import ticks_ms
+
+import kitfile
+import screen as screen_module
+import sequencer as sequencer_module
+import songfile
+from engine import settings
+from engine.clock import ticks_diff
+from engine.editor import Editor
+from engine.menu import Menu
+from engine.naming import NameEntry
+from engine.song import MAX_STEPS, MIN_LENGTH, TRACK_COUNT
+from sequencer import engine as sequencer
+from setup import display, keys, select_enc, volume_enc
+from State import State
+from store import StoreError
+
+# Key numbers, named here rather than imported from the sampler's controls:
+# while this screen is up they mean something else entirely, and borrowing
+# the sampler's names for them would suggest otherwise.
+PLAY_KEY = 8
+FUNCTION_KEY = 9
+SELECT_KEY = 10
+VOLUME_KEY = 11
+
+# How long a confirmation stays on screen. Long enough to read a few words,
+# short enough that the badge does not seem to have stopped responding.
+MESSAGE_MS = 1200
+
+# Key events handled per pass, for the same reason the sampler bounds its
+# own: unbounded draining lets a backlog do all of its work in one pass, and
+# a pass that long is an audible gap.
+MAX_EVENTS_PER_PASS = 2
+
+# What the question at the top of a confirmation screen says. Read from the
+# command rather than written once, so a third thing that needs confirming
+# cannot silently inherit the word "Delete".
+CONFIRM_VERBS = {
+    settings.SONG_DELETE: "Delete song?",
+    settings.KIT_DELETE: "Delete kit?",
+}
+
+# Two rows of the tree, because the top row is the breadcrumb. Nesting is
+# unbounded and the labels repeat - Song has Save, and so does Kit - so
+# without a line saying where you are, half the leaves are ambiguous.
+MENU_ROWS = 2
+
+WIDTH = 21
+
+
+class Catalog:
+    """What settings.build offers from the card and from flash.
+
+    Everything is remembered once read. Measured on the badge, a directory
+    listing over SPI is 500 to 1000 ms - thirty audio buffers - and the
+    sample list is read by all eight track rows, so without this, walking
+    from Track 1 to Track 2 would cost another second of torn sound.
+
+    What is remembered is dropped by `forget`, which is called after this
+    badge writes to the card. A card swapped behind its back is not noticed;
+    there is no cheap way to ask, and the answer costs a second.
+    """
+
+    def __init__(self):
+        self._songs = None
+        self._kits = None
+        self._samples = None
+
+    def songs(self):
+        if self._songs is None:
+            self._songs = [(name, name) for name in songfile.songs()]
+        return self._songs
+
+    def kits(self):
+        if self._kits is None:
+            self._kits = [(name, name) for name in kitfile.kits()]
+        return self._kits
+
+    def samples(self):
+        if self._samples is None:
+            self._samples = list(sequencer_module.list_samples())
+        return self._samples
+
+    def forget(self, songs=False, kits=False):
+        """Drop what the card said, so the next read asks it again.
+
+        Samples are never dropped: nothing on the badge writes a .wav, so
+        that list can only change by taking the card out.
+        """
+        if songs:
+            self._songs = None
+        if kits:
+            self._kits = None
+
+
+class SettingsState(State):
+
+    @property
+    def name(self):
+        return "settings"
+
+    def __init__(self):
+        self.catalog = Catalog()
+        self.menu = Menu(settings.build(self.catalog), rows=MENU_ROWS)
+        self._screen = screen_module.shared(display)
+
+        self._entry = None  # naming something
+        self._editor = None  # changing a number
+        self._confirm = None  # (command, value) awaiting yes
+        self._pending = None  # (command, value) awaiting a name
+        self._message = None
+        self._message_until = None
+        # Which lines still need building, and the one to build next. Rows
+        # are built one per pass to match the screen's own budget: building
+        # all three costs 9.4 ms of a 32 ms audio buffer, and only one of
+        # them can be pushed to the panel in that pass anyway.
+        self._stale = 0b111
+        self._next_line = 0
+        self._last_select = 0
+        self._last_volume = 0
+        self._last_turn = None
+        self._warmed = 0
+
+    # --- the state machine ------------------------------------------------
+
+    def enter(self, machine):
+        # Whatever opened this screen is still in the queue as a press; the
+        # matching release would otherwise arrive here and be acted on.
+        keys.events.clear()
+        # The cursor is left where it was. Coming back from the MIDI tool
+        # should land on Tools rather than at the top, and a player changing
+        # several track lengths should not have to walk down to Length each
+        # time.
+        #
+        # The card is not re-read here either. It was read once during the
+        # banner, and re-reading costs most of a second - so it happens only
+        # after this badge has written to it, where the player is already
+        # waiting for the write.
+        self._entry = None
+        self._editor = None
+        self._confirm = None
+        self._pending = None
+        self._message = None
+        self._message_until = None
+        self._last_select = select_enc.position
+        self._last_volume = volume_enc.position
+        self._last_turn = None
+        self._stale = 0b111
+        self._next_line = 0
+        self._screen.attach()
+        # All three at once: a screen appearing a line at a time looks
+        # broken, and entering a state is the one moment the stall is free.
+        self._screen.set_lines(self._lines())
+        self._screen.flush_all()
+        self._stale = 0
+        State.enter(self, machine)
+
+    def update(self, machine):
+        self._read_encoders()
+        if self._read_keys(machine):
+            # The state changed. The next state owns the display now.
+            return
+        self._expire_message()
+        self._build_one_line()
+        # Paced, one line per pass. This is what keeps a spun knob from
+        # tearing the audio; see screen.py.
+        self._screen.flush()
+
+    # --- input ------------------------------------------------------------
+
+    def _read_encoders(self):
+        # Volume first, and unconditionally: being unable to turn down a
+        # sound that is too loud because a menu is open would be a poor
+        # trade for the one screen that has nothing to do with volume.
+        position = volume_enc.position
+        if position != self._last_volume:
+            sequencer.nudge_volume(position - self._last_volume, ticks_ms())
+            self._last_volume = position
+            self._show("Vol %d" % sequencer.volume_percent)
+
+        position = select_enc.position
+        if position == self._last_select:
+            return
+        delta = position - self._last_select
+        self._last_select = position
+        now = ticks_ms()
+        elapsed = None
+        if self._last_turn is not None:
+            elapsed = ticks_diff(now, self._last_turn)
+            if elapsed < 0:
+                elapsed = None
+        self._last_turn = now
+
+        if self._entry is not None:
+            self._entry.turn(delta)
+        elif self._editor is not None:
+            self._editor.turn(delta, elapsed)
+        elif self._confirm is None:
+            # A message is only ever informational, so a turn moves the menu
+            # underneath it and puts the rows back.
+            self._message = None
+            self.menu.move(delta)
+        self._all_stale()
+
+    def _read_keys(self, machine):
+        for _ in range(MAX_EVENTS_PER_PASS):
+            event = keys.events.get()
+            if not event:
+                break
+            if not event.pressed:
+                continue
+            if self._pressed(event.key_number, machine):
+                return True
+        return False
+
+    def _pressed(self, key, machine):
+        """Act on a press. Returns True if the state changed."""
+        if key == VOLUME_KEY:
+            # Not one of this screen's buttons.
+            return False
+        forward = key in (PLAY_KEY, SELECT_KEY)
+        back = key == FUNCTION_KEY
+        if not forward and not back:
+            return False
+
+        if self._entry is not None:
+            return self._name_key(forward)
+        if self._editor is not None:
+            return self._editor_key(forward)
+        if self._confirm is not None:
+            return self._confirm_key(forward)
+        return self._browse_key(forward, machine)
+
+    def _browse_key(self, forward, machine):
+        self._message = None
+        self._all_stale()
+        if forward:
+            item = self.menu.enter()
+            if item is not None:
+                return self._open_item(item, machine)
+            return False
+        if not self.menu.back():
+            machine.go_to_state("sampler")
+            return True
+        return False
+
+    def _name_key(self, forward):
+        if forward:
+            if self._entry.accept():
+                self._finish_name()
+        elif not self._entry.backspace():
+            # Backspacing past the first letter is how a name is abandoned:
+            # there is no third button to cancel with.
+            self._entry = None
+            self._pending = None
+            self._show("cancelled")
+        self._all_stale()
+        return False
+
+    def _editor_key(self, forward):
+        editor = self._editor
+        self._editor = None
+        if forward:
+            self._show("%s %s" % (editor.label, editor.text))
+        else:
+            editor.cancel()
+            self._show("cancelled")
+        self._all_stale()
+        return False
+
+    def _confirm_key(self, forward):
+        command, value = self._confirm
+        self._confirm = None
+        if forward:
+            self._run_command(command, value)
+        else:
+            self._show("cancelled")
+        self._all_stale()
+        return False
+
+    # --- commands ---------------------------------------------------------
+
+    def _open_item(self, item, machine):
+        """Decide what pressing a leaf means, and do it.
+
+        Most rows need something on screen before anything happens - a name
+        to type, a number to turn, a question to answer. The ones that do not
+        fall through to _run_command, which is the half that actually acts.
+
+        Returns True if the state changed.
+        """
+        command = item.command
+        value = item.value
+
+        if command == settings.TOOL_MIDI:
+            machine.go_to_state("midi_controller")
+            return True
+        if command == settings.TOOL_HID:
+            machine.go_to_state("hid")
+            return True
+        if command == settings.TRACK_FLASHY:
+            machine.go_to_state("flashy")
+            return True
+
+        if command in (settings.SONG_DELETE, settings.KIT_DELETE):
+            # The one action with nothing to undo it. There is no trash on
+            # the badge, so it asks first.
+            self._confirm = (command, value)
+            return False
+
+        if command in (settings.SONG_SAVE_AS, settings.SONG_RENAME):
+            self._ask_name(command, value, sequencer.song.name)
+            return False
+        if command in (settings.KIT_SAVE_AS, settings.KIT_RENAME):
+            self._ask_name(command, value, sequencer.song.kit_name)
+            return False
+        if command == settings.SONG_SAVE and not sequencer.song.name:
+            # Never saved, so there is no name to save over.
+            self._ask_name(settings.SONG_SAVE_AS, value, "")
+            return False
+        if command == settings.KIT_SAVE and not sequencer.song.kit_name:
+            self._ask_name(settings.KIT_SAVE_AS, value, "")
+            return False
+
+        if command == settings.LENGTH_GLOBAL:
+            self._edit_length(None)
+            return False
+        if command == settings.LENGTH_TRACK:
+            self._edit_length(value)
+            return False
+
+        self._run_command(command, value)
+        return False
+
+    def _ask_name(self, command, value, initial):
+        # Rename starts from the current name, because it is usually a small
+        # change to it. Save-as starts empty, because it is usually not.
+        if command not in (settings.SONG_RENAME, settings.KIT_RENAME):
+            initial = ""
+        self._entry = NameEntry(initial=initial or "")
+        self._pending = (command, value)
+
+    def _finish_name(self):
+        name = self._entry.result()
+        command, value = self._pending or (None, None)
+        self._entry = None
+        self._pending = None
+        if not name:
+            self._show("cancelled")
+            return
+        self._run_command(command, value, name)
+
+    def _edit_length(self, track):
+        song = sequencer.song
+        if track is None:
+            self._editor = Editor(
+                "Length", song.length, MIN_LENGTH, MAX_STEPS, apply=song.set_length
+            )
+            return
+        self._editor = Editor(
+            "T%d" % (track + 1),
+            song.track_length(track),
+            MIN_LENGTH,
+            MAX_STEPS,
+            apply=lambda steps: song.set_track_length(track, steps),
+        )
+
+    def _run_command(self, command, value, name=None):
+        song = sequencer.song
+        if command == settings.SONG_SAVE:
+            self._save_song(song.name)
+        elif command == settings.SONG_SAVE_AS:
+            self._save_song(name)
+        elif command == settings.SONG_RENAME:
+            self._rename(songfile, song.name, name, "song")
+        elif command == settings.SONG_LOAD:
+            self._load_song(value)
+        elif command == settings.SONG_DELETE:
+            self._delete(songfile, value, song, "name")
+
+        elif command == settings.KIT_SAVE:
+            self._save_kit(song.kit_name)
+        elif command == settings.KIT_SAVE_AS:
+            self._save_kit(name)
+        elif command == settings.KIT_RENAME:
+            self._rename(kitfile, song.kit_name, name, "kit")
+        elif command == settings.KIT_LOAD:
+            self._load_kit(value)
+        elif command == settings.KIT_DELETE:
+            self._delete(kitfile, value, song, "kit_name")
+
+        elif command == settings.SAMPLE_TRACK:
+            self._set_sample(value[0], value[1])
+        elif command == settings.SAMPLE_CLEAR:
+            self._set_sample(value, None)
+        elif command == settings.LIST_TRUNCATED:
+            self._show("%d more on card" % value)
+        else:
+            self._show("not yet")
+
+    # --- the card ---------------------------------------------------------
+
+    def _quietly(self, work):
+        """Run something that touches the card, with the voices stopped.
+
+        Card operations block for hundreds of milliseconds - a listing is 500
+        to 1000 ms on this hardware, and creating a directory measured eight
+        seconds - against an audio buffer that holds 32. The buffer empties
+        long before the call returns, and what the amplifier does with an
+        empty buffer is repeat whatever was in it, which is a loud tearing
+        noise.
+
+        Stopping the voices first does not shorten the wait. It changes what
+        the wait sounds like: an underrun of silence is silence, so the
+        pattern cuts out for as long as the card takes and comes back in
+        time. The clock is left running, so it comes back where it would
+        have been rather than where it stopped.
+        """
+        for track in range(TRACK_COUNT):
+            sequencer.silence_track(track)
+        return work()
+
+    # --- warming ----------------------------------------------------------
+
+    def warm_step(self):
+        """Do one slow card read. Returns False when there are none left.
+
+        Called once per pass while the startup banner is up. Each of these
+        measured most of a second on the badge and none of them can be
+        afforded once a pattern is playing.
+
+        What is warmed is the catalog, not the rows. The rows are built from
+        it - eight track lists all read the same sample listing - so warming
+        the three listings makes every row in the tree cheap to open, and
+        warming the rows as well would only add their allocation to the boot
+        for no gain.
+        """
+        if self._warmed >= len(_WARM_CARD):
+            return False
+        step = _WARM_CARD[self._warmed]
+        self._warmed += 1
+        try:
+            step(self)
+        except OSError:
+            # No card, or a card that will not answer. Not fatal: the badge
+            # plays without one, and the rows that need it will say so.
+            pass
+        return True
+
+    def _deferred(self):
+        found = []
+        _collect(self.menu.root, found)
+        return found
+
+    # --- songs and kits ---------------------------------------------------
+
+    def _save_song(self, name):
+        song = sequencer.song
+        try:
+            self._quietly(lambda: songfile.save(song, name))
+        except StoreError as error:
+            self._fail(error)
+            return
+        song.name = name
+        self._forget_listings(songs=True)
+        self._show("saved %s" % name)
+
+    def _save_kit(self, name):
+        song = sequencer.song
+        try:
+            self._quietly(lambda: kitfile.save(song.kit, name))
+        except StoreError as error:
+            self._fail(error)
+            return
+        song.kit_name = name
+        self._forget_listings(kits=True)
+        self._show("saved %s" % name)
+
+    def _rename(self, module, old, new, kind):
+        if not old:
+            # Nothing on the card yet, so this is a save under a new name.
+            if kind == "song":
+                self._save_song(new)
+            else:
+                self._save_kit(new)
+            return
+        try:
+            self._quietly(lambda: module.rename(old, new))
+        except StoreError as error:
+            self._fail(error)
+            return
+        if kind == "song":
+            sequencer.song.name = new
+        else:
+            sequencer.song.kit_name = new
+        self._forget_listings(songs=kind == "song", kits=kind != "song")
+        self._show("renamed")
+
+    def _load_song(self, name):
+        try:
+            song = self._quietly(lambda: songfile.load(name))
+        except StoreError as error:
+            self._fail(error)
+            return
+        song.name = name
+        loaded = sequencer.load_song(song)
+        # Out of the list of songs: it has been chosen, and staying in it
+        # invites choosing another by accident.
+        self.menu.back()
+        self._show("%s %d/%d" % (name, loaded, TRACK_COUNT))
+
+    def _load_kit(self, name):
+        try:
+            paths = self._quietly(lambda: kitfile.load(name))
+        except StoreError as error:
+            self._fail(error)
+            return
+        song = sequencer.song
+        for track in range(TRACK_COUNT):
+            song.set_sample(track, paths[track])
+        song.kit_name = name
+        loaded = sequencer.load_kit(paths)
+        self.menu.back()
+        self._show("%s %d/%d" % (name, loaded, TRACK_COUNT))
+
+    def _delete(self, module, name, song, attribute):
+        removed = self._quietly(lambda: module.delete(name))
+        if removed and getattr(song, attribute) == name:
+            # The badge is no longer holding something that exists on the
+            # card, so Save has to ask for a name rather than write it back.
+            setattr(song, attribute, None)
+        # Out of the listing first: it is about to be forgotten, and being
+        # left standing in a branch with no rows reads as an empty card.
+        self.menu.back()
+        self._forget_listings(songs=attribute == "name", kits=attribute != "name")
+        self._show("deleted" if removed else "not there")
+
+    def _set_sample(self, track, path):
+        song = sequencer.song
+        song.set_sample(track, path)
+        if path is None:
+            sequencer.load_track(track, None)
+            self._show("T%d cleared" % (track + 1))
+            return
+        if self._quietly(lambda: sequencer.load_track(track, path)):
+            # Audible confirmation, which on a badge with eight identical
+            # pads is worth more than the words.
+            sequencer.trigger(track, 100)
+            self._show("T%d %s" % (track + 1, _short(path)))
+        else:
+            song.set_sample(track, None)
+            self._show("T%d failed" % (track + 1))
+
+    def _forget_listings(self, songs=False, kits=False):
+        """Make the next open of Load or Delete read the card again.
+
+        Only after this badge has written to it, and only the listing that
+        changed: re-reading is most of a second, so doing it speculatively
+        is the difference between a menu that opens and one that stalls.
+
+        Which rows those are is asked of the rows themselves - each deferred
+        branch carries the listing it was built from. Finding them by their
+        position in the tree instead would break silently the first time a
+        section was reordered in engine/settings.py.
+        """
+        self.catalog.forget(songs=songs, kits=kits)
+        wanted = []
+        if songs:
+            wanted.append("songs")
+        if kits:
+            wanted.append("kits")
+        for node in self._deferred():
+            if node.kind in wanted:
+                node.invalidate()
+        # The cursor may be standing in one of the lists just forgotten. The
+        # callers all leave it first, but that is a courtesy to the player
+        # rather than something this can rely on, and a branch with no rows
+        # reads as an empty card.
+        self.menu.refresh()
+
+    # --- messages ---------------------------------------------------------
+
+    def _all_stale(self):
+        self._stale = (1 << len(self._screen)) - 1
+
+    def _show(self, text):
+        self._message = text
+        self._message_until = ticks_ms() + MESSAGE_MS
+        self._all_stale()
+
+    def _fail(self, error):
+        # The message carries the path and the errno, which will not fit.
+        # The first words are the part that says what went wrong.
+        self._show(str(error)[:WIDTH])
+
+    def _expire_message(self):
+        if self._message_until is None:
+            return
+        if ticks_diff(ticks_ms(), self._message_until) >= 0:
+            self._message = None
+            self._message_until = None
+            self._all_stale()
+
+    # --- drawing ----------------------------------------------------------
+
+    def _build_one_line(self):
+        """Rebuild at most one stale line. See _stale."""
+        if not self._stale:
+            return
+        for _ in range(len(self._screen)):
+            index = self._next_line
+            self._next_line = (index + 1) % len(self._screen)
+            if self._stale & (1 << index):
+                self._stale &= ~(1 << index)
+                self._screen.set_line(index, self._line(index))
+                return
+
+    def _line(self, index):
+        """One line of whichever screen is showing."""
+        if self._entry is not None:
+            if index == 0:
+                return "Name:"
+            if index == 1:
+                return self._entry.preview[:WIDTH]
+            return "[" + self._entry.letter_label + "] B=del"
+        if self._editor is not None:
+            if index == 0:
+                return self.menu.breadcrumb(WIDTH)
+            if index == 1:
+                return self._editor.label + ": " + self._editor.text
+            return "A=keep  B=cancel"
+        if self._confirm is not None:
+            if index == 0:
+                return CONFIRM_VERBS.get(self._confirm[0], "Are you sure?")
+            if index == 1:
+                return str(self._confirm[1])[:WIDTH]
+            return "A=yes  B=no"
+        if self._message is not None:
+            if index == 0:
+                return self.menu.breadcrumb(WIDTH)
+            return self._message[:WIDTH] if index == 1 else ""
+        if index == 0:
+            return self._heading()
+        return self.menu.row(index - 1, WIDTH)
+
+    def _lines(self):
+        """Every line at once. For entering the screen, and for tests."""
+        return [self._line(index) for index in range(len(self._screen))]
+
+    def _heading(self):
+        """Where you are, and how far down a list that does not fit."""
+        position, total = self.menu.position
+        if total <= MENU_ROWS:
+            return self.menu.breadcrumb(WIDTH)
+        count = " %d/%d" % (position, total)
+        return "%-*s%s" % (
+            WIDTH - len(count),
+            self.menu.breadcrumb(WIDTH - len(count)),
+            count,
+        )
+
+
+# One slow card operation each, done a pass apart while the banner is up.
+# Creating the directories is here rather than at the first save because on
+# an empty card that measured eight seconds.
+_WARM_CARD = (
+    lambda state: state.catalog.songs(),
+    lambda state: state.catalog.kits(),
+    lambda state: state.catalog.samples(),
+    lambda state: songfile.available(),
+    lambda state: kitfile.available(),
+)
+
+
+def _collect(item, found):
+    """Every deferred branch in the tree, in the order they are shown."""
+    if item.builder is not None:
+        found.append(item)
+    for child in item.children or ():
+        _collect(child, found)
+
+
+def _short(path):
+    """Just the filename, which is all a 21 column screen has room for."""
+    if not path:
+        return "-"
+    return path.rsplit("/", 1)[-1]

@@ -86,7 +86,7 @@ class FlashyState(State):
         self.last_position = position
         key = keys.events.get()
         if key and key.pressed:
-            machine.go_to_state("menu")
+            machine.go_to_state("settings")
 
     def animation_selector(self, machine, name):
         if name == "rainbow":

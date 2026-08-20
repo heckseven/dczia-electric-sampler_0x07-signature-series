@@ -9,7 +9,7 @@ import pytest
 
 from engine.controls import (
     ARM_RECORD,
-    BACK,
+    SETTINGS,
     CLEAR_TRACK,
     ERASE,
     FUNCTION,
@@ -166,7 +166,7 @@ def test_arming_twice_needs_two_chords(controls):
 
 
 def test_select_click_goes_back(controls):
-    assert controls.press(SELECT) == [(BACK, None)]
+    assert controls.press(SELECT) == [(SETTINGS, None)]
 
 
 def test_volume_click_mutes(controls):

@@ -60,10 +60,16 @@ def nearest_step(tick, ticks_per_step, length):
     return int((tick + ticks_per_step // 2) // ticks_per_step) % length
 
 
-def step_fires_at(song, track, step, strength):
-    """Absolute tick within the pattern where this step's hit sounds."""
+def step_fires_at(song, track, step, strength, length=None):
+    """Absolute tick within this track's pattern where the hit sounds.
+
+    Within *this track's* pattern: tracks have their own lengths, so they
+    wrap at their own points and a tick means a different position in each.
+    """
     ticks = song.ticks_per_step
-    total = pattern_ticks(song.length, ticks)
+    if length is None:
+        length = song.track_length(track)
+    total = pattern_ticks(length, ticks)
     offset = effective_offset(song.offset(track, step), strength)
     return (step * ticks + offset) % total
 
@@ -75,20 +81,24 @@ def hits_due(song, tick, strength, include_muted=False):
     that instead, so one track can swing while the rest stay straight.
     """
     ticks = song.ticks_per_step
-    length = song.length
-    total = pattern_ticks(length, ticks)
-    position = tick % total
-    step = nearest_step(position, ticks, length)
-
     due = []
+    # Each track is walked on its own clock. There is no shared pattern
+    # position once lengths differ: at the same tick, a sixteen-step track
+    # and a twelve-step one are at different points in their own bars, and
+    # the pair only agree again after forty-eight steps. That drift is the
+    # feature, so nothing here may hoist the length out of the loop.
     for track in range(len(song.steps)):
+        length = song.track_length(track)
+        total = pattern_ticks(length, ticks)
+        position = tick % total
+        step = nearest_step(position, ticks, length)
         velocity = song.steps[track][step]
         if velocity == 0:
             continue
         if song.muted[track] and not include_muted:
             continue
         track_strength = song.strength_for(track, strength)
-        if step_fires_at(song, track, step, track_strength) == position:
+        if step_fires_at(song, track, step, track_strength, length) == position:
             due.append((track, step, velocity))
     return due
 

@@ -64,7 +64,7 @@ def seq_pads(song, track, page, playhead=None):
     colors = []
     for slot in range(STEPS_PER_PAGE):
         step = page * STEPS_PER_PAGE + slot
-        if step >= song.length:
+        if step >= song.track_length(track):
             colors.append(OUT_OF_PATTERN)
             continue
         if step == playhead:
@@ -127,7 +127,7 @@ def function_indicator(mode, clock=None, blink=False, now=None):
 def status_line(song, mode, track, page, transport, clock):
     """The top line of the display: where you are."""
     if mode == SEQ:
-        where = "T%d P%d/%d" % (track + 1, page + 1, song.page_count)
+        where = "T%d P%d/%d" % (track + 1, page + 1, song.page_count_for(track))
     else:
         where = "LIVE T%d" % (track + 1)
     marks = []
@@ -149,7 +149,11 @@ def detail_line(song, clock, volume_percent=None):
     hundredth - a display of those would read 0 for most of its useful
     travel and tell the player nothing.
     """
-    line = "%d %s L%d" % (int(clock.bpm), song.division_name, song.length)
+    # A single length is a lie once tracks differ, so say so rather than
+    # pick one: "L16" means every track, "L*" means they vary and the
+    # per-track number is on the SEQ page for the track being edited.
+    length = "L%d" % song.length if song.uniform_length else "L*"
+    line = "%d %s %s" % (int(clock.bpm), song.division_name, length)
     if volume_percent is not None:
         line += " V%d" % volume_percent
     return line
@@ -160,7 +164,7 @@ def step_row(song, track, page, playhead=None):
     row = []
     for slot in range(STEPS_PER_PAGE):
         step = page * STEPS_PER_PAGE + slot
-        if step >= song.length:
+        if step >= song.track_length(track):
             row.append(" ")
         elif step == playhead:
             row.append("o")

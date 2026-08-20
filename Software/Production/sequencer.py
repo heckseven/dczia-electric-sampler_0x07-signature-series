@@ -665,7 +665,9 @@ class Sequencer:
     def capture(self, track):
         """Write a live hit into the pattern at the current position."""
         step, offset = quantize.quantize_hit(
-            self.clock.tick, self.song.ticks_per_step, self.song.length
+            self.clock.tick,
+            self.song.ticks_per_step,
+            self.song.track_length(self.selected_track),
         )
         self.song.set_step(track, step, DEFAULT_VELOCITY, offset)
         return step
@@ -673,9 +675,10 @@ class Sequencer:
     def erase(self, track):
         """Live erase: clear this track's hit at the current position."""
         step = quantize.nearest_step(
-            self.clock.tick % (self.song.length * self.song.ticks_per_step),
+            self.clock.tick
+            % (self.song.track_length(self.selected_track) * self.song.ticks_per_step),
             self.song.ticks_per_step,
-            self.song.length,
+            self.song.track_length(self.selected_track),
         )
         self.song.clear_step(track, step)
         return step
@@ -707,7 +710,7 @@ class Sequencer:
 
     @property
     def current_step(self):
-        total = self.song.length * self.song.ticks_per_step
+        total = self.song.track_length(self.selected_track) * self.song.ticks_per_step
         return (self.clock.tick % total) // self.song.ticks_per_step
 
     # --- sync -------------------------------------------------------------
@@ -874,7 +877,8 @@ class Sequencer:
         return self.mode
 
     def set_page(self, page):
-        self.page = page % max(1, self.song.page_count)
+        pages = self.song.page_count_for(self.selected_track)
+        self.page = page % max(1, pages)
         return self.page
 
 

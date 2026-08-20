@@ -64,7 +64,15 @@ class Song:
         # which is what every track does until one is deliberately given its
         # own feel - a swung hat over a straight kick, say.
         self.track_strength = [None] * TRACK_COUNT
-        self._length = clamp(length, MIN_LENGTH, MAX_STEPS)
+        # Every track has its own length, so tracks of different lengths
+        # drift against each other and realign on their own cycle. A
+        # sixteen-step kick under a twelve-step hat repeats every forty-eight
+        # steps without either pattern being written out that long.
+        #
+        # A bytearray because the values are 1..64 and there are eight of
+        # them, and because that is what the rest of this model already
+        # does with per-step data.
+        self._lengths = bytearray([clamp(length, MIN_LENGTH, MAX_STEPS)] * TRACK_COUNT)
         self._division = clamp(division, 0, len(DIVISIONS) - 1)
         self._bpm = clamp(bpm, MIN_BPM, MAX_BPM)
 
@@ -72,11 +80,42 @@ class Song:
 
     @property
     def length(self):
-        return self._length
+        """The longest track, which is how far the pattern reaches.
+
+        There is no single song length once tracks differ, so this is the
+        one that matters for anything asking how big the pattern is: the
+        page count, and how much of it a display has to be able to show.
+        """
+        return max(self._lengths)
+
+    @property
+    def lengths(self):
+        return self._lengths
+
+    def track_length(self, track):
+        return self._lengths[track]
 
     def set_length(self, steps):
-        self._length = clamp(steps, MIN_LENGTH, MAX_STEPS)
-        return self._length
+        """Set every track's length. This is what the Global setting does."""
+        steps = clamp(steps, MIN_LENGTH, MAX_STEPS)
+        for track in range(TRACK_COUNT):
+            self._lengths[track] = steps
+        return steps
+
+    def set_track_length(self, track, steps):
+        """Set one track's length, leaving the others where they are."""
+        steps = clamp(steps, MIN_LENGTH, MAX_STEPS)
+        self._lengths[track] = steps
+        return steps
+
+    @property
+    def uniform_length(self):
+        """Whether every track is still the same length.
+
+        Worth asking before showing a single number for "the" length: once
+        tracks differ, one number is a lie.
+        """
+        return len(set(self._lengths)) == 1
 
     @property
     def division(self):
@@ -118,10 +157,14 @@ class Song:
         self._bpm = clamp(int(value), MIN_BPM, MAX_BPM)
         return self._bpm
 
+    def page_count_for(self, track):
+        """Pages needed to show one track, 8 steps to a page."""
+        return (self._lengths[track] + STEPS_PER_PAGE - 1) // STEPS_PER_PAGE
+
     @property
     def page_count(self):
-        """Pages needed to show the pattern, 8 steps to a page."""
-        return (self._length + STEPS_PER_PAGE - 1) // STEPS_PER_PAGE
+        """Pages needed to show the longest track."""
+        return (self.length + STEPS_PER_PAGE - 1) // STEPS_PER_PAGE
 
     # --- steps ------------------------------------------------------------
 
@@ -166,7 +209,7 @@ class Song:
 
     def is_empty(self):
         for track in range(TRACK_COUNT):
-            for step in range(self._length):
+            for step in range(self._lengths[track]):
                 if self.steps[track][step] != OFF:
                     return False
         return True
@@ -226,7 +269,8 @@ class Song:
         """A msgpack-friendly form: bytes rather than lists of ints."""
         return {
             "v": 1,
-            "length": self._length,
+            "length": self.length,
+            "lengths": bytes(self._lengths),
             "division": self._division,
             "bpm": self._bpm,
             "kit_name": self.kit_name,
@@ -252,6 +296,10 @@ class Song:
             division=data.get("division", DEFAULT_DIVISION),
             bpm=data.get("bpm", 120),
         )
+        lengths = data.get("lengths")
+        if lengths:
+            for track in range(min(TRACK_COUNT, len(lengths))):
+                song.set_track_length(track, _as_int(lengths[track], song.length))
         song.kit_name = _as_name(data.get("kit_name"))
         kit = data.get("kit") or []
         for track in range(min(TRACK_COUNT, len(kit))):

@@ -192,7 +192,7 @@ class SamplerState(State):
 
     def _toggle_step(self, slot):
         step = sequencer.page * STEPS_PER_PAGE + slot
-        if step >= sequencer.song.length:
+        if step >= sequencer.song.track_length(sequencer.selected_track):
             return
         track = sequencer.selected_track
         turned_on = sequencer.song.toggle_step(track, step)
@@ -230,7 +230,9 @@ class SamplerState(State):
         song = sequencer.song
         if target == "length":
             song.set_length(song.length + delta)
-            sequencer.set_page(min(sequencer.page, song.page_count - 1))
+            sequencer.set_page(
+                min(sequencer.page, song.page_count_for(sequencer.selected_track) - 1)
+            )
         elif target == "step_velocity":
             self._nudge_velocity(delta)
         else:
@@ -255,7 +257,7 @@ class SamplerState(State):
         track = sequencer.selected_track
         for slot in self.controls.held_pads:
             step = sequencer.page * STEPS_PER_PAGE + slot
-            if step >= song.length or not song.is_on(track, step):
+            if step >= song.track_length(track) or not song.is_on(track, step):
                 continue
             level = song.velocity(track, step) + delta * 4
             # Song.set_velocity clamps to this range itself.

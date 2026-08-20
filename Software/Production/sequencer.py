@@ -23,7 +23,7 @@ from adafruit_midi.midi_continue import Continue
 from adafruit_midi.note_on import NoteOn
 from adafruit_midi.start import Start
 from adafruit_midi.stop import Stop
-from audiocore import RawSample, WaveFile
+from audiocore import WaveFile
 from supervisor import ticks_ms
 
 from engine import wav
@@ -68,15 +68,6 @@ BITS = 16
 # they resolve wherever the samples actually live - card first, then flash.
 DEFAULT_KIT = ("Kick.wav", "Snare.wav", "Tom.wav")
 
-RAM_BUDGET = 48 * 1024
-MAX_RAM_SAMPLE = 24 * 1024
-
-# Read buffer for tracks that are too big for RAM and must stream. CircuitPython
-# caps WaveFile's buffer at 1024 bytes - larger raises "buffer length must be
-# 8-1024" - and the cap costs real throughput: the card sustains 679 KB/s in
-# 4 KB reads but only 333 KB/s in 1 KB ones. 1024 is therefore simply the most
-# the runtime allows, and streaming capacity is set by that, not by the card.
-STREAM_BUFFER = 1024
 
 # Two voices per track plus two spare. Mono per track is the default, but
 # voices are nearly free - 24 of them measured at about 1.1KB against 141KB
@@ -250,30 +241,13 @@ class Sequencer:
         self.last_audio_error = None
 
         self._samples = [None] * TRACK_COUNT
-        # Everything a playing sample reads through, held for as long as it
-        # can play. CircuitPython's audio objects keep pointers into these
-        # buffers, not references the collector can trace, so a buffer that
-        # is only a local is collectable the moment it goes out of scope -
-        # and the audio then reads whatever took its place. That is loud
-        # garbage at best and a hard fault at worst. See _load_to_ram.
-        #
-        # Both the bytes and the memoryview over them are kept. A memoryview
-        # in MicroPython does not necessarily keep its base object alive, so
-        # holding only the view can still leave the bytes collectable, and
-        # holding only the bytes relies on the sample pointing at them rather
-        # than at the view. Holding both costs two slots in a list.
-        self._audio = [None] * TRACK_COUNT
-        self._views = [None] * TRACK_COUNT
-        # The read buffer a streamed track's WaveFile reads through.
-        self._stream_buffers = [None] * TRACK_COUNT
-        # An auditioned sample is owned by nothing else; it and its buffer
-        # have to live here until the next audition replaces them.
+        # An auditioned sample is owned by nothing else, so it lives here
+        # until the next audition replaces it. Its read buffer belongs to
+        # CircuitPython, like every other sample's; see _load_one.
         self._audition_sample = None
-        self._audition_buffer = None
         self._files = [None] * TRACK_COUNT
         self._streamed = [False] * TRACK_COUNT
         self._sizes = [0] * TRACK_COUNT
-        self._ram_used = 0
         self._next_voice = [0] * TRACK_COUNT
         self.midi_out = [False] * TRACK_COUNT  # per track, opt in
 
@@ -330,90 +304,44 @@ class Sequencer:
             )
             return False
 
-        sample, audio, view = self._load_to_ram(handle, offset, size)
-        if sample is not None:
+        # Let CircuitPython own the buffer. Passing our own - either a
+        # bytearray to WaveFile or a memoryview to RawSample - is what put
+        # audio memory under the Python collector, and the badge has spent a
+        # day hard faulting on it: no traceback, USB endpoints gone, the
+        # amplifier left making noise, recoverable only by unplugging.
+        #
+        # Holding a reference was tried, first to the bytes, then to the view,
+        # then to both. The badge survived twenty beats and faulted on forty,
+        # which is what a collection-timing bug looks like from outside. The
+        # firmware this reworked never had the fault and never had the
+        # pattern: it played WaveFile objects built with no buffer argument,
+        # so the memory the audio read was allocated and owned by the runtime
+        # and was never a candidate for collection at all.
+        #
+        # The cost is bandwidth rather than safety. A voice needs 31.25 KB/s
+        # at this rate, flash gives about 391 KB/s and the card 437, so three
+        # voices want under a quarter of what either delivers.
+        try:
+            handle.seek(0)
+            self._samples[track] = WaveFile(handle)
+        except (OSError, ValueError, MemoryError):
+            # MemoryError as well: read_format only checks the chunk headers
+            # it needs, so a file it accepts can still upset CircuitPython's
+            # own WAV parser here. The kit loads at import, so an escape from
+            # this handler fails the badge at boot rather than silencing one
+            # track.
             handle.close()
-            self._samples[track] = sample
-            self._audio[track] = audio
-            self._views[track] = view
-            self._streamed[track] = False
-            self._sizes[track] = size
-        else:
-            try:
-                handle.seek(0)
-                buffer = bytearray(STREAM_BUFFER)
-                self._samples[track] = WaveFile(handle, buffer)
-                self._stream_buffers[track] = buffer
-            except (OSError, ValueError, MemoryError):
-                # MemoryError as well: read_format only checks the chunk
-                # headers it needs, so a file it accepts can still upset
-                # CircuitPython's own WAV parser here. This runs for every
-                # kit sample too big for RAM, and the kit loads at import,
-                # so an escape from this handler fails the badge at boot.
-                handle.close()
-                return False
-            self._files[track] = handle
-            self._streamed[track] = True
+            return False
+        self._files[track] = handle
+        self._streamed[track] = True
+        self._sizes[track] = size
 
         self.song.set_sample(track, path)
         return True
 
-    def _load_to_ram(self, handle, offset, size):
-        """Read the audio into memory.
-
-        Returns (sample, buffer), or (None, None) to fall back to streaming.
-        The buffer is returned rather than dropped because the caller has to
-        keep it: see the comment on the RawSample below.
-        """
-        if size > MAX_RAM_SAMPLE or self._ram_used + size > RAM_BUDGET:
-            return None, None, None
-        try:
-            handle.seek(offset)
-            data = handle.read(size)
-        except (OSError, MemoryError):
-            return None, None, None
-        if len(data) < size:
-            return None, None, None
-        try:
-            # RawSample infers bit depth from the buffer's element size: raw
-            # bytes mean 8-bit, which the mixer rejects at play() with "the
-            # sample's bits_per_sample does not match". Casting to 16-bit
-            # signed says what the audio actually is. A memoryview rather than
-            # array.array('h', data) so the audio is not copied - a second
-            # copy of every sample would double peak memory during loading.
-            # The memoryview is named and kept, not built inline. It is what
-            # the sample was actually handed, and holding only the bytes
-            # underneath it relies on an assumption about which of the two
-            # CircuitPython keeps a pointer into. Holding the view holds both.
-            view = memoryview(data).cast("h")
-            sample = RawSample(
-                view,
-                channel_count=CHANNELS,
-                sample_rate=SAMPLE_RATE,
-            )
-        except (ValueError, MemoryError, TypeError):
-            # TypeError as well: cast("h") rejects a buffer whose length is not
-            # a multiple of two, and like MemoryError it is not caught by the
-            # handlers above, so it would reach the main loop.
-            return None, None, None
-        self._ram_used += size
-        # Both go back to the caller deliberately. The sample refers to
-        # this memory and the I2S DMA reads it for as long as the sample can
-        # play, but nothing here is a reference the garbage collector can
-        # see: once the last name for `data` goes out of scope the bytes are
-        # collectable, and playing a sample whose buffer has been reused is a
-        # read of memory that is now something else. That is a hard fault,
-        # not an exception - the badge drops to safe mode with no traceback,
-        # which is what it did.
-        return sample, data, view
-
     def is_streamed(self, track):
         """True when a track plays from storage rather than RAM."""
         return self._streamed[track]
-
-    @property
-    def ram_used(self):
-        return self._ram_used
 
     def load_demo_pattern(self):
         """A plain beat, so Play does something on a badge straight out of a box.
@@ -443,17 +371,11 @@ class Sequencer:
         return loaded
 
     def _release_track(self, track):
-        if self._samples[track] is not None and not self._streamed[track]:
-            # Reclaim the budget this track's audio was holding.
-            self._ram_used = max(0, self._ram_used - self._sample_bytes(track))
         self._sizes[track] = 0
         self._streamed[track] = False
         self._samples[track] = None
-        # Released only after the sample, so a buffer never outlives its
-        # owner in the other direction either.
-        self._audio[track] = None
-        self._views[track] = None
-        self._stream_buffers[track] = None
+        # The handle goes after the sample, never before: the sample reads
+        # through it for as long as it can play.
         handle = self._files[track]
         self._files[track] = None
         if handle is not None:
@@ -576,9 +498,8 @@ class Sequencer:
             handle = open(path, "rb")
         except OSError:
             return False
-        buffer = bytearray(STREAM_BUFFER)
         try:
-            sample = WaveFile(handle, buffer)
+            sample = WaveFile(handle)
         except (OSError, ValueError, MemoryError):
             # Close it here: a browser paging through a card full of bad files
             # would otherwise leak a descriptor for every one of them.
@@ -591,7 +512,6 @@ class Sequencer:
         # Held before playing, not after: the sample and the buffer it reads
         # through must outlive this function, and nothing else owns them.
         self._audition_sample = sample
-        self._audition_buffer = buffer
         voice.play(sample)
         return True
 

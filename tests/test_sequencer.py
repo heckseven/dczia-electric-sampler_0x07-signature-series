@@ -89,13 +89,6 @@ def test_a_bad_sample_does_not_disturb_other_tracks(seq, kit):
     assert seq.has_sample(2) and seq.has_sample(4)
 
 
-def test_a_ram_loaded_track_holds_no_file_handle(seq, kit):
-    """Loading into RAM closes the file at once - nothing to leak."""
-    seq.load_track(0, kit[0])
-    assert seq.is_streamed(0) is False
-    assert seq._files[0] is None
-
-
 def test_triggering_a_silent_track_is_harmless(seq):
     assert seq.trigger(0, 100) is False
 
@@ -493,48 +486,6 @@ def write_wav_sized(path, data_bytes, rate=None, channels=1, bits=16):
     return str(path)
 
 
-def test_a_short_sample_is_loaded_into_ram(seq, tmp_path):
-    """Storage cannot feed the mixer reliably; RAM takes it out of the path."""
-    path = write_wav_sized(tmp_path / "short.wav", 8 * 1024)
-    assert seq.load_track(0, path) is True
-    assert seq.has_sample(0)
-    assert seq.is_streamed(0) is False
-    assert seq.ram_used == 8 * 1024
-
-
-def test_an_oversized_sample_falls_back_to_streaming(seq, tmp_path):
-    """One long sound in a kit should still play, just from storage."""
-    path = write_wav_sized(tmp_path / "long.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
-    assert seq.load_track(0, path) is True
-    assert seq.has_sample(0)
-    assert seq.is_streamed(0) is True
-    assert seq.ram_used == 0
-
-
-def test_the_ram_budget_is_not_exceeded(seq, tmp_path):
-    size = sequencer_module.MAX_RAM_SAMPLE
-    for track in range(TRACK_COUNT):
-        path = write_wav_sized(tmp_path / ("t%d.wav" % track), size)
-        seq.load_track(track, path)
-    assert seq.ram_used <= sequencer_module.RAM_BUDGET
-
-
-def test_tracks_past_the_budget_stream_instead_of_failing(seq, tmp_path):
-    size = sequencer_module.MAX_RAM_SAMPLE
-    for track in range(TRACK_COUNT):
-        path = write_wav_sized(tmp_path / ("t%d.wav" % track), size)
-        assert seq.load_track(track, path) is True, "every track must still load"
-    assert any(seq.is_streamed(t) for t in range(TRACK_COUNT))
-
-
-def test_reloading_a_track_returns_its_ram(seq, tmp_path):
-    path = write_wav_sized(tmp_path / "a.wav", 8 * 1024)
-    seq.load_track(0, path)
-    assert seq.ram_used == 8 * 1024
-    seq.load_track(0, path)
-    assert seq.ram_used == 8 * 1024, "budget must not leak on reload"
-
-
 def test_a_wrong_rate_sample_is_refused_with_a_reason(seq, tmp_path):
     """The mixer has one fixed format; 44.1k would play an octave down."""
     path = write_wav_sized(tmp_path / "44k.wav", 4096, rate=44100)
@@ -552,7 +503,7 @@ def test_a_stereo_sample_is_refused(seq, tmp_path):
 
 def test_reloading_a_streamed_track_closes_its_file(seq, tmp_path):
     """Only streamed tracks hold a handle, and it must not leak on reload."""
-    big = write_wav_sized(tmp_path / "big.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
+    big = write_wav_sized(tmp_path / "big.wav", 64 * 1024)
     seq.load_track(0, big)
     assert seq.is_streamed(0) is True
     first = seq._files[0]
@@ -563,32 +514,12 @@ def test_reloading_a_streamed_track_closes_its_file(seq, tmp_path):
 
 
 def test_releasing_a_streamed_track_closes_its_file(seq, tmp_path):
-    big = write_wav_sized(tmp_path / "big2.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
+    big = write_wav_sized(tmp_path / "big2.wav", 64 * 1024)
     seq.load_track(3, big)
     handle = seq._files[3]
     seq.load_track(3, None)
     assert handle.closed
     assert not seq.has_sample(3)
-
-
-def test_a_ram_loaded_sample_can_actually_be_played(seq, tmp_path):
-    """RawSample infers bit depth from the buffer's element size.
-
-    Handing it raw bytes makes it 8-bit, which constructs happily and only
-    fails at play() with "bits_per_sample does not match". This exercises the
-    play path so that mistake cannot reach hardware again.
-    """
-    path = write_wav_sized(tmp_path / "ram.wav", 8 * 1024)
-    seq.load_track(0, path)
-    assert seq.is_streamed(0) is False
-    assert seq.trigger(0, 100) is True
-    assert track_is_sounding(seq, 0)
-
-
-def test_a_ram_loaded_sample_is_sixteen_bit(seq, tmp_path):
-    path = write_wav_sized(tmp_path / "ram2.wav", 4096)
-    seq.load_track(0, path)
-    assert seq._samples[0].bits_per_sample == 16
 
 
 def test_midi_is_polled_on_a_timer_not_every_pass(seq, monkeypatch):
@@ -612,20 +543,6 @@ def test_sync_input_is_still_polled_every_pass(seq, monkeypatch):
     for _ in range(6):
         seq.tick()
     assert len(polls) == 6
-
-
-def test_streamed_tracks_use_the_largest_allowed_buffer(seq, tmp_path):
-    """CircuitPython caps WaveFile's buffer at 1024 bytes.
-
-    That cap is what limits streaming: the card sustains 679 KB/s in 4 KB
-    reads but only 333 KB/s in 1 KB ones. Asking for more raises ValueError,
-    so this pins the value at the maximum the runtime permits.
-    """
-    assert sequencer_module.STREAM_BUFFER == 1024
-    path = write_wav_sized(tmp_path / "big3.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
-    assert seq.load_track(0, path) is True
-    assert seq.is_streamed(0) is True
-    assert len(seq._samples[0].buffer) == sequencer_module.STREAM_BUFFER
 
 
 # --- falling through to a usable copy -------------------------------------
@@ -816,14 +733,8 @@ def test_loading_the_demo_pattern_does_not_start_the_stream(seq):
 # so the handlers have to cover more than engine.wav's own errors.
 
 
-def _forcing_streaming(monkeypatch):
-    """Push every sample down the streaming branch instead of the RAM one."""
-    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
-
-
 def test_a_sample_that_exhausts_ram_while_streaming_is_skipped(seq, kit, monkeypatch):
     """MemoryError is neither OSError nor ValueError, so it needs naming."""
-    _forcing_streaming(monkeypatch)
 
     def out_of_memory(file_obj, buffer=None):
         raise MemoryError("no room")
@@ -835,7 +746,6 @@ def test_a_sample_that_exhausts_ram_while_streaming_is_skipped(seq, kit, monkeyp
 
 def test_a_bad_sample_does_not_take_the_whole_kit_down(seq, kit, monkeypatch):
     """One unreadable file must cost one track, not the badge."""
-    _forcing_streaming(monkeypatch)
     real = sequencer_module.WaveFile
     calls = []
 
@@ -853,7 +763,6 @@ def test_a_bad_sample_does_not_take_the_whole_kit_down(seq, kit, monkeypatch):
 
 def test_a_failed_stream_does_not_leak_the_file_handle(seq, kit, monkeypatch):
     """Handles are the scarce resource; a load that fails must return one."""
-    _forcing_streaming(monkeypatch)
 
     def out_of_memory(file_obj, buffer=None):
         raise MemoryError("no room")
@@ -969,111 +878,11 @@ def test_the_next_hit_can_still_start_the_stream(seq, kit):
 # straight to safe mode with no traceback, which is exactly what it did.
 
 
-def test_a_ram_sample_keeps_its_audio_alive(seq, kit):
-    seq.load_kit(kit)
-    for track in range(TRACK_COUNT):
-        assert not seq.is_streamed(track), "this test is about the RAM path"
-        assert seq._audio[track] is not None, "track %d holds no buffer" % track
-
-
-def test_the_buffer_is_the_audio_that_was_read(seq, kit):
-    """Holding the wrong object would satisfy a reference count and nothing else."""
-    seq.load_kit(kit)
-    assert len(seq._audio[0]) == seq._sizes[0]
-
-
-def test_both_the_bytes_and_the_view_over_them_are_held(seq, kit):
-    """Either one alone leaves a gap.
-
-    A memoryview in MicroPython does not necessarily keep its base object
-    alive, so holding only the view can still let the bytes be collected.
-    Holding only the bytes assumes the sample points at them rather than at
-    the view it was actually handed. The audio reads whatever replaced them
-    either way, and that is a hard fault rather than an exception.
-    """
-    seq.load_kit(kit)
-    for track in range(TRACK_COUNT):
-        assert seq._audio[track] is not None, "track %d lost its bytes" % track
-        assert seq._views[track] is not None, "track %d lost its view" % track
-    assert seq._views[0].nbytes == seq._sizes[0]
-
-
-def test_releasing_a_track_lets_both_go(seq, kit):
-    seq.load_kit(kit)
-    seq._release_track(0)
-    assert seq._audio[0] is None
-    assert seq._views[0] is None
-
-
-def test_releasing_a_track_lets_its_audio_go(seq, kit):
-    """Held too long is a leak; on this board that is 24 KB a track."""
-    seq.load_kit(kit)
-    seq._release_track(0)
-    assert seq._audio[0] is None
-
-
-def test_reloading_a_track_replaces_its_buffer(seq, kit):
-    seq.load_kit(kit)
-    first = seq._audio[0]
-    seq.load_track(0, kit[1])
-    assert seq._audio[0] is not None
-    assert seq._audio[0] is not first
-
-
-def test_a_streamed_track_holds_no_buffer(seq, kit, monkeypatch):
-    """Only the RAM path has audio to keep; streaming reads as it goes."""
-    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
-    seq.load_kit(kit)
-    assert seq.is_streamed(0)
-    assert seq._audio[0] is None
-
-
-def test_a_streamed_track_keeps_its_read_buffer(seq, kit, monkeypatch):
-    """Same defect as the RAM path, one function away.
-
-    WaveFile reads through the bytearray it was handed. Passing a fresh one
-    as an argument and keeping no other name for it makes it collectable as
-    soon as loading returns, and the audio then reads whatever replaced it.
-    """
-    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
-    seq.load_kit(kit)
-    assert seq.is_streamed(0)
-    assert seq._stream_buffers[0] is not None
-    assert len(seq._stream_buffers[0]) == sequencer_module.STREAM_BUFFER
-
-
-def test_releasing_a_streamed_track_lets_its_buffer_go(seq, kit, monkeypatch):
-    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
-    seq.load_kit(kit)
-    seq._release_track(0)
-    assert seq._stream_buffers[0] is None
-
-
-def test_an_auditioned_sample_outlives_the_call(seq, kit):
-    """Nothing else owns it: the voice is playing a local otherwise."""
-    assert seq.audition(kit[0]) is True
-    assert seq._audition_sample is not None
-    assert seq._audition_buffer is not None
-
-
 def test_a_failed_audition_holds_nothing(seq, tmp_path):
     bad = tmp_path / "bad.wav"
     bad.write_bytes(b"not a wav file at all")
     assert seq.audition(str(bad)) is False
     assert seq._audition_sample is None
-
-
-def test_every_playing_sample_is_owned_somewhere(seq, kit):
-    """The rule this class of bug keeps breaking, stated once.
-
-    Anything CircuitPython plays holds a pointer, not a traceable reference.
-    If the sequencer is not holding it, nothing is.
-    """
-    seq.load_kit(kit)
-    for track in range(TRACK_COUNT):
-        assert seq._samples[track] is not None
-        held = seq._audio[track] is not None or seq._stream_buffers[track] is not None
-        assert held, "track %d plays through a buffer nothing owns" % track
 
 
 # --- how loud the mixer is asked to be ------------------------------------
@@ -1190,3 +999,70 @@ def test_the_usb_timer_survives_the_tick_rollover(seq):
     finally:
         sequencer_module.midi_usb.receive = real
     assert calls, "USB stopped being polled across the wrap"
+
+
+# --- who owns the memory the audio reads ----------------------------------
+#
+# The rule, and the reason a day was lost to it: CircuitPython's audio
+# objects hold a raw pointer into whatever buffer they are given, not a
+# reference the collector can trace. Give one a Python buffer and it becomes
+# collectable while the DMA is still reading it, and the badge takes a hard
+# fault - no traceback, USB endpoints gone, recoverable only by unplugging.
+#
+# Holding a reference was tried three ways and the fault survived all of
+# them. The firmware this replaced never had it, because it never had the
+# pattern: it let CircuitPython allocate and own every read buffer.
+
+
+def test_no_python_buffer_is_handed_to_an_audio_object(seq, kit):
+    """The invariant, checked at the point of construction.
+
+    WaveFile takes an optional buffer. Passing one moves ownership of audio
+    memory to the Python heap, which is the whole defect.
+    """
+    seen = []
+    real = sequencer_module.WaveFile
+
+    def watching(file_obj, *args, **kwargs):
+        seen.append((args, kwargs))
+        return real(file_obj)
+
+    sequencer_module.WaveFile = watching
+    try:
+        seq.load_kit(kit)
+    finally:
+        sequencer_module.WaveFile = real
+    assert seen, "no samples were loaded"
+    for args, kwargs in seen:
+        assert not args and not kwargs, "a buffer was handed to WaveFile"
+
+
+def test_every_loaded_track_keeps_its_file_open(seq, kit):
+    """Streaming reads as it plays, so the handle has to outlive loading."""
+    seq.load_kit(kit)
+    for track in range(TRACK_COUNT):
+        assert seq.has_sample(track)
+        assert seq._files[track] is not None, "track %d closed its file" % track
+
+
+def test_releasing_a_track_closes_its_file(seq, kit):
+    """Handles are the scarce resource once nothing is held in RAM."""
+    seq.load_kit(kit)
+    handle = seq._files[0]
+    seq._release_track(0)
+    assert seq._files[0] is None
+    assert handle.closed
+
+
+def test_reloading_a_track_does_not_leak_a_handle(seq, kit):
+    seq.load_kit(kit)
+    first = seq._files[0]
+    seq.load_track(0, kit[1])
+    assert first.closed
+    assert seq._files[0] is not None
+
+
+def test_an_auditioned_sample_outlives_the_call(seq, kit):
+    """Nothing else owns it: the voice would be playing a local otherwise."""
+    assert seq.audition(kit[0]) is True
+    assert seq._audition_sample is not None

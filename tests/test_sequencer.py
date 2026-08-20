@@ -1204,12 +1204,12 @@ SLOW = 1000  # milliseconds between detents: unhurried, so no acceleration
 
 
 def test_the_knob_changes_the_volume(seq):
-    """Turned slowly, one detent is one step either way."""
-    before = seq.volume
+    """Turned slowly, one detent is one notch either way."""
+    before = seq.volume_position
     seq.nudge_volume(1, now=SLOW)
-    assert seq.volume == pytest.approx(before + sequencer_module.VOLUME_STEP)
+    assert seq.volume_position == before + 1
     seq.nudge_volume(-1, now=SLOW * 2)
-    assert seq.volume == pytest.approx(before)
+    assert seq.volume_position == before
 
 
 def test_the_volume_reaches_silence(seq):
@@ -1217,12 +1217,14 @@ def test_the_volume_reaches_silence(seq):
     for step in range(100):
         seq.nudge_volume(-1, now=SLOW * (step + 1))
     assert seq.volume == 0.0
+    assert seq.volume_position == 0
 
 
 def test_the_volume_does_not_run_past_full(seq):
     for step in range(100):
         seq.nudge_volume(1, now=SLOW * (step + 1))
     assert seq.volume == sequencer_module.MAX_VOLUME
+    assert seq.volume_position == sequencer_module.VOLUME_STEPS
 
 
 def test_turning_down_quiets_a_sound_already_playing(seq, kit):
@@ -1260,8 +1262,9 @@ def test_velocity_still_matters_at_any_volume(seq, kit):
 
 
 def test_the_shipped_beat_still_does_not_clip_at_the_default(seq):
+    """The default lands on the nearest notch to the old linear default."""
     seq.load_demo_pattern()
-    assert seq.volume == sequencer_module.DEFAULT_VOLUME
+    assert seq.volume == pytest.approx(sequencer_module.DEFAULT_VOLUME, abs=0.02)
     assert worst_simultaneous_level(seq) <= 1.0
 
 
@@ -1282,15 +1285,41 @@ def test_a_hard_spin_moves_the_volume_a_long_way(seq):
     A fast turn arrives as one large delta, so honouring only its sign would
     move the volume a single twentieth however hard it was spun.
     """
-    seq.set_volume(1.0)
+    seq.set_volume_position(sequencer_module.VOLUME_STEPS)
     seq.nudge_volume(-10, now=SLOW)
-    assert seq.volume == pytest.approx(0.5)
+    assert seq.volume_position == sequencer_module.VOLUME_STEPS - 10
 
 
 def test_a_hard_spin_down_can_reach_silence_in_one_move(seq):
-    seq.set_volume(0.6)
-    seq.nudge_volume(-40, now=SLOW)
+    seq.set_volume_position(sequencer_module.VOLUME_STEPS)
+    seq.nudge_volume(-8, now=1000)
+    seq.nudge_volume(-8, now=1005)  # a spin: accelerated
     assert seq.volume == 0.0
+
+
+def test_the_notches_are_even_to_the_ear(seq):
+    """Equal steps in decibels, not in level.
+
+    A linear scale makes the bottom of the range unusable: one twentieth of
+    full level to two twentieths is a doubling, and that is where headphone
+    listening happens.
+    """
+    ratios = []
+    for position in (12, 20, 28, 36):
+        seq.set_volume_position(position)
+        quiet = seq.volume
+        seq.set_volume_position(position + 4)
+        ratios.append(seq.volume / quiet)
+    for ratio in ratios[1:]:
+        assert ratio == pytest.approx(ratios[0], rel=0.01)
+
+
+def test_the_quiet_end_has_fine_control(seq):
+    """One notch near the bottom must be a small change in absolute terms."""
+    seq.set_volume_position(8)
+    quiet = seq.volume
+    seq.set_volume_position(9)
+    assert seq.volume - quiet < 0.01
 
 
 def test_spinning_the_knob_moves_further_than_creeping_it(seq):
@@ -1300,29 +1329,29 @@ def test_spinning_the_knob_moves_further_than_creeping_it(seq):
     together they arrive - which is what makes a knob feel like a knob
     rather than a counter.
     """
-    seq.set_volume(0.5)
+    seq.set_volume_position(24)
     seq.nudge_volume(1, now=1000)
-    creep = seq.volume - 0.5
+    creep = seq.volume_position
 
-    seq.set_volume(0.5)
+    seq.set_volume_position(24)
     seq.nudge_volume(1, now=2000)  # settle, so this one is unhurried
-    seq.set_volume(0.5)
+    seq.set_volume_position(24)
     seq.nudge_volume(1, now=2005)  # five milliseconds later: a spin
-    spin = seq.volume - 0.5
+    spin = seq.volume_position
 
     assert spin > creep
 
 
-def test_creeping_the_knob_still_gives_one_step(seq):
+def test_creeping_the_knob_still_gives_one_notch(seq):
     """Fine control has to survive, or the volume becomes unusable."""
-    seq.set_volume(0.5)
+    seq.set_volume_position(24)
     seq.nudge_volume(1, now=1000)
-    assert seq.volume == pytest.approx(0.5 + sequencer_module.VOLUME_STEP)
+    assert seq.volume_position == 25
 
 
 def test_the_knob_survives_the_tick_rollover(seq):
     """ticks_ms wraps at 2**29; a negative gap must not read as a fast spin."""
-    seq.set_volume(0.5)
+    seq.set_volume_position(24)
     seq._last_volume_turn = (1 << 29) - 5
     seq.nudge_volume(1, now=5)
-    assert seq.volume > 0.5
+    assert seq.volume_position > 24

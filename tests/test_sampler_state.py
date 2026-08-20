@@ -648,3 +648,64 @@ def test_spinning_the_volume_knob_hard_moves_it_far(state):
     setup.volume_enc.position -= 10
     state._handle_encoders()
     assert engine.volume < 0.6
+
+
+# --- how quickly the numbers on screen follow a knob ----------------------
+#
+# The text was only rebuilt every REDRAW_EVERY passes, so tempo and volume
+# lagged the knob by a noticeable fraction of a second - long enough that a
+# value could not be dialled in by watching it.
+
+
+def test_the_display_follows_the_volume_knob_at_once(state):
+    engine = sequencer_module.engine
+    engine.set_volume_position(20)
+    state._render(force=True)
+    before = state._screen.line(1)
+
+    setup.volume_enc.position += 4
+    state._handle_encoders()
+    state._render()  # the very next pass, not four hundred later
+
+    assert state._screen.line(1) != before
+
+
+def test_the_display_follows_the_tempo_knob_at_once(state):
+    engine = sequencer_module.engine
+    engine.set_bpm(120)
+    state._render(force=True)
+    before = state._screen.line(1)
+
+    setup.select_enc.position += 5
+    state._handle_encoders()
+    state._render()
+
+    assert state._screen.line(1) != before
+    assert str(int(engine.clock.bpm)) in state._screen.line(1)
+
+
+def test_an_idle_pass_still_does_not_rebuild_the_text(state):
+    """Immediacy must not cost a rebuild on every one of thousands of passes.
+
+    Driven through update, because that is what advances the pass counter
+    the periodic rebuild is keyed to.
+    """
+    machine = FakeMachine()
+    state.update(machine)
+    calls = []
+    real = state._render_display
+
+    def counted():
+        calls.append(1)
+        return real()
+
+    state._render_display = counted
+    for _ in range(module_redraw_every() - 2):
+        state.update(machine)
+    assert calls == [], "rebuilt %d times while nothing changed" % len(calls)
+
+
+def module_redraw_every():
+    import SamplerState as module
+
+    return module.REDRAW_EVERY

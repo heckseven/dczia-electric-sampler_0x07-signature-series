@@ -29,7 +29,13 @@ from supervisor import ticks_ms
 from engine import wav
 
 from engine import quantize
-from engine.util import accelerated, clamp
+from engine.util import (
+    VOLUME_STEPS,
+    accelerated,
+    clamp,
+    level_for_position,
+    position_for_level,
+)
 from engine.clock import Clock, ticks_diff
 from engine.song import DEFAULT_VELOCITY, MAX_VELOCITY, TRACK_COUNT, Song
 from engine.transport import LIVE, SEQ, Transport
@@ -119,10 +125,12 @@ STREAM_LINGER_MS = 750
 # original firmware ran every voice at 0.1 for the same reason.
 DEFAULT_VOLUME = 0.25
 
-# The knob moves the master volume in steps this size, between these bounds.
-# One turn of the encoder is one step, so a hand can cross the useful range
-# in a second or two without being able to jump from quiet to painful.
-VOLUME_STEP = 0.05
+# The knob moves the master volume one notch at a time, and the notches are
+# spaced evenly in decibels rather than evenly in level - see
+# engine.util.level_for_position. A linear scale crowds all the useful
+# adjustment into the bottom of the range, which is where headphones live:
+# measured on the badge, a twentieth of full level was already loud in a
+# pair, and the step either side of it was a doubling.
 MIN_VOLUME = 0.0
 MAX_VOLUME = 1.0
 
@@ -231,7 +239,10 @@ class Sequencer:
         # between them. It stays available as a setting rather than a default.
         self.poly = False
         # Scales every voice; see DEFAULT_VOLUME.
-        self.volume = DEFAULT_VOLUME
+        # Held as a knob position so the steps are even to the ear, with
+        # the level derived from it.
+        self.volume_position = position_for_level(DEFAULT_VOLUME)
+        self.volume = level_for_position(self.volume_position)
         # What velocity each mixer voice was last given, so a volume change
         # can be applied to whatever is sounding rather than only to the
         # next hit. Turning the volume down has to be immediate: on
@@ -800,6 +811,11 @@ class Sequencer:
     def nudge_strength(self, direction):
         return self.set_strength(self.strength + direction * quantize.STRENGTH_STEP)
 
+    def set_volume_position(self, position):
+        """Move the knob to a notch, and apply the level that notch means."""
+        self.volume_position = int(clamp(position, 0, VOLUME_STEPS))
+        return self.set_volume(level_for_position(self.volume_position))
+
     def set_volume(self, value):
         """Set the master volume, and apply it to whatever is sounding.
 
@@ -809,6 +825,7 @@ class Sequencer:
         a sound that is too loud in someone's ears.
         """
         self.volume = clamp(value, MIN_VOLUME, MAX_VOLUME)
+        self.volume_position = position_for_level(self.volume)
         for index in range(MIXER_VOICES):
             velocity = self._voice_velocity[index]
             if velocity:
@@ -831,7 +848,9 @@ class Sequencer:
             if elapsed < 0:
                 elapsed = None
         self._last_volume_turn = now
-        return self.set_volume(self.volume + accelerated(steps, elapsed) * VOLUME_STEP)
+        return self.set_volume_position(
+            self.volume_position + accelerated(steps, elapsed)
+        )
 
     def set_bpm(self, value):
         return self.clock.set_bpm(value)

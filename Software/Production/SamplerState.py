@@ -84,6 +84,7 @@ class SamplerState(State):
         self._last_playhead = -1
         self._last_blink = None
         self._pixels_dirty = True
+        self._text_dirty = True
         # One label per line. A single label spanning the screen would make
         # every change a full-screen resend, which is audible; see screen.py.
         # The one screen the whole firmware draws through. Building a
@@ -105,6 +106,7 @@ class SamplerState(State):
         self._last_playhead = -1
         self._last_blink = None
         self._pixels_dirty = True
+        self._text_dirty = True
         self._edited = set()
         self._screen.attach()
         self._attached = True
@@ -185,6 +187,7 @@ class SamplerState(State):
             machine.go_to_state("menu")
             return True
         self._pixels_dirty = True
+        self._text_dirty = True
         return False
 
     def _toggle_step(self, slot):
@@ -209,12 +212,18 @@ class SamplerState(State):
             # Nothing else marks that, and the pixels are only rebuilt when
             # something says they are stale.
             self._pixels_dirty = True
+            # And the numbers on screen. Without this the text waits for the
+            # periodic redraw, so tempo and volume lag the knob by a
+            # noticeable fraction of a second - long enough that the value
+            # cannot be dialled in by watching it.
+            self._text_dirty = True
 
         position = volume_enc.position
         if position != self._last_volume:
             self._volume_turned(position - self._last_volume)
             self._last_volume = position
             self._pixels_dirty = True
+            self._text_dirty = True
 
     def _select_turned(self, delta):
         target = self.controls.select_turn_target()
@@ -284,9 +293,10 @@ class SamplerState(State):
             self._last_playhead = playhead
             self._last_blink = blink
             self._pixels_dirty = False
-        if force or self._passes % REDRAW_EVERY == 0:
+        if force or self._text_dirty or self._passes % REDRAW_EVERY == 0:
             # Only rebuilds the strings; drawing is the line below.
             self._render_display()
+            self._text_dirty = False
         # One changed line per pass at most, so the audio buffer always has
         # room to refill between them. See screen.py for the measurements.
         self._screen.flush()

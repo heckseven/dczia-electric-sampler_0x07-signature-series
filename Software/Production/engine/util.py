@@ -57,3 +57,44 @@ def accelerated(steps, elapsed_ms):
         # A movement the player made must never round away to no movement.
         return 1 if steps > 0 else -1
     return scaled
+
+
+# Turning a knob position into a listening level.
+#
+# Loudness is perceived roughly logarithmically, so a level that moves in
+# equal linear steps is useless: from 0.05 to 0.10 doubles the amplitude,
+# which is six decibels in one detent, while the same step from 0.90 to 0.95
+# is barely audible. All the useful adjustment crowds into the bottom of the
+# range - which is exactly where headphones are used.
+#
+# Positions are therefore spaced evenly in decibels instead. The range is
+# divided into VOLUME_STEPS notches spanning VOLUME_MIN_DB up to full scale,
+# so every detent changes the level by the same proportion, and position
+# zero is true silence rather than a very small number.
+VOLUME_STEPS = 48
+VOLUME_MIN_DB = -54.0
+
+
+def level_for_position(position, steps=VOLUME_STEPS, min_db=VOLUME_MIN_DB):
+    """The mixer level for a knob position, on an even decibel scale."""
+    position = int(clamp(position, 0, steps))
+    if position <= 0:
+        return 0.0
+    if position >= steps:
+        return 1.0
+    decibels = min_db * (1.0 - float(position) / steps)
+    return 10.0 ** (decibels / 20.0)
+
+
+def position_for_level(level, steps=VOLUME_STEPS, min_db=VOLUME_MIN_DB):
+    """The nearest knob position to a level. The inverse of the above."""
+    if level <= 0.0:
+        return 0
+    if level >= 1.0:
+        return steps
+    import math
+
+    decibels = 20.0 * math.log(level, 10)
+    if decibels <= min_db:
+        return 0
+    return int(round(steps * (1.0 - decibels / min_db)))

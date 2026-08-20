@@ -210,3 +210,124 @@ def test_length_offers_global_and_every_track(menu):
     menu.enter()  # Length
     assert len(menu.items) == TRACK_COUNT + 1
     assert menu.items[0].label == "Global"
+
+
+# --- what the player can see without reading ------------------------------
+#
+# Three rows on a 128x32 panel, and a tree of unbounded depth behind them.
+# The affordances are the whole of the interface: where the knob is, which
+# rows lead somewhere, whether the list continues past the edge, and how
+# far in you are.
+
+
+def test_a_row_that_opens_a_list_says_so(menu):
+    rows = menu.rendered()
+    assert rows[0].endswith(">"), rows[0]
+
+
+def test_a_row_that_does_something_does_not(menu):
+    menu.enter()  # Song, whose rows are all commands
+    rows = menu.rendered()
+    assert not rows[0].rstrip().endswith(">"), rows[0]
+
+
+def test_the_cursor_marks_exactly_one_row(menu):
+    rows = menu.rendered()
+    assert len([row for row in rows if row.startswith(">")]) == 1
+
+
+def test_a_longer_list_says_there_is_more_below(menu):
+    rows = menu.rendered()
+    assert rows[-1].endswith("v"), rows
+
+
+def test_scrolling_down_says_there_is_more_above(menu):
+    menu.move(1)
+    menu.enter()  # Track
+    menu.move(1)
+    menu.enter()  # Length, nine rows
+    menu.move(6)
+    rows = menu.rendered()
+    assert rows[0].endswith("^"), rows
+    assert rows[-1].endswith("v"), rows
+
+
+def test_the_bottom_of_a_list_stops_saying_there_is_more(menu):
+    menu.move(1)
+    menu.enter()
+    menu.move(1)
+    menu.enter()
+    menu.move(50)
+    rows = menu.rendered()
+    assert not rows[-1].endswith("v"), rows
+
+
+def test_a_short_list_has_no_scroll_hints(small):
+    rows = small.rendered()
+    assert not any(row.endswith(("^", "v")) for row in rows), rows
+
+
+def test_every_row_fits_the_screen(menu):
+    for row in menu.rendered(width=21):
+        assert len(row) <= 21, row
+
+
+def test_a_long_label_is_trimmed_rather_than_wrapped():
+    long_menu = Menu(Item("Root", children=[Item("A" * 60, command="x")]))
+    rows = long_menu.rendered(width=21)
+    assert len(rows[0]) == 21
+
+
+def test_empty_rows_are_blank_not_missing(small):
+    """Three rows always, so the screen does not shuffle as lists change."""
+    tiny = Menu(Item("Root", children=[Item("Only", command="x")]))
+    assert len(tiny.rendered()) == 3
+    assert tiny.rendered()[1] == ""
+
+
+def test_the_position_tells_you_where_you_are(menu):
+    assert menu.position == (1, 4)
+    menu.move(2)
+    assert menu.position == (3, 4)
+
+
+# --- depth ----------------------------------------------------------------
+
+
+def test_the_breadcrumb_names_the_level(menu):
+    menu.move(1)
+    menu.enter()
+    assert menu.breadcrumb() == "Track"
+    menu.move(1)
+    menu.enter()
+    assert menu.breadcrumb() == "Track/Length"
+
+
+def test_the_breadcrumb_is_trimmed_from_the_far_end():
+    """Depth is unbounded; the levels nearest the player are worth the space."""
+    deep = Item("Leaf", command="x")
+    for name in ("Fifth", "Fourth", "Third", "Second", "First"):
+        deep = Item(name, children=[deep])
+    menu = Menu(deep)
+    for _ in range(4):
+        menu.enter()
+    crumb = menu.breadcrumb(width=21)
+    assert len(crumb) <= 21
+    assert crumb.startswith("<")
+    assert crumb.endswith("Fifth")
+
+
+def test_nesting_is_not_limited_to_the_levels_the_settings_happen_to_use():
+    """The tree is a stack, so six levels work exactly like two."""
+    leaf = Item("Bottom", command="deep")
+    node = leaf
+    for level in range(6):
+        node = Item("Level %d" % level, children=[node])
+    menu = Menu(node)
+    # Five levels of list, then the leaf at the bottom of them.
+    for _ in range(5):
+        assert menu.enter() is None, "should have opened another list"
+    assert menu.enter().command == "deep"
+    for _ in range(5):
+        assert menu.back() is True
+    assert menu.back() is False, "back at the root should ask to close"

@@ -16,6 +16,16 @@ the tests never have to mock it.
 
 VISIBLE_ROWS = 3
 
+# What a row is marked with. Three things a player needs to see without
+# reading: which row the knob is on, which rows lead somewhere rather than
+# doing something, and whether the list continues past the edge of a screen
+# that only ever shows three of it.
+CURSOR = ">"
+NO_CURSOR = " "
+BRANCH = ">"  # trailing: this row opens another list
+MORE_ABOVE = "^"
+MORE_BELOW = "v"
+
 
 class Item:
     """One row: either a submenu, or something that happens."""
@@ -80,6 +90,19 @@ class Menu:
         """Every label from the root to here, for a breadcrumb."""
         return [node.label for node in self._path]
 
+    def breadcrumb(self, width=21):
+        """Where the player is, trimmed to fit one row.
+
+        Depth is unbounded, so the trail is shown from the end backwards -
+        the levels nearest the player are the ones worth the space, and the
+        root is the one they can most afford to lose sight of.
+        """
+        labels = self.path_labels[1:] or [self.root.label]
+        trail = "/".join(labels)
+        if len(trail) <= width:
+            return trail
+        return "<" + trail[-(width - 1) :]
+
     # --- moving -----------------------------------------------------------
 
     def move(self, delta):
@@ -131,6 +154,19 @@ class Menu:
     # --- what to draw -----------------------------------------------------
 
     @property
+    def more_above(self):
+        return self.offset > 0
+
+    @property
+    def more_below(self):
+        return self.offset + self.rows < len(self.items)
+
+    @property
+    def position(self):
+        """Which row of how many, for a list longer than the screen."""
+        return (self.cursor + 1, len(self.items))
+
+    @property
     def offset(self):
         """The first visible row, scrolled to keep the cursor on screen."""
         items = self.items
@@ -152,3 +188,34 @@ class Menu:
             (item.label, top + index == self.cursor)
             for index, item in enumerate(window)
         ]
+
+    def rendered(self, width=21):
+        """The three rows as finished strings, markers and all.
+
+        Kept here rather than in the screen so that what the player sees is
+        testable without a display, which is the same reason the rest of
+        this module exists.
+        """
+        items = self.items
+        top = self.offset
+        rows = []
+        for index in range(self.rows):
+            position = top + index
+            if position >= len(items):
+                rows.append("")
+                continue
+            item = items[position]
+            cursor = CURSOR if position == self.cursor else NO_CURSOR
+            # An edge row doubles as the scroll hint, so no space is spent on
+            # a separate indicator on a screen that shows three rows.
+            if index == 0 and self.more_above:
+                edge = MORE_ABOVE
+            elif index == self.rows - 1 and self.more_below:
+                edge = MORE_BELOW
+            elif item.is_branch:
+                edge = BRANCH
+            else:
+                edge = " "
+            room = width - len(cursor) - 1
+            rows.append("%s%-*s%s" % (cursor, room, item.label[:room], edge))
+        return rows

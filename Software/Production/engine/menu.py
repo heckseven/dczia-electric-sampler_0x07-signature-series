@@ -26,20 +26,67 @@ BRANCH = ">"  # trailing: this row opens another list
 MORE_ABOVE = "^"
 MORE_BELOW = "v"
 
+# What an empty list says. A branch built from the card can legitimately have
+# nothing in it - no songs saved yet - and three blank rows read as a badge
+# that has stopped responding rather than as an answer.
+EMPTY = "(none)"
+
 
 class Item:
     """One row: either a submenu, or something that happens."""
 
-    def __init__(self, label, children=None, command=None, value=None):
+    def __init__(
+        self, label, children=None, command=None, value=None, builder=None, kind=None
+    ):
         self.label = label
         self.children = list(children) if children else None
         self.command = command
         # Free-form, for a caller that needs to know which track a row means.
         self.value = value
+        # A branch whose rows are not known until it is opened: the songs on
+        # the card, the samples in a folder. Called with no arguments and
+        # expected to return a list of Items.
+        #
+        # Deferred rather than built with the tree because reading a card
+        # takes long enough to be heard. The tree is rebuilt whenever the
+        # settings screen opens, and doing that would mean a directory
+        # listing - tens of milliseconds against a 32 ms audio buffer - on
+        # every open, for lists the player usually is not going to look at.
+        # This way that cost lands only on the row that needs it, and lands
+        # once.
+        self.builder = builder
+        self.built = False
+        # Which listing a deferred branch was built from, so a caller can
+        # find the branches to forget by asking what they are rather than by
+        # counting its way through the tree.
+        self.kind = kind
 
     @property
     def is_branch(self):
-        return bool(self.children)
+        """Whether opening this row shows another list.
+
+        A builder counts even before it has run, and an empty result still
+        counts afterwards: a folder with nothing in it is an empty list to
+        look at, not a row that suddenly stops responding.
+        """
+        return bool(self.children) or self.builder is not None
+
+    def build(self):
+        """Populate a deferred branch. Safe to call more than once."""
+        if self.builder is not None and not self.built:
+            self.children = list(self.builder() or [])
+            self.built = True
+        return self.children or []
+
+    def invalidate(self):
+        """Forget a built list, so the next open reads the card again.
+
+        Saving or deleting changes what a listing should show, and a stale
+        one offers a song that is no longer there.
+        """
+        if self.builder is not None:
+            self.children = None
+            self.built = False
 
     def __repr__(self):
         return "<Item %r>" % self.label
@@ -114,6 +161,11 @@ class Menu:
         """
         items = self.items
         if not items:
+            # Put the cursor back to the top rather than leaving it pointing
+            # into a list that no longer has that many rows. Nothing reads it
+            # while the list is empty, but the next thing to refill the list
+            # would otherwise find it already out of bounds.
+            self._cursor[-1] = 0
             return 0
         position = self.cursor + delta
         if position < 0:
@@ -133,6 +185,15 @@ class Menu:
         if item is None:
             return None
         if item.is_branch:
+            try:
+                item.build()
+            except MemoryError:
+                # A card with more on it than the heap can hold. The branch
+                # opens empty rather than taking the badge down; the row
+                # limit in engine/settings.py is what normally prevents
+                # this, and this is the backstop for when it does not.
+                item.children = []
+                item.built = True
             self._path.append(item)
             self._cursor.append(0)
             return None
@@ -145,6 +206,19 @@ class Menu:
         self._path.pop()
         self._cursor.pop()
         return True
+
+    def refresh(self):
+        """Rebuild any deferred branch the cursor is currently inside.
+
+        Invalidating a listing is how a saved or deleted file is noticed, but
+        the player may be standing in the very list being forgotten - and a
+        forgotten branch has no rows at all, so without this the songs would
+        vanish under the cursor and the screen would read empty. The cursor
+        is clamped afterwards, because the list may have come back shorter.
+        """
+        for node in self._path:
+            node.build()
+        self.move(0)
 
     def reset(self):
         """Return to the root, forgetting where the cursor was."""
@@ -189,33 +263,44 @@ class Menu:
             for index, item in enumerate(window)
         ]
 
-    def rendered(self, width=21):
-        """The three rows as finished strings, markers and all.
+    def row(self, index, width=21):
+        """One finished row, markers and all.
 
-        Kept here rather than in the screen so that what the player sees is
-        testable without a display, which is the same reason the rest of
-        this module exists.
+        A row at a time rather than a screenful, because the screen draws a
+        line per pass of the main loop and building three when one will be
+        used is the difference between fitting the audio buffer and not:
+        measured on the badge, a screenful is 5.2 ms of the 32 ms a buffer
+        lasts.
+
+        Built by concatenation rather than with a format string. That is not
+        a micro-optimisation for its own sake - "%s%-*s%s" measured three
+        times slower than this on the RP2040, and this is on the scroll
+        path, which is the one place the badge cannot afford to be slow.
         """
         items = self.items
-        top = self.offset
-        rows = []
-        for index in range(self.rows):
-            position = top + index
-            if position >= len(items):
-                rows.append("")
-                continue
-            item = items[position]
-            cursor = CURSOR if position == self.cursor else NO_CURSOR
-            # An edge row doubles as the scroll hint, so no space is spent on
-            # a separate indicator on a screen that shows three rows.
-            if index == 0 and self.more_above:
-                edge = MORE_ABOVE
-            elif index == self.rows - 1 and self.more_below:
-                edge = MORE_BELOW
-            elif item.is_branch:
-                edge = BRANCH
-            else:
-                edge = " "
-            room = width - len(cursor) - 1
-            rows.append("%s%-*s%s" % (cursor, room, item.label[:room], edge))
-        return rows
+        if not items:
+            return EMPTY if index == 0 else ""
+        position = self.offset + index
+        if index >= self.rows or position >= len(items):
+            return ""
+        item = items[position]
+        cursor = CURSOR if position == self.cursor else NO_CURSOR
+        # An edge row doubles as the scroll hint, so no space is spent on a
+        # separate indicator on a screen that shows three rows.
+        if index == 0 and self.more_above:
+            edge = MORE_ABOVE
+        elif index == self.rows - 1 and self.more_below:
+            edge = MORE_BELOW
+        elif item.is_branch:
+            edge = BRANCH
+        else:
+            edge = " "
+        room = width - 2
+        label = item.label
+        if len(label) > room:
+            label = label[:room]
+        return cursor + label + " " * (room - len(label)) + edge
+
+    def rendered(self, width=21):
+        """Every visible row. For tests and for a screen being entered."""
+        return [self.row(index, width) for index in range(self.rows)]

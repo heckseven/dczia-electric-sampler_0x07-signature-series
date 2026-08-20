@@ -11,13 +11,35 @@ import pytest
 
 import circuitpython_stubs  # noqa: F401  (installs the stubs)
 from engine import settings
-from engine.menu import Item, Menu
+from engine.menu import EMPTY, Item, Menu
 from engine.song import TRACK_COUNT
+
+
+class FakeCatalog:
+    """A card, without a card. Counts its reads so deferral can be checked."""
+
+    def __init__(self, songs=("beat",), kits=("kit",), samples=("kick.wav",)):
+        self._songs = list(songs)
+        self._kits = list(kits)
+        self._samples = list(samples)
+        self.reads = 0
+
+    def songs(self):
+        self.reads += 1
+        return [(name, name) for name in self._songs]
+
+    def kits(self):
+        self.reads += 1
+        return [(name, name) for name in self._kits]
+
+    def samples(self):
+        self.reads += 1
+        return [(name, "/sd/samples/" + name) for name in self._samples]
 
 
 @pytest.fixture
 def menu():
-    return Menu(settings.build())
+    return Menu(settings.build(FakeCatalog()))
 
 
 @pytest.fixture
@@ -167,29 +189,113 @@ def test_the_top_level_is_the_four_sections(menu):
 def test_every_leaf_carries_a_command():
     def walk(node):
         if node.is_branch:
-            for child in node.children:
+            for child in node.build():
                 walk(child)
         else:
             assert node.command, "%s does nothing" % node.label
 
-    walk(settings.build())
+    walk(settings.build(FakeCatalog()))
 
 
-def test_every_command_is_unique_except_the_per_track_ones():
-    found = settings.commands()
+def test_every_command_is_unique_except_the_ones_carrying_a_value():
+    """A repeated command is a row that does the same thing twice.
+
+    The exceptions are the commands whose value says which thing they mean:
+    which track, which song, which sample.
+    """
+    # Two of everything, so a command that legitimately repeats actually does.
+    catalog = FakeCatalog(
+        songs=["beat", "riff"], kits=["one", "two"], samples=["kick.wav", "snare.wav"]
+    )
+    found = settings.commands(settings.build(catalog))
     repeated = {name for name in found if found.count(name) > 1}
-    assert repeated == {settings.LENGTH_TRACK, settings.SAMPLE_TRACK}
+    assert repeated == {
+        settings.LENGTH_TRACK,
+        settings.SAMPLE_TRACK,
+        settings.SAMPLE_CLEAR,
+        settings.SONG_LOAD,
+        settings.SONG_DELETE,
+        settings.KIT_LOAD,
+        settings.KIT_DELETE,
+    }
 
 
-def test_the_per_track_rows_carry_their_track_number(menu):
+def test_the_per_track_length_rows_carry_their_track_number(menu):
+    menu.move(1)  # Track
+    menu.enter()
+    menu.move(1)  # Length
+    menu.enter()
+    for track in range(TRACK_COUNT):
+        item = menu.items[track + 1]  # after Global
+        assert item.label == "Track %d" % (track + 1)
+        assert item.value == track, "label and index disagree"
+
+
+def test_a_sample_row_carries_the_track_it_was_opened_from():
+    """The same sample list hangs off eight tracks, so the row has to say which."""
+    menu = Menu(settings.build(FakeCatalog()))
     menu.move(2)  # Samples
     menu.enter()
     menu.move(1)  # Tracks
     menu.enter()
-    for track in range(TRACK_COUNT):
-        item = menu.items[track]
-        assert item.label == "Track %d" % (track + 1)
-        assert item.value == track, "label and index disagree"
+    menu.move(3)  # Track 4
+    menu.enter()
+    picks = [item for item in menu.items if item.command == settings.SAMPLE_TRACK]
+    assert picks, "the list offered no samples"
+    for item in picks:
+        track, path = item.value
+        assert track == 3
+        assert path.endswith(".wav")
+
+
+def test_a_sample_list_opens_with_a_way_back_to_silence():
+    """A pad with a sample on it otherwise has no way to be emptied."""
+    menu = Menu(settings.build(FakeCatalog()))
+    menu.move(2)
+    menu.enter()
+    menu.move(1)
+    menu.enter()
+    menu.enter()  # Track 1
+    first = menu.items[0]
+    assert first.label == settings.CLEAR_LABEL
+    assert first.command == settings.SAMPLE_CLEAR
+    assert first.value == 0
+
+
+def test_the_saved_songs_are_listed_under_load():
+    menu = Menu(settings.build(FakeCatalog(songs=["beat", "riff"])))
+    menu.enter()  # Song
+    menu.move(3)  # Load
+    menu.enter()
+    assert [item.label for item in menu.items] == ["beat", "riff"]
+    assert [item.value for item in menu.items] == ["beat", "riff"]
+    assert all(item.command == settings.SONG_LOAD for item in menu.items)
+
+
+def test_delete_lists_the_same_songs_under_its_own_command():
+    """Sharing the listing but not the command: one loads, the other removes."""
+    menu = Menu(settings.build(FakeCatalog(songs=["beat"])))
+    menu.enter()
+    menu.move(4)  # Delete
+    menu.enter()
+    assert [item.command for item in menu.items] == [settings.SONG_DELETE]
+
+
+def test_an_empty_card_is_a_list_saying_so_rather_than_a_dead_row():
+    menu = Menu(settings.build(FakeCatalog(songs=[])))
+    menu.enter()
+    menu.move(3)  # Load
+    assert menu.selected.is_branch, "Load stopped looking like a list"
+    menu.enter()
+    assert menu.depth == 2, "Load did not open"
+    assert menu.rendered()[0] == EMPTY
+
+
+def test_the_card_is_not_read_while_the_tree_is_built():
+    """Opening settings has to be cheap: a pattern may be playing."""
+    catalog = FakeCatalog(songs=["beat"])
+    settings.build(catalog)
+    assert catalog.reads == 0, "building the tree listed the card"
 
 
 def test_song_offers_the_five_operations(menu):
@@ -331,3 +437,199 @@ def test_nesting_is_not_limited_to_the_levels_the_settings_happen_to_use():
     for _ in range(5):
         assert menu.back() is True
     assert menu.back() is False, "back at the root should ask to close"
+
+
+# --- branches built from the card -----------------------------------------
+
+
+def test_a_deferred_branch_is_not_built_until_it_is_opened():
+    """Listing a directory costs audio, so it must not happen at build time."""
+    calls = []
+
+    def builder():
+        calls.append(1)
+        return [Item("one"), Item("two")]
+
+    menu = Menu(Item("root", children=[Item("Load", builder=builder)]))
+    assert calls == [], "the listing ran while the tree was being built"
+    menu.enter()
+    assert calls == [1]
+    assert [item.label for item in menu.items] == ["one", "two"]
+
+
+def test_a_deferred_branch_is_built_only_once():
+    calls = []
+
+    def builder():
+        calls.append(1)
+        return [Item("one")]
+
+    menu = Menu(Item("root", children=[Item("Load", builder=builder)]))
+    menu.enter()
+    menu.back()
+    menu.enter()
+    assert calls == [1], "reopening re-read the card"
+
+
+def test_an_unbuilt_deferred_branch_still_looks_like_a_branch():
+    """Otherwise the row reads as an action and its marker is missing."""
+    item = Item("Load", builder=lambda: [])
+    assert item.is_branch is True
+
+
+def test_a_deferred_branch_that_comes_back_empty_stays_a_branch():
+    """An empty folder is a list with nothing in it, not a dead row."""
+    item = Item("Load", builder=lambda: [])
+    item.build()
+    assert item.is_branch is True
+
+
+def test_an_empty_list_says_so_rather_than_showing_blank_rows():
+    menu = Menu(Item("root", children=[Item("Load", builder=lambda: [])]))
+    menu.enter()
+    assert menu.rendered()[0] == EMPTY
+
+
+def test_an_empty_list_can_still_be_left():
+    menu = Menu(Item("root", children=[Item("Load", builder=lambda: [])]))
+    menu.enter()
+    assert menu.enter() is None, "there is nothing to select"
+    assert menu.back() is True
+
+
+def test_invalidating_a_branch_makes_the_next_open_read_again():
+    """Saving changes what a listing should show."""
+    names = ["one"]
+    menu = Menu(
+        Item("root", children=[Item("Load", builder=lambda: [Item(n) for n in names])])
+    )
+    menu.enter()
+    menu.back()
+    names.append("two")
+    menu.selected.invalidate()
+    menu.enter()
+    assert [item.label for item in menu.items] == ["one", "two"]
+
+
+def test_invalidating_a_fixed_branch_does_nothing():
+    """Only card-backed lists are re-read; a static one has nothing to re-read."""
+    item = Item("Song", children=[Item("Save")])
+    item.invalidate()
+    assert [child.label for child in item.children] == ["Save"]
+
+
+def test_refreshing_rebuilds_the_list_the_cursor_is_standing_in():
+    """Forgetting a listing must not empty it under the player."""
+    names = ["one", "two"]
+    root = Item(
+        "root", children=[Item("Load", builder=lambda: [Item(n) for n in names])]
+    )
+    menu = Menu(root)
+    menu.enter()
+    assert len(menu.items) == 2
+    root.children[0].invalidate()
+    menu.refresh()
+    assert [item.label for item in menu.items] == ["one", "two"]
+
+
+def test_refreshing_pulls_the_cursor_back_into_a_shorter_list():
+    names = ["one", "two", "three"]
+    root = Item(
+        "root", children=[Item("Load", builder=lambda: [Item(n) for n in names])]
+    )
+    menu = Menu(root)
+    menu.enter()
+    menu.move(2)
+    del names[1:]
+    root.children[0].invalidate()
+    menu.refresh()
+    assert menu.cursor == 0
+    assert menu.selected.label == "one"
+
+
+def test_refreshing_a_fixed_list_leaves_the_cursor_alone():
+    menu = Menu(Item("root", children=[Item("a"), Item("b"), Item("c")]))
+    menu.move(2)
+    menu.refresh()
+    assert menu.cursor == 2
+
+
+def test_a_list_that_empties_puts_the_cursor_back_to_the_top():
+    """Otherwise the cursor is already out of bounds when rows return."""
+    names = ["one", "two", "three"]
+    root = Item(
+        "root", children=[Item("Load", builder=lambda: [Item(n) for n in names])]
+    )
+    menu = Menu(root)
+    menu.enter()
+    menu.move(2)
+    del names[:]
+    root.children[0].invalidate()
+    menu.refresh()
+    assert menu.cursor == 0
+
+
+def test_a_card_too_big_to_list_opens_an_empty_branch_rather_than_failing():
+    """The row limit normally prevents this; this is the backstop."""
+
+    def explode():
+        raise MemoryError
+
+    menu = Menu(Item("root", children=[Item("Load", builder=explode)]))
+    assert menu.enter() is None
+    assert menu.depth == 1
+    assert menu.items == []
+
+
+def test_a_row_carries_the_listing_it_came_from():
+    """So the screen can find lists to forget by asking, not by counting."""
+    menu = Menu(settings.build(FakeCatalog()))
+    menu.enter()  # Song
+    labels = {item.label: item.kind for item in menu.items}
+    assert labels["Load"] == "songs"
+    assert labels["Delete"] == "songs"
+    assert labels["Save"] is None, "a row that reads nothing claims a listing"
+
+
+def test_a_long_listing_is_cut_to_what_the_heap_can_hold():
+    """Measured on the badge: a row with a filename on it costs 165 bytes."""
+    many = ["song%03d" % index for index in range(settings.MAX_ROWS + 40)]
+    menu = Menu(settings.build(FakeCatalog(songs=many)))
+    menu.enter()
+    menu.move(3)  # Load
+    menu.enter()
+    assert len(menu.items) == settings.MAX_ROWS + 1, "the limit was not applied"
+
+
+def test_a_cut_listing_says_how_many_are_missing():
+    """A list that stops at a round number and says nothing reads as data loss."""
+    many = ["song%03d" % index for index in range(settings.MAX_ROWS + 40)]
+    menu = Menu(settings.build(FakeCatalog(songs=many)))
+    menu.enter()
+    menu.move(3)
+    menu.enter()
+    last = menu.items[-1]
+    assert last.command == settings.LIST_TRUNCATED
+    assert last.value == 40
+    assert "40" in last.label
+
+
+def test_a_listing_that_fits_has_no_extra_row():
+    menu = Menu(settings.build(FakeCatalog(songs=["one", "two"])))
+    menu.enter()
+    menu.move(3)
+    menu.enter()
+    assert [item.label for item in menu.items] == ["one", "two"]
+
+
+def test_the_row_that_empties_a_track_survives_a_cut_sample_list():
+    """It is the only way back to silence, so it must not be crowded out."""
+    many = ["s%03d.wav" % index for index in range(settings.MAX_ROWS + 40)]
+    menu = Menu(settings.build(FakeCatalog(samples=many)))
+    menu.move(2)  # Samples
+    menu.enter()
+    menu.move(1)  # Tracks
+    menu.enter()
+    menu.enter()  # Track 1
+    assert menu.items[0].label == settings.CLEAR_LABEL
+    assert len(menu.items) == settings.MAX_ROWS + 1

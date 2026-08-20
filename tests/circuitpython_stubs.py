@@ -351,6 +351,47 @@ class SSD1306:
         return True
 
 
+def _msgpack_pack(obj, stream):
+    """Stand-in for CircuitPython's msgpack.
+
+    Encodes with repr and decodes with ast.literal_eval, which handles every
+    shape a song uses and nothing else - no code runs on the way back in.
+    The point of the stub is not the wire format but the two behaviours the
+    firmware depends on: a bytearray comes back as bytes, and a tuple comes
+    back as a list, exactly as real msgpack does. Code that assumes it gets
+    its own types back should fail here rather than on the badge.
+    """
+    stream.write(repr(_msgpack_normalise(obj)).encode())
+
+
+def _msgpack_normalise(obj):
+    if isinstance(obj, bytearray):
+        return bytes(obj)
+    if isinstance(obj, bytes):
+        return obj
+    if isinstance(obj, dict):
+        return {_msgpack_normalise(k): _msgpack_normalise(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_msgpack_normalise(item) for item in obj]
+    if isinstance(obj, (str, bool, int, float)) or obj is None:
+        return obj
+    raise TypeError("msgpack cannot encode %r" % type(obj))
+
+
+def _msgpack_unpack(stream):
+    import ast
+
+    raw = stream.read()
+    if not raw:
+        raise ValueError("no data")
+    try:
+        return ast.literal_eval(raw.decode())
+    except (SyntaxError, UnicodeDecodeError) as error:
+        # Real msgpack raises ValueError on a malformed stream; match that so
+        # callers can have one except clause rather than two.
+        raise ValueError("malformed: %s" % error)
+
+
 class Glyph:
     def __init__(self, tile_index):
         self.tile_index = tile_index
@@ -691,6 +732,7 @@ def install():
             "microcontroller", watchdog=WatchDogTimer(), reset=lambda: None
         ),
         "watchdog": _module("watchdog", WatchDogMode=_WatchDogMode),
+        "msgpack": _module("msgpack", pack=_msgpack_pack, unpack=_msgpack_unpack),
         "keypad": _module("keypad", KeyMatrix=KeyMatrix, Event=Event),
         "rotaryio": _module("rotaryio", IncrementalEncoder=IncrementalEncoder),
         "neopixel": _module("neopixel", NeoPixel=NeoPixel),

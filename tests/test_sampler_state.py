@@ -625,14 +625,14 @@ def test_holding_function_still_gets_division(state):
 
 def test_the_volume_is_on_the_display(state):
     engine = sequencer_module.engine
-    engine.set_volume(0.4)
+    engine.set_volume_position(24)
     state._render_display()
-    assert "V40" in state._screen.line(1), state._screen.line(1)
+    assert "V50" in state._screen.line(1), state._screen.line(1)
 
 
 def test_the_displayed_volume_follows_the_knob(state):
     engine = sequencer_module.engine
-    engine.set_volume(0.4)
+    engine.set_volume_position(24)
     state._render_display()
     before = state._screen.line(1)
     setup.volume_enc.position += 2

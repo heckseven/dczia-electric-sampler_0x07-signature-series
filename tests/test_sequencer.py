@@ -1355,3 +1355,26 @@ def test_the_knob_survives_the_tick_rollover(seq):
     seq._last_volume_turn = (1 << 29) - 5
     seq.nudge_volume(1, now=5)
     assert seq.volume_position > 24
+
+
+def test_the_displayed_volume_spans_the_whole_dial(seq):
+    """A percentage of knob travel, not of level.
+
+    The level at the quiet end is a number like 0.005, so showing the level
+    would read zero for most of the dial's useful travel.
+    """
+    seq.set_volume_position(0)
+    assert seq.volume_percent == 0
+    seq.set_volume_position(sequencer_module.VOLUME_STEPS // 2)
+    assert seq.volume_percent == 50
+    seq.set_volume_position(sequencer_module.VOLUME_STEPS)
+    assert seq.volume_percent == 100
+
+
+def test_the_quiet_end_still_shows_a_moving_number(seq):
+    """Every notch has to change the display, or the knob feels dead."""
+    seen = set()
+    for position in range(0, 13):
+        seq.set_volume_position(position)
+        seen.add(seq.volume_percent)
+    assert len(seen) > 6, sorted(seen)

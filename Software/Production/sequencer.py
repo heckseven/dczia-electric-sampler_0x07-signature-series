@@ -811,6 +811,16 @@ class Sequencer:
     def nudge_strength(self, direction):
         return self.set_strength(self.strength + direction * quantize.STRENGTH_STEP)
 
+    @property
+    def volume_percent(self):
+        """Where the knob is, as a percentage of its travel.
+
+        Not the level: the level is a decibel curve, so at the quiet end it
+        is a number like 0.005, and a display showing 0 or 1 for the bottom
+        third of the dial tells the player nothing about where the knob is.
+        """
+        return int(round(100.0 * self.volume_position / VOLUME_STEPS))
+
     def set_volume_position(self, position):
         """Move the knob to a notch, and apply the level that notch means."""
         self.volume_position = int(clamp(position, 0, VOLUME_STEPS))

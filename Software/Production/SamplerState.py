@@ -340,7 +340,7 @@ class SamplerState(State):
             sequencer.transport,
             sequencer.clock,
         )
-        middle = view.detail_line(song, sequencer.clock, sequencer.volume)
+        middle = view.detail_line(song, sequencer.clock, sequencer.volume_percent)
         # The playhead is deliberately absent. Including it would change the
         # text on every step, so a frame would be sent on every step, and
         # frames pop the amplifier. The playhead lives on the pad LEDs

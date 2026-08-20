@@ -141,16 +141,17 @@ def status_line(song, mode, track, page, transport, clock):
     return ("%-12s %s" % (where, tail)).rstrip()
 
 
-def detail_line(song, clock, volume=None):
+def detail_line(song, clock, volume_percent=None):
     """The second line: the numbers you change most.
 
-    Volume is shown as a percentage because it is the one number here with
-    no natural unit, and because the reason to look at it is usually "how
-    loud is this about to be in my headphones".
+    Volume is where the knob is, not the level it produces. The level is a
+    decibel curve, so the quiet half of the dial is all values below a
+    hundredth - a display of those would read 0 for most of its useful
+    travel and tell the player nothing.
     """
     line = "%d %s L%d" % (int(clock.bpm), song.division_name, song.length)
-    if volume is not None:
-        line += " V%d" % round(volume * 100)
+    if volume_percent is not None:
+        line += " V%d" % volume_percent
     return line
 
 

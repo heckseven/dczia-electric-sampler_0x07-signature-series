@@ -585,3 +585,57 @@ def module_max_events():
     import SamplerState as module
 
     return module.MAX_EVENTS_PER_PASS
+
+
+# --- the volume knob ------------------------------------------------------
+#
+# A safety control: it is what someone wearing headphones reaches for when
+# a sound is too loud. It has to be on the bare knob, with no modifier to
+# remember, and the level has to be visible before it is audible.
+
+
+def test_the_volume_knob_changes_the_volume(state):
+    engine = sequencer_module.engine
+    before = engine.volume
+    setup.volume_enc.position += 3
+    state._handle_encoders()
+    assert engine.volume > before
+
+
+def test_turning_the_volume_knob_down_makes_it_quieter(state):
+    engine = sequencer_module.engine
+    engine.set_volume(0.5)
+    setup.volume_enc.position -= 2
+    state._handle_encoders()
+    assert engine.volume < 0.5
+
+
+def test_the_bare_knob_is_volume(state):
+    """No modifier to hold. Reaching for a chord to turn something down is
+    the wrong shape for the one control with a safety job.
+    """
+    assert state.controls.volume_turn_target() == "volume"
+
+
+def test_holding_function_still_gets_division(state):
+    for action, value in state.controls.press(FUNCTION):
+        state._act(action, value, None)
+    assert state.controls.volume_turn_target() == "division"
+
+
+def test_the_volume_is_on_the_display(state):
+    engine = sequencer_module.engine
+    engine.set_volume(0.4)
+    state._render_display()
+    assert "V40" in state._screen.line(1), state._screen.line(1)
+
+
+def test_the_displayed_volume_follows_the_knob(state):
+    engine = sequencer_module.engine
+    engine.set_volume(0.4)
+    state._render_display()
+    before = state._screen.line(1)
+    setup.volume_enc.position += 2
+    state._handle_encoders()
+    state._render_display()
+    assert state._screen.line(1) != before

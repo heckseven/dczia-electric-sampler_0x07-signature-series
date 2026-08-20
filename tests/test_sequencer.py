@@ -1190,3 +1190,83 @@ def test_the_usb_timer_survives_the_tick_rollover(seq):
     finally:
         sequencer_module.midi_usb.receive = real
     assert calls, "USB stopped being polled across the wrap"
+
+
+# --- the master volume ----------------------------------------------------
+#
+# This is a safety control before it is a musical one. It exists so someone
+# wearing headphones can make a sound quieter, and the two things that
+# matters for are that it reaches zero and that it takes effect on what is
+# already sounding rather than on the next hit.
+
+
+def test_the_knob_changes_the_volume(seq):
+    before = seq.volume
+    seq.nudge_volume(1)
+    assert seq.volume > before
+    seq.nudge_volume(-1)
+    assert seq.volume == pytest.approx(before)
+
+
+def test_the_volume_reaches_silence(seq):
+    """All the way down has to mean silent, not merely quiet."""
+    for _ in range(100):
+        seq.nudge_volume(-1)
+    assert seq.volume == 0.0
+
+
+def test_the_volume_does_not_run_past_full(seq):
+    for _ in range(100):
+        seq.nudge_volume(1)
+    assert seq.volume == sequencer_module.MAX_VOLUME
+
+
+def test_turning_down_quiets_a_sound_already_playing(seq, kit):
+    """The point of the control. A drum hit is a third of a second, so
+    waiting for the next one would usually do - but "usually" is not good
+    enough for something whose job is to stop a noise in someone's ears.
+    """
+    seq.load_kit(kit)
+    seq.trigger(0, MAX_VELOCITY)
+    voice = seq.mixer.voice[seq._voice_for(0)]
+    loud = voice.level
+    seq.set_volume(0.0)
+    assert voice.level == 0.0
+    assert loud > 0.0
+
+
+def test_turning_up_lifts_a_sound_already_playing(seq, kit):
+    seq.load_kit(kit)
+    seq.set_volume(0.2)
+    seq.trigger(0, MAX_VELOCITY)
+    voice = seq.mixer.voice[seq._voice_for(0)]
+    quiet = voice.level
+    seq.set_volume(0.6)
+    assert voice.level > quiet
+
+
+def test_velocity_still_matters_at_any_volume(seq, kit):
+    seq.load_kit(kit)
+    seq.set_volume(0.5)
+    seq.trigger(0, MAX_VELOCITY)
+    hard = seq.mixer.voice[seq._voice_for(0)].level
+    seq.trigger(0, 20)
+    soft = seq.mixer.voice[seq._voice_for(0)].level
+    assert soft < hard
+
+
+def test_the_shipped_beat_still_does_not_clip_at_the_default(seq):
+    seq.load_demo_pattern()
+    assert seq.volume == sequencer_module.DEFAULT_VOLUME
+    assert worst_simultaneous_level(seq) <= 1.0
+
+
+def test_polyphony_remembers_the_right_voice(seq, kit):
+    """_voice_for advances the rotation, so it must only be asked once."""
+    seq.load_kit(kit)
+    seq.poly = True
+    seq.trigger(0, 100)
+    sounded = [i for i, v in enumerate(seq._voice_velocity) if v]
+    assert sounded, "no voice recorded a velocity"
+    for index in sounded:
+        assert seq.mixer.voice[index].level > 0, "level and velocity disagree"

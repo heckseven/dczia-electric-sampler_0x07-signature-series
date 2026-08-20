@@ -29,8 +29,9 @@ from supervisor import ticks_ms
 from engine import wav
 
 from engine import quantize
+from engine.util import clamp
 from engine.clock import Clock, ticks_diff
-from engine.song import DEFAULT_VELOCITY, TRACK_COUNT, Song
+from engine.song import DEFAULT_VELOCITY, MAX_VELOCITY, TRACK_COUNT, Song
 from engine.transport import LIVE, SEQ, Transport
 from setup import midi_serial, midi_uart, midi_usb, sync_in, sync_out
 
@@ -117,6 +118,13 @@ STREAM_LINGER_MS = 750
 # coincide - heard on the badge as a few clean hits and then distortion. The
 # original firmware ran every voice at 0.1 for the same reason.
 DEFAULT_VOLUME = 0.25
+
+# The knob moves the master volume in steps this size, between these bounds.
+# One turn of the encoder is one step, so a hand can cross the useful range
+# in a second or two without being able to jump from quiet to painful.
+VOLUME_STEP = 0.05
+MIN_VOLUME = 0.0
+MAX_VOLUME = 1.0
 
 # How often the MIDI ports are drained. Reading them costs about 430 us a pass
 # on this board, mostly USB, against a main loop that is otherwise around
@@ -224,6 +232,11 @@ class Sequencer:
         self.poly = False
         # Scales every voice; see DEFAULT_VOLUME.
         self.volume = DEFAULT_VOLUME
+        # What velocity each mixer voice was last given, so a volume change
+        # can be applied to whatever is sounding rather than only to the
+        # next hit. Turning the volume down has to be immediate: on
+        # headphones the next hit is too late to matter.
+        self._voice_velocity = [0] * MIXER_VOICES
 
         # Whether pulses arriving on the sync jack should start a stopped
         # transport, or only set tempo and phase for a transport the player
@@ -540,8 +553,13 @@ class Sequencer:
         sample = self._samples[track]
         if sample is None:
             return False
-        voice = self.mixer.voice[self._voice_for(track)]
+        # Resolved once: in polyphonic mode _voice_for advances the track's
+        # rotation, so asking twice would set the level on one voice and
+        # remember the velocity against the next.
+        index = self._voice_for(track)
+        voice = self.mixer.voice[index]
         voice.level = self.volume * (velocity / 127.0)
+        self._voice_velocity[index] = velocity
         try:
             # Starting here means the stream's own transient lands under a
             # drum hit rather than in silence, where it would be obvious.
@@ -588,6 +606,7 @@ class Sequencer:
         voice = self.mixer.voice[AUDITION_VOICE]
         # Half a full-velocity hit, so a preview sits under the pattern.
         voice.level = self.volume * 0.5
+        self._voice_velocity[AUDITION_VOICE] = MAX_VELOCITY // 2
         # Held before playing, not after: the sample and the buffer it reads
         # through must outlive this function, and nothing else owns them.
         self._audition_sample = sample
@@ -778,6 +797,25 @@ class Sequencer:
 
     def nudge_strength(self, direction):
         return self.set_strength(self.strength + direction * quantize.STRENGTH_STEP)
+
+    def set_volume(self, value):
+        """Set the master volume, and apply it to whatever is sounding.
+
+        Applying it immediately is the point. A drum hit is a third of a
+        second, so waiting for the next one would usually be quick enough -
+        but "usually" is not good enough for something whose job is to stop
+        a sound that is too loud in someone's ears.
+        """
+        self.volume = clamp(value, MIN_VOLUME, MAX_VOLUME)
+        for index in range(MIXER_VOICES):
+            velocity = self._voice_velocity[index]
+            if velocity:
+                self.mixer.voice[index].level = self.volume * (velocity / 127.0)
+        return self.volume
+
+    def nudge_volume(self, direction):
+        """One detent of the volume knob."""
+        return self.set_volume(self.volume + direction * VOLUME_STEP)
 
     def set_bpm(self, value):
         return self.clock.set_bpm(value)

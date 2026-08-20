@@ -141,9 +141,17 @@ def status_line(song, mode, track, page, transport, clock):
     return ("%-12s %s" % (where, tail)).rstrip()
 
 
-def detail_line(song, clock):
-    """The second line: the numbers you change most."""
-    return "%d %s L%d" % (int(clock.bpm), song.division_name, song.length)
+def detail_line(song, clock, volume=None):
+    """The second line: the numbers you change most.
+
+    Volume is shown as a percentage because it is the one number here with
+    no natural unit, and because the reason to look at it is usually "how
+    loud is this about to be in my headphones".
+    """
+    line = "%d %s L%d" % (int(clock.bpm), song.division_name, song.length)
+    if volume is not None:
+        line += " V%d" % round(volume * 100)
+    return line
 
 
 def step_row(song, track, page, playhead=None):

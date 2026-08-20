@@ -234,7 +234,8 @@ class SamplerState(State):
             song.set_division(song.division + delta)
         elif target == "quantize":
             sequencer.nudge_strength(1 if delta > 0 else -1)
-        # Master volume is not implemented yet; the knob is otherwise inert.
+        else:
+            sequencer.nudge_volume(1 if delta > 0 else -1)
 
     def _nudge_velocity(self, delta):
         """Holding a pad and turning Select edits that step's level."""
@@ -326,7 +327,7 @@ class SamplerState(State):
             sequencer.transport,
             sequencer.clock,
         )
-        middle = view.detail_line(song, sequencer.clock)
+        middle = view.detail_line(song, sequencer.clock, sequencer.volume)
         # The playhead is deliberately absent. Including it would change the
         # text on every step, so a frame would be sent on every step, and
         # frames pop the amplifier. The playhead lives on the pad LEDs

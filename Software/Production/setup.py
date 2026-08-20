@@ -8,6 +8,7 @@ import i2cdisplaybus
 import screen
 import keypad
 import neopixel
+import os
 import rotaryio
 import sdcardio
 import storage
@@ -155,6 +156,20 @@ spi = busio.SPI(board.GP10, board.GP11, board.GP12)
 sdcard = None
 sd_baudrate = None
 sd_error = None
+# CircuitPython 9 onward requires the mount point to exist as a real
+# directory before storage.mount will use it; 8 created it implicitly. The
+# badge cannot make it itself while USB is attached, because the root
+# filesystem is read-only to the program then - so it is created here when
+# that is possible, and a card shipped without it simply has no SD.
+try:
+    if "sd" not in os.listdir("/"):
+        os.mkdir("/sd")
+except OSError:
+    # Read-only root, which is the normal case with a cable plugged in. If
+    # /sd is already there this changes nothing; if it is not, the mount
+    # below fails and the badge runs from flash.
+    pass
+
 for _baudrate in SD_BAUDRATES:
     try:
         # sdcardio takes the chip-select Pin itself and drives it, unlike
@@ -164,7 +179,8 @@ for _baudrate in SD_BAUDRATES:
         storage.mount(vfs, "/sd")
         sd_baudrate = _baudrate
         break
-    except OSError as error:
+    except (OSError, RuntimeError) as error:
+        # RuntimeError as well: a missing mount point raises that, not OSError.
         sd_error = error
         if sdcard is not None:
             try:

@@ -24,7 +24,7 @@ def card(tmp_path, monkeypatch):
     """A card with a songs directory on it."""
     directory = tmp_path / "songs"
     directory.mkdir()
-    monkeypatch.setattr(songfile, "SONG_DIR", str(directory))
+    monkeypatch.setattr(songfile.store, "directory", str(directory))
     return directory
 
 
@@ -107,7 +107,7 @@ def test_with_no_card_the_list_is_empty_rather_than_an_error(tmp_path, monkeypat
 def test_the_songs_directory_is_created_if_missing(tmp_path, monkeypatch, song):
     """A card that has never held a song is not a broken card."""
     directory = tmp_path / "songs"
-    monkeypatch.setattr(songfile, "SONG_DIR", str(directory))
+    monkeypatch.setattr(songfile.store, "directory", str(directory))
     songfile.save(song, "beat")
     assert songfile.load("beat").length == song.length
 

@@ -29,7 +29,7 @@ from supervisor import ticks_ms
 from engine import wav
 
 from engine import quantize
-from engine.util import clamp
+from engine.util import accelerated, clamp
 from engine.clock import Clock, ticks_diff
 from engine.song import DEFAULT_VELOCITY, MAX_VELOCITY, TRACK_COUNT, Song
 from engine.transport import LIVE, SEQ, Transport
@@ -237,6 +237,8 @@ class Sequencer:
         # next hit. Turning the volume down has to be immediate: on
         # headphones the next hit is too late to matter.
         self._voice_velocity = [0] * MIXER_VOICES
+        # When the volume knob last moved, so its speed can be read back.
+        self._last_volume_turn = None
 
         # Whether pulses arriving on the sync jack should start a stopped
         # transport, or only set tempo and phase for a transport the player
@@ -813,15 +815,23 @@ class Sequencer:
                 self.mixer.voice[index].level = self.volume * (velocity / 127.0)
         return self.volume
 
-    def nudge_volume(self, steps):
-        """Move the volume by that many detents of the knob.
+    def nudge_volume(self, steps, now=None):
+        """Move the volume by that many detents, scaled by how fast it turned.
 
-        The count matters rather than just the direction. A hand spun hard
-        down the knob produces a large delta in one pass of the loop, and
-        for the control someone reaches for when a sound is too loud that
-        has to move the volume a long way, not one twentieth.
+        The count matters rather than just the direction: a hand spinning the
+        knob produces a large delta in one pass of the loop. So does the gap
+        since it last moved - creeping it round gives fine control, spinning
+        it covers the range in one movement. See engine.util.accelerated.
         """
-        return self.set_volume(self.volume + steps * VOLUME_STEP)
+        if now is None:
+            now = ticks_ms()
+        elapsed = None
+        if self._last_volume_turn is not None:
+            elapsed = ticks_diff(now, self._last_volume_turn)
+            if elapsed < 0:
+                elapsed = None
+        self._last_volume_turn = now
+        return self.set_volume(self.volume + accelerated(steps, elapsed) * VOLUME_STEP)
 
     def set_bpm(self, value):
         return self.clock.set_bpm(value)

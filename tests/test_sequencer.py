@@ -1200,24 +1200,28 @@ def test_the_usb_timer_survives_the_tick_rollover(seq):
 # already sounding rather than on the next hit.
 
 
+SLOW = 1000  # milliseconds between detents: unhurried, so no acceleration
+
+
 def test_the_knob_changes_the_volume(seq):
+    """Turned slowly, one detent is one step either way."""
     before = seq.volume
-    seq.nudge_volume(1)
-    assert seq.volume > before
-    seq.nudge_volume(-1)
+    seq.nudge_volume(1, now=SLOW)
+    assert seq.volume == pytest.approx(before + sequencer_module.VOLUME_STEP)
+    seq.nudge_volume(-1, now=SLOW * 2)
     assert seq.volume == pytest.approx(before)
 
 
 def test_the_volume_reaches_silence(seq):
     """All the way down has to mean silent, not merely quiet."""
-    for _ in range(100):
-        seq.nudge_volume(-1)
+    for step in range(100):
+        seq.nudge_volume(-1, now=SLOW * (step + 1))
     assert seq.volume == 0.0
 
 
 def test_the_volume_does_not_run_past_full(seq):
-    for _ in range(100):
-        seq.nudge_volume(1)
+    for step in range(100):
+        seq.nudge_volume(1, now=SLOW * (step + 1))
     assert seq.volume == sequencer_module.MAX_VOLUME
 
 
@@ -1279,11 +1283,46 @@ def test_a_hard_spin_moves_the_volume_a_long_way(seq):
     move the volume a single twentieth however hard it was spun.
     """
     seq.set_volume(1.0)
-    seq.nudge_volume(-10)
+    seq.nudge_volume(-10, now=SLOW)
     assert seq.volume == pytest.approx(0.5)
 
 
 def test_a_hard_spin_down_can_reach_silence_in_one_move(seq):
     seq.set_volume(0.6)
-    seq.nudge_volume(-40)
+    seq.nudge_volume(-40, now=SLOW)
     assert seq.volume == 0.0
+
+
+def test_spinning_the_knob_moves_further_than_creeping_it(seq):
+    """The same detent should do more when the knob is moving fast.
+
+    An encoder reports detents, not speed, so the only clue is how close
+    together they arrive - which is what makes a knob feel like a knob
+    rather than a counter.
+    """
+    seq.set_volume(0.5)
+    seq.nudge_volume(1, now=1000)
+    creep = seq.volume - 0.5
+
+    seq.set_volume(0.5)
+    seq.nudge_volume(1, now=2000)  # settle, so this one is unhurried
+    seq.set_volume(0.5)
+    seq.nudge_volume(1, now=2005)  # five milliseconds later: a spin
+    spin = seq.volume - 0.5
+
+    assert spin > creep
+
+
+def test_creeping_the_knob_still_gives_one_step(seq):
+    """Fine control has to survive, or the volume becomes unusable."""
+    seq.set_volume(0.5)
+    seq.nudge_volume(1, now=1000)
+    assert seq.volume == pytest.approx(0.5 + sequencer_module.VOLUME_STEP)
+
+
+def test_the_knob_survives_the_tick_rollover(seq):
+    """ticks_ms wraps at 2**29; a negative gap must not read as a fast spin."""
+    seq.set_volume(0.5)
+    seq._last_volume_turn = (1 << 29) - 5
+    seq.nudge_volume(1, now=5)
+    assert seq.volume > 0.5

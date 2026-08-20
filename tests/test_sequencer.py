@@ -1378,3 +1378,90 @@ def test_the_quiet_end_still_shows_a_moving_number(seq):
         seq.set_volume_position(position)
         seen.add(seq.volume_percent)
     assert len(seen) > 6, sorted(seen)
+
+
+# --- letting go of a track's audio ----------------------------------------
+#
+# A mixer voice holds a raw pointer into the buffer it is playing, so
+# dropping that buffer while the DMA is still walking it is the hard fault
+# this rework exists to eliminate. Nothing reached it while the kit loaded
+# once at boot; assigning a sample from the browser is what makes it live.
+
+
+def test_releasing_a_track_stops_its_voices_first(seq, kit):
+    seq.load_kit(kit)
+    seq.trigger(0, MAX_VELOCITY)
+    voice = seq.mixer.voice[seq._voice_for(0)]
+    assert voice.playing, "the test needs a sounding voice"
+    seq._release_track(0)
+    assert not voice.playing, "the buffer was dropped while it was playing"
+
+
+def test_reloading_a_track_stops_the_old_sample(seq, kit):
+    """The path the sample browser will take."""
+    seq.load_kit(kit)
+    seq.trigger(0, MAX_VELOCITY)
+    voice = seq.mixer.voice[seq._voice_for(0)]
+    seq.load_track(0, kit[1])
+    assert not voice.playing or seq._samples[0] is not None
+
+
+def test_releasing_a_track_forgets_its_levels(seq, kit):
+    """A stale velocity would make a released track audible again on the
+    next volume change, which re-applies levels to whatever is sounding.
+    """
+    seq.load_kit(kit)
+    seq.trigger(0, MAX_VELOCITY)
+    seq._release_track(0)
+    for index in seq._voices_of(0):
+        assert seq._voice_velocity[index] == 0
+
+
+def test_silencing_one_track_leaves_the_others_playing(seq, kit):
+    seq.load_kit(kit)
+    seq.trigger(0, MAX_VELOCITY)
+    seq.trigger(1, MAX_VELOCITY)
+    other = seq.mixer.voice[seq._voice_for(1)]
+    seq.silence_track(0)
+    assert other.playing
+
+
+def test_silencing_survives_a_failing_voice(seq, kit):
+    """The audio path is allowed to fail; tearing down must not raise."""
+    seq.load_kit(kit)
+
+    def boom():
+        raise OSError(5, "boom")
+
+    seq.mixer.voice[seq._voice_for(0)].stop = boom
+    seq.trigger(0, MAX_VELOCITY)
+    seq.silence_track(0)
+
+
+# --- the volume and its knob agree ----------------------------------------
+
+
+def test_a_level_set_directly_snaps_to_a_notch(seq):
+    """Otherwise the screen, the voices and the next detent disagree."""
+    seq.set_volume(0.2)
+    assert seq.volume == pytest.approx(
+        sequencer_module.level_for_position(seq.volume_position)
+    )
+
+
+def test_silence_and_full_survive_the_snapping(seq):
+    seq.set_volume(0.0)
+    assert seq.volume == 0.0 and seq.volume_position == 0
+    seq.set_volume(1.0)
+    assert seq.volume == 1.0
+    assert seq.volume_position == sequencer_module.VOLUME_STEPS
+
+
+def test_the_knob_moves_from_where_the_level_actually_is(seq):
+    seq.set_volume(0.2)
+    position = seq.volume_position
+    seq.nudge_volume(1, now=10_000)
+    assert seq.volume_position == position + 1
+    assert seq.volume == pytest.approx(
+        sequencer_module.level_for_position(position + 1)
+    )

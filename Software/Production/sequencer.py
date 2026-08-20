@@ -468,7 +468,37 @@ class Sequencer:
                 loaded += 1
         return loaded
 
+    def _voices_of(self, track):
+        """Every mixer voice this track can be playing on."""
+        base = track * VOICES_PER_TRACK
+        return range(base, base + VOICES_PER_TRACK)
+
+    def silence_track(self, track):
+        """Stop anything this track is sounding, and forget its levels.
+
+        Called before a track's audio is let go. A mixer voice holds a raw
+        pointer into the buffer it is playing, so dropping that buffer while
+        the DMA is still walking it is the fault this rework exists to
+        eliminate - the badge takes a hard fault with no traceback and only
+        unplugging it recovers.
+
+        Nothing reached this until now, because the kit loaded once at boot
+        and was never replaced. Assigning a sample from the browser is what
+        makes it reachable.
+        """
+        for index in self._voices_of(track):
+            voice = self.mixer.voice[index]
+            try:
+                if voice.playing:
+                    voice.stop()
+            except OSError:
+                # The audio path is allowed to fail; see trigger().
+                pass
+            self._voice_velocity[index] = 0
+
     def _release_track(self, track):
+        # Before anything is dropped: whatever is playing reads through it.
+        self.silence_track(track)
         if self._samples[track] is not None and not self._streamed[track]:
             # Reclaim the budget this track's audio was holding.
             self._ram_used = max(0, self._ram_used - self._sample_bytes(track))
@@ -837,8 +867,13 @@ class Sequencer:
         but "usually" is not good enough for something whose job is to stop
         a sound that is too loud in someone's ears.
         """
-        self.volume = clamp(value, MIN_VOLUME, MAX_VOLUME)
-        self.volume_position = position_for_level(self.volume)
+        # Snap to a notch, so the level and the knob position can never
+        # disagree. Storing the value as given left them describing
+        # different things: the screen showed the position, the voices got
+        # the raw level, and the next detent moved from the position - so a
+        # level set from anywhere but the knob made all three diverge.
+        self.volume_position = position_for_level(clamp(value, MIN_VOLUME, MAX_VOLUME))
+        self.volume = level_for_position(self.volume_position)
         for index in range(MIXER_VOICES):
             velocity = self._voice_velocity[index]
             if velocity:

@@ -813,9 +813,15 @@ class Sequencer:
                 self.mixer.voice[index].level = self.volume * (velocity / 127.0)
         return self.volume
 
-    def nudge_volume(self, direction):
-        """One detent of the volume knob."""
-        return self.set_volume(self.volume + direction * VOLUME_STEP)
+    def nudge_volume(self, steps):
+        """Move the volume by that many detents of the knob.
+
+        The count matters rather than just the direction. A hand spun hard
+        down the knob produces a large delta in one pass of the loop, and
+        for the control someone reaches for when a sound is too loud that
+        has to move the volume a long way, not one twentieth.
+        """
+        return self.set_volume(self.volume + steps * VOLUME_STEP)
 
     def set_bpm(self, value):
         return self.clock.set_bpm(value)

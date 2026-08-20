@@ -639,3 +639,12 @@ def test_the_displayed_volume_follows_the_knob(state):
     state._handle_encoders()
     state._render_display()
     assert state._screen.line(1) != before
+
+
+def test_spinning_the_volume_knob_hard_moves_it_far(state):
+    """One pass of the loop can see many detents at once."""
+    engine = sequencer_module.engine
+    engine.set_volume(1.0)
+    setup.volume_enc.position -= 10
+    state._handle_encoders()
+    assert engine.volume < 0.6

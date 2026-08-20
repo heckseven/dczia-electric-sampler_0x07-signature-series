@@ -235,7 +235,9 @@ class SamplerState(State):
         elif target == "quantize":
             sequencer.nudge_strength(1 if delta > 0 else -1)
         else:
-            sequencer.nudge_volume(1 if delta > 0 else -1)
+            # The whole delta, not just its sign: spinning the knob down
+            # hard should get quiet quickly.
+            sequencer.nudge_volume(delta)
 
     def _nudge_velocity(self, delta):
         """Holding a pad and turning Select edits that step's level."""

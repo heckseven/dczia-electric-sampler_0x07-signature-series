@@ -1270,3 +1270,20 @@ def test_polyphony_remembers_the_right_voice(seq, kit):
     assert sounded, "no voice recorded a velocity"
     for index in sounded:
         assert seq.mixer.voice[index].level > 0, "level and velocity disagree"
+
+
+def test_a_hard_spin_moves_the_volume_a_long_way(seq):
+    """Direction alone is not enough for the control that means "stop".
+
+    A fast turn arrives as one large delta, so honouring only its sign would
+    move the volume a single twentieth however hard it was spun.
+    """
+    seq.set_volume(1.0)
+    seq.nudge_volume(-10)
+    assert seq.volume == pytest.approx(0.5)
+
+
+def test_a_hard_spin_down_can_reach_silence_in_one_move(seq):
+    seq.set_volume(0.6)
+    seq.nudge_volume(-40)
+    assert seq.volume == 0.0

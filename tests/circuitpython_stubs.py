@@ -317,9 +317,12 @@ class TileGrid:
         return self.tiles.get(key, 0)
 
 
-class I2CDisplay:
+class I2CDisplayBus:
+    """CircuitPython 9 split this out of displayio; 10 removed the old name."""
+
     def __init__(self, bus, device_address=0):
         self.bus = bus
+        self.device_address = device_address
 
 
 class SSD1306:
@@ -327,11 +330,22 @@ class SSD1306:
         self.width = width
         self.height = height
         self.shown = None
-        self.root_group = None
+        self._root_group = None
 
     def show(self, group):
+        # Removed in CircuitPython 9; kept here only so a stray caller fails
+        # a test rather than passing quietly.
         self.shown = group
-        self.root_group = group
+        self._root_group = group
+
+    @property
+    def root_group(self):
+        return self._root_group
+
+    @root_group.setter
+    def root_group(self, group):
+        self._root_group = group
+        self.shown = group
 
     def refresh(self, **kwargs):
         return True
@@ -683,12 +697,12 @@ def install():
         "displayio": _module(
             "displayio",
             release_displays=lambda: None,
-            I2CDisplay=I2CDisplay,
             Group=Group,
             Bitmap=Bitmap,
             Palette=Palette,
             TileGrid=TileGrid,
         ),
+        "i2cdisplaybus": _module("i2cdisplaybus", I2CDisplayBus=I2CDisplayBus),
         "terminalio": _module("terminalio", FONT=FONT),
         "storage": _module(
             "storage",

@@ -14,13 +14,20 @@ from screen import TextScreen
 
 
 class FakeDisplay:
+    """A display that only accepts root_group, as CircuitPython 9 onward does.
+
+    show() was removed in 9.0, so a fake that still offers it would let a
+    caller keep using it and pass.
+    """
+
     def __init__(self, width=128, height=32):
         self.width = width
         self.height = height
-        self.shown = None
+        self.root_group = None
 
-    def show(self, group):
-        self.shown = group
+    @property
+    def shown(self):
+        return self.root_group
 
 
 @pytest.fixture

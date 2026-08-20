@@ -4,6 +4,7 @@ import board
 import busio
 import digitalio
 import displayio
+import i2cdisplaybus
 import screen
 import keypad
 import neopixel
@@ -70,7 +71,10 @@ i2c_was_stuck = free_i2c_bus(board.GP15, board.GP14)
 # leave in place while chasing a fault. Worth revisiting deliberately, once
 # the badge is stable, rather than as one variable among several.
 i2c = busio.I2C(board.GP15, board.GP14, frequency=400_000)
-display_bus = displayio.I2CDisplay(i2c, device_address=0x3C)
+# i2cdisplaybus rather than displayio.I2CDisplay: displayio was split into
+# busdisplay, fourwire, epaperdisplay, i2cdisplaybus and paralleldisplaybus
+# in CircuitPython 9, and the old names were removed in 10.
+display_bus = i2cdisplaybus.I2CDisplayBus(i2c, device_address=0x3C)
 display = adafruit_displayio_ssd1306.SSD1306(display_bus, width=128, height=32)
 
 # Neopixels

@@ -283,7 +283,9 @@ class TextScreen:
         taking the display back. Doing it per redraw would resend the whole
         screen for every scroll detent.
         """
-        self.display.show(self.group)
+        # root_group rather than show(): show() was deprecated in 8.0 and
+        # removed in 9.0, and this assignment works on both.
+        self.display.root_group = self.group
 
 
 _shared = None

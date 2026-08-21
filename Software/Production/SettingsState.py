@@ -25,6 +25,7 @@ into tearing the sound; the screen simply converges a pass or two later.
 
 from supervisor import ticks_ms
 
+import guard
 import kitfile
 import screen as screen_module
 import sequencer as sequencer_module
@@ -443,7 +444,11 @@ class SettingsState(State):
         """
         for track in range(TRACK_COUNT):
             sequencer.silence_track(track)
-        return work()
+        # And the watchdog held off, because some of these are slower than it
+        # is: creating the songs directory on an empty card measured eight to
+        # nine seconds, which is past even the largest timeout the RP2040
+        # allows. See guard.py.
+        return guard.slowly(work)
 
     # --- warming ----------------------------------------------------------
 
@@ -465,7 +470,9 @@ class SettingsState(State):
         step = _WARM_CARD[self._warmed]
         self._warmed += 1
         try:
-            step(self)
+            # Warming runs inside the main loop, so the watchdog is already
+            # armed by the time the banner starts reading the card.
+            guard.slowly(lambda: step(self))
         except OSError:
             # No card, or a card that will not answer. Not fatal: the badge
             # plays without one, and the rows that need it will say so.

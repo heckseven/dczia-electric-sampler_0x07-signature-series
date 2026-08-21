@@ -181,17 +181,36 @@ class _WatchDogMode:
     RAISE = "RAISE"
 
 
+# The largest timeout an RP2040 will accept. Measured on the badge: anything
+# larger raises "timeout must be <= 8". It matters because creating a
+# directory on an empty SD card has been measured at eight to nine seconds,
+# which is past this - so a slow card operation has to turn the watchdog off
+# rather than merely widen it. See Software/Production/guard.py.
+MAX_WATCHDOG_TIMEOUT = 8
+
+
 class WatchDogTimer:
     """Models microcontroller.watchdog.
 
     Enforces what the hardware does: the timeout has to be set before the
-    mode, because setting the mode is what arms it.
+    mode, because setting the mode is what arms it, and it cannot be set
+    beyond the chip's maximum.
     """
 
     def __init__(self):
-        self.timeout = None
+        self._timeout = None
         self._mode = None
         self.feeds = 0
+
+    @property
+    def timeout(self):
+        return self._timeout
+
+    @timeout.setter
+    def timeout(self, value):
+        if value is not None and value > MAX_WATCHDOG_TIMEOUT:
+            raise ValueError("timeout must be <= %d" % MAX_WATCHDOG_TIMEOUT)
+        self._timeout = value
 
     @property
     def mode(self):

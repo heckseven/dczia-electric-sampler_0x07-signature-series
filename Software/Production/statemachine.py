@@ -4,6 +4,8 @@ Separated from main.py so it can be tested: main.py ends in a loop that never
 returns, which makes it unimportable.
 """
 
+import guard
+
 # Which module and class each state lives in, so a state can be built the
 # first time it is asked for rather than at boot.
 #
@@ -59,8 +61,13 @@ class StateMachine(object):
         state = self.states.get(name)
         if state is None:
             module_name, class_name = STATES[name]
-            module = __import__(module_name)
-            state = getattr(module, class_name)()
+            # Compiling a screen off the card measured 250 to 1500 ms, against
+            # a two second watchdog that nothing feeds while this blocks. The
+            # margin was under a second, and card timings vary by a factor of
+            # three between runs - so this held it off rather than gambling.
+            # A reset here looks exactly like a crash: the badge reboots with
+            # no traceback, because a reset is not an exception.
+            state = guard.slowly(lambda: getattr(__import__(module_name), class_name)())
             self.states[name] = state
         return state
 

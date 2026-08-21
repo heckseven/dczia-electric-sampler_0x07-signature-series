@@ -13,19 +13,9 @@ input was dropped and the display could not be touched during playback.
 
 import gc
 
-import microcontroller
-from watchdog import WatchDogMode
-
+import guard
 from sequencer import engine
 from statemachine import StateMachine
-
-# Generous on purpose: the loop turns over thousands of times a second and the
-# longest thing it does deliberately, drawing a line of text, is measured in
-# tens of milliseconds. The badge has hung with the CPU inside a peripheral
-# driver where a KeyboardInterrupt cannot reach it, and the reset button is
-# not reachable when the badge is mounted, so restarting itself is the only
-# recovery the player has.
-WATCHDOG_TIMEOUT = 2.0
 
 # Collect before the heap is empty rather than when it is.
 #
@@ -47,13 +37,13 @@ machine = StateMachine()
 machine.go_to_state("startup")
 
 # Armed after the kit has loaded: reading the card is legitimately slower than
-# anything the loop does later.
-watchdog = microcontroller.watchdog
-watchdog.timeout = WATCHDOG_TIMEOUT
-watchdog.mode = WatchDogMode.RESET
+# anything the loop does later. The things that stay slower than the timeout
+# even now - importing a screen, listing a directory, creating one - hold it
+# off deliberately; see guard.py.
+guard.arm()
 
 while True:
-    watchdog.feed()
+    guard.feed()
     if gc.mem_free() < GC_FLOOR:
         gc.collect()
     # The beat runs regardless of what is on screen.

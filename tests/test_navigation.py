@@ -397,15 +397,15 @@ def test_only_one_text_screen_is_ever_built():
 
 def test_the_main_loop_runs_a_watchdog():
     source = open(os.path.join(PRODUCTION_DIR, "main.py")).read()
-    assert "watchdog" in source
-    assert "feed()" in source, "an armed watchdog that is never fed just resets"
+    assert "guard.arm()" in source
+    assert "guard.feed()" in source, "an armed watchdog that is never fed resets"
 
 
 def test_the_watchdog_is_fed_inside_the_loop():
     """Feeding outside the loop arms a reset that always fires."""
     source = open(os.path.join(PRODUCTION_DIR, "main.py")).read()
     loop = source.index("while True:")
-    assert source.index("watchdog.feed()", loop) > loop
+    assert source.index("guard.feed()", loop) > loop
 
 
 def test_the_sampler_draws_through_the_shared_screen():

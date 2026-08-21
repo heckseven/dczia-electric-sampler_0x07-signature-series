@@ -16,6 +16,14 @@ eggs/
 .eggs/
 lib/
 lib64/
+
+# ...except the badge's own vendored CircuitPython libraries, which are not a
+# build artefact: they are what the badge runs, and flashing a fresh clone
+# without them gives a board that raises ImportError on the first screen that
+# needs one. The rule above comes from the Python packaging template and means
+# a virtualenv; this is a firmware tree.
+!Software/Production/lib/
+!Software/Production/lib/**
 parts/
 sdist/
 var/

@@ -63,12 +63,22 @@ MAX_PULSE_MS = 3000
 MIN_PULSE_WINDOW = 2
 MAX_PULSE_WINDOW = 8
 
-# How many quarter notes a pulse-driven master's tempo is counted over. Two,
-# because the error is the timestamp resolution against the whole span: at
-# 150 BPM two beats is 800 ms, so a 20 ms reading error is 2.5% rather than
-# the 20% it would be across a single 16.7 ms clock. A MIDI master does not
-# change tempo often enough for the delay to matter.
-COUNT_WINDOW_BEATS = 2
+# How many quarter notes a pulse-driven master's tempo is counted over, and
+# how often that count is read.
+#
+# The error is whatever displaced the two timestamps, against the whole span.
+# Measured against a real MIDI master over DIN: a two beat baseline reported
+# 131 to 156 BPM for a steady 137.6, because the occasional 34 to 46 ms pass -
+# a collection, a redraw - lands on one end of the window and 46 ms of 872 is
+# 5%. Eight beats is four times the baseline for the same displacement, and
+# reading it every beat keeps it responsive despite the longer memory.
+COUNT_WINDOW_BEATS = 8
+REPORT_EVERY_BEATS = 1
+
+# How much of the previous reading to keep. A little smoothing settles the
+# number on screen without slowing a real tempo change much: a master that
+# jumps tempo lands within a couple of readings, which is a couple of beats.
+BPM_SMOOTHING = 0.5
 
 # After this long with no pulse the clock is running on its own memory of the
 # tempo. It keeps playing; this only drives the "flywheeling" indicator.
@@ -304,17 +314,21 @@ class Clock:
             self._pulse_count = 0
             return
         self._pulse_count += 1
-        span = ticks_diff(now, self._pulse_epoch)
-        if self._pulse_count < ppqn * COUNT_WINDOW_BEATS:
+        if self._pulse_count % (ppqn * REPORT_EVERY_BEATS):
             return
+        span = ticks_diff(now, self._pulse_epoch)
         if span >= MIN_PULSE_MS:
             quarters = self._pulse_count / float(ppqn)
-            measured = 60000.0 * quarters / span
+            measured = clamp(60000.0 * quarters / span, MIN_BPM, MAX_BPM)
+            if self._bpm and self.source == EXTERNAL:
+                measured = measured * (1.0 - BPM_SMOOTHING) + self._bpm * BPM_SMOOTHING
             self._bpm = clamp(measured, MIN_BPM, MAX_BPM)
-        # Start the next window here rather than keeping a rolling one: the
-        # arithmetic is only exact between two real pulses.
-        self._pulse_epoch = now
-        self._pulse_count = 0
+        if self._pulse_count >= ppqn * COUNT_WINDOW_BEATS:
+            # Start a fresh baseline. Keeping one for ever would make the
+            # clock deaf to a tempo change; this bounds how far back it
+            # remembers while still measuring across most of that.
+            self._pulse_epoch = now
+            self._pulse_count = 0
 
     def is_flywheeling(self, now):
         """External clock latched, but running on the last measured tempo."""

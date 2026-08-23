@@ -182,7 +182,7 @@ def send_pulse_train(clock, bpm, start=1000, count=None):
     if count is None:
         # Enough to fill the counting window a fast master is measured over,
         # and more than enough for the gap averaging a slow one uses.
-        count = max(12, clock.sync_ppqn * COUNT_WINDOW_BEATS + 2)
+        count = max(12, clock.sync_ppqn * COUNT_WINDOW_BEATS * 2 + 2)
     quarter_ms = 60000.0 / bpm
     interval = quarter_ms / clock.sync_ppqn
     for index in range(count):
@@ -238,7 +238,7 @@ def test_a_fast_master_arriving_in_bursts_is_still_measured():
     # burst every 133 ms - which is what a 20 ms poll draining what it finds
     # actually looks like from in here.
     burst = 8
-    while sent < 24 * COUNT_WINDOW_BEATS + 2:
+    while sent < 24 * COUNT_WINDOW_BEATS * 2:
         now += 133
         for _ in range(burst):  # all at the same instant
             clock.external_pulse(now, ppqn=24)
@@ -409,7 +409,7 @@ def test_a_24_ppqn_master_sets_the_tempo():
     now = 0.0
     # 150 BPM at 24 PPQN is one clock every 16.67 ms. The tempo is counted
     # over a window of beats, so send more than one of them.
-    for _ in range(24 * COUNT_WINDOW_BEATS + 2):
+    for _ in range(24 * COUNT_WINDOW_BEATS * 2):
         now += 16.67
         clock.external_pulse(int(now), ppqn=24)
     assert clock.source == "ext"
@@ -463,7 +463,7 @@ def test_changing_master_discards_the_tempo_measured_from_the_other():
         now += 250
         clock.external_pulse(now)
     at_two = clock.bpm
-    for _ in range(24 * COUNT_WINDOW_BEATS + 2):
+    for _ in range(24 * COUNT_WINDOW_BEATS * 2):
         now += 10  # 250 BPM at 24 PPQN
         clock.external_pulse(now, ppqn=24)
     assert clock.bpm != at_two

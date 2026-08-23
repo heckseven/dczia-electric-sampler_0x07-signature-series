@@ -30,7 +30,7 @@ therefore already moves the way the eye expects. One that wants to travel left
 to right has to be told the columns, which is what COLUMNS is for.
 """
 
-from engine.clock import PPQN
+from engine.clock import PPQN, ticks_diff
 
 PIXEL_COUNT = 10
 
@@ -272,14 +272,59 @@ def by_name(name):
     return pulse
 
 
-def free_running_tick(elapsed_ms, bpm):
-    """A tick count for when the transport is stopped.
+# The most time one step of the free-running clock will account for. A pass
+# that took longer than this was a stall - a collection, a card read - and
+# advancing the animation by all of it would show as a lurch rather than as
+# the motion it stands in for.
+MAX_STEP_MS = 250
 
-    The clock only advances while it is running, but the lights should still
-    move when it is not - a badge whose panel goes dead the moment you press
-    stop looks broken. This is the same timebase the clock would produce at
-    that tempo, so starting the transport does not visibly jump.
+
+class Timebase:
+    """A tick that keeps counting when the sequencer's does not.
+
+    The clock only advances while the transport is running, but the lights
+    should still move when it is not: a panel that goes dead the moment you
+    press stop looks broken.
+
+    The naive version of this - deriving a tick from the millisecond counter
+    and the tempo - does not work, and hardware is what showed it. Absolute
+    elapsed time multiplied by tempo is a different number line from the
+    clock's own tick, so handing over between them jumps: measured on the
+    badge, an animation tick of 10765 became 120 the moment the transport
+    started, which is a jump to an unrelated phase. The same expression also
+    jumps whenever the tempo changes, because every past millisecond is
+    suddenly worth more ticks than it was.
+
+    So it accumulates instead. While the clock runs its tick is authoritative
+    and is simply followed; when it stops, counting carries on from wherever
+    that left it, at whatever tempo was last known. Both handovers are
+    continuous, in both directions.
     """
-    if bpm <= 0:
-        return 0
-    return int(elapsed_ms * bpm * PPQN / 60000.0)
+
+    def __init__(self):
+        self._tick = 0.0
+        self._last_ms = None
+
+    def step(self, now_ms, bpm, clock_tick=None):
+        """Advance to `now_ms` and return the tick to draw.
+
+        `clock_tick` is the sequencer's own tick while it is running, and None
+        when it is not.
+        """
+        if clock_tick is not None:
+            self._tick = float(clock_tick)
+            self._last_ms = now_ms
+            return clock_tick
+        if self._last_ms is None:
+            self._last_ms = now_ms
+            return int(self._tick)
+        # Wrap-safe: the millisecond counter rolls over at 2**29, and a plain
+        # subtraction across that point is a large negative number.
+        elapsed = ticks_diff(now_ms, self._last_ms)
+        self._last_ms = now_ms
+        if elapsed <= 0 or bpm <= 0:
+            return int(self._tick)
+        if elapsed > MAX_STEP_MS:
+            elapsed = MAX_STEP_MS
+        self._tick += elapsed * bpm * PPQN / 60000.0
+        return int(self._tick)

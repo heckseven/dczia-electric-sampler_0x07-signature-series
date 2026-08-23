@@ -34,7 +34,8 @@ from engine.animation import (
     chase,
     comet,
     dim,
-    free_running_tick,
+    MAX_STEP_MS,
+    Timebase,
     heartbeat,
     off,
     pulse,
@@ -392,18 +393,99 @@ def test_an_unknown_name_falls_back_rather_than_raising():
     assert by_name("nonexistent") is pulse
 
 
-# --- the free-running clock ----------------------------------------------
+# --- the timebase ---------------------------------------------------------
+#
+# The clock only advances while the transport is running, but the lights
+# should keep moving when it is not. The obvious way to do that - derive a
+# tick from the millisecond counter and the tempo - is wrong, and hardware is
+# what showed it: an animation tick of 10765 became 120 the moment the
+# transport started, because absolute-elapsed-time-times-tempo is a different
+# number line from the clock's own tick. These pin down that it accumulates.
 
 
-def test_the_free_running_tick_matches_the_tempo():
-    """One beat of ticks after one beat of milliseconds at that tempo."""
-    one_beat_ms = 60000.0 / 120
-    assert free_running_tick(one_beat_ms, 120) == TICKS_PER_BEAT
+def test_the_timebase_follows_the_clock_while_it_runs():
+    base = Timebase()
+    assert base.step(1000, 120, clock_tick=500) == 500
+    assert base.step(1020, 120, clock_tick=501) == 501
 
 
-def test_a_faster_tempo_runs_the_lights_faster():
-    assert free_running_tick(1000, 240) > free_running_tick(1000, 120)
+def test_the_timebase_keeps_counting_when_the_clock_stops():
+    """Stepped the way the main loop does, not in one leap - see the stall guard."""
+    base = Timebase()
+    base.step(1000, 120, clock_tick=500)
+    now = 1000
+    for _ in range(50):  # one beat at 120 BPM, 10 ms at a time
+        now += 10
+        base.step(now, 120)
+    assert base.step(now, 120) == 500 + TICKS_PER_BEAT
+
+
+def test_stopping_the_transport_does_not_jump_the_animation():
+    """The bug this class exists for."""
+    base = Timebase()
+    running = base.step(1000, 120, clock_tick=500)
+    stopped = base.step(1001, 120)
+    assert abs(stopped - running) <= 1, "the phase jumped when the clock stopped"
+
+
+def test_starting_the_transport_does_not_jump_the_animation():
+    base = Timebase()
+    base.step(1000, 120, clock_tick=500)
+    free = base.step(2000, 120)
+    # The sequencer resets its tick on start, and the animation follows it -
+    # but from that point on, not by leaping to some unrelated number first.
+    assert base.step(2001, 120, clock_tick=0) == 0
+    assert free > 500
+
+
+def test_a_tempo_change_does_not_jump_the_animation():
+    """Absolute time times tempo makes every past millisecond worth more."""
+    base = Timebase()
+    base.step(1000, 120)
+    slow = base.step(2000, 120)
+    fast = base.step(2001, 300)
+    assert abs(fast - slow) <= 2, "changing tempo moved the whole timeline"
+
+
+def test_a_faster_tempo_counts_faster():
+    def run(bpm):
+        base = Timebase()
+        now = 0
+        base.step(now, bpm)
+        for _ in range(20):
+            now += 50
+            base.step(now, bpm)
+        return base.step(now, bpm)
+
+    assert run(240) > run(60)
+
+
+def test_a_stall_does_not_lurch_the_animation():
+    """A collection or a card read is not motion to be caught up on."""
+    base = Timebase()
+    base.step(1000, 120)
+    after = base.step(1000 + 5000, 120)
+    ceiling = int(MAX_STEP_MS * 120 * 24 / 60000.0) + 1
+    assert after <= ceiling, after
+
+
+def test_the_timebase_survives_the_millisecond_counter_wrapping():
+    """ticks_ms rolls over at 2**29; a plain subtraction goes hugely negative."""
+    base = Timebase()
+    base.step((1 << 29) - 10, 120)
+    before = base.step((1 << 29) - 5, 120)
+    after = base.step(5, 120)  # wrapped
+    assert after >= before
+    assert after - before < TICKS_PER_BEAT
 
 
 def test_a_zero_tempo_does_not_divide_by_it():
-    assert free_running_tick(1000, 0) == 0
+    base = Timebase()
+    base.step(0, 0)
+    assert base.step(1000, 0) == 0
+
+
+def test_the_first_step_moves_nothing():
+    """There is no elapsed time to account for yet."""
+    base = Timebase()
+    assert base.step(12345, 120) == 0

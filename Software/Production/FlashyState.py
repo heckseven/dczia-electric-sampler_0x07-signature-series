@@ -61,6 +61,7 @@ class FlashyState(State):
         )
         self._screen = screen_module.shared(display)
         self._animation = animation.by_name(animation.NAMES[0])
+        self._timebase = animation.Timebase()
         self._last_select = 0
         self._last_frame = None
         self._last_colors = None
@@ -109,17 +110,20 @@ class FlashyState(State):
 
     # --- the lights -------------------------------------------------------
 
-    def _tick(self):
+    def _tick(self, now=None):
         """The beat to draw, running whether or not the transport is.
 
         A panel that goes dead the moment the pattern stops looks broken, so
-        a stopped clock falls back to a tick derived from elapsed time at the
-        same tempo. Starting the transport therefore does not visibly jump.
+        the timebase carries on counting when the clock will not. Handing
+        over in either direction is continuous - see animation.Timebase for
+        what happened when it was not.
         """
         clock = sequencer.clock
-        if clock.running:
-            return clock.tick
-        return animation.free_running_tick(ticks_ms(), clock.bpm)
+        if now is None:
+            now = ticks_ms()
+        return self._timebase.step(
+            now, clock.bpm, clock.tick if clock.running else None
+        )
 
     def _draw(self):
         now = ticks_ms()
@@ -127,7 +131,7 @@ class FlashyState(State):
             if ticks_diff(now, self._last_frame) < MIN_FRAME_MS:
                 return
         self._last_frame = now
-        colors = self._animation(self._tick(), BRIGHTNESS)
+        colors = self._animation(self._tick(now), BRIGHTNESS)
         # At a slow tempo most frames are the same as the one before, and a
         # show() that changes nothing is still a write with interrupts off.
         if colors == self._last_colors:

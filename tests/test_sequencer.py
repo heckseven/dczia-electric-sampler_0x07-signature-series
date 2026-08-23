@@ -1511,8 +1511,9 @@ def test_a_run_of_midi_clocks_sets_the_tempo(seq):
 
     seq.clock.set_bpm(90)
     now = 0.0
-    # The tempo is counted across a window of beats, so send more than one.
-    for _ in range(24 * 3):
+    # The reading is smoothed and counted across a long baseline, so this
+    # takes a few beats to arrive rather than one.
+    for _ in range(24 * 16):
         now += 16.67
         seq._handle_midi(TimingClock(), now=int(now))
     assert 145 <= seq.clock.bpm <= 155, seq.clock.bpm

@@ -19,7 +19,7 @@ from FlashyState import FlashyState
 from HIDState import HIDState
 from MIDIState import MIDIState
 from StartupState import StartupState
-from utils import selector_calcs, show_menu
+from utils import neoindex
 
 TOTAL_LINES = 3
 
@@ -35,54 +35,6 @@ def clean_input():
 
 def press(key_number):
     setup.keys.events.post(circuitpython_stubs.Event(key_number, pressed=True))
-
-
-# --- selector_calcs -------------------------------------------------------
-
-
-def test_selector_scrolls_down_within_the_visible_window():
-    highlight, shift = selector_calcs(["a"] * 6, 1, 0, 0, 1)
-    assert (highlight, shift) == (2, 0)
-
-
-def test_selector_shifts_the_window_once_it_reaches_the_bottom():
-    highlight, shift = selector_calcs(["a"] * 6, TOTAL_LINES, 0, 0, 1)
-    assert (highlight, shift) == (TOTAL_LINES, 1)
-
-
-def test_selector_stops_at_the_end_of_the_list():
-    length = 4
-    highlight, shift = selector_calcs(["a"] * length, TOTAL_LINES, 1, 0, 1)
-    assert (highlight, shift) == (TOTAL_LINES, 1)
-
-
-def test_selector_scrolls_up_and_stops_at_the_top():
-    highlight, shift = selector_calcs(["a"] * 6, 1, 0, 1, 0)
-    assert (highlight, shift) == (1, 0)
-
-
-def test_selector_unshifts_before_moving_the_highlight_up():
-    highlight, shift = selector_calcs(["a"] * 6, 1, 2, 1, 0)
-    assert (highlight, shift) == (1, 1)
-
-
-# --- show_menu ------------------------------------------------------------
-
-
-def test_show_menu_renders_the_visible_window():
-    menu = [{"pretty": "one"}, {"pretty": "two"}, {"pretty": "three"}]
-    show_menu(menu, 1, 0)
-    assert setup.display.shown is not None
-
-
-def test_show_menu_tolerates_a_list_shorter_than_the_window():
-    show_menu([{"pretty": "only"}], 1, 0)
-    assert setup.display.shown is not None
-
-
-def test_show_menu_handles_an_empty_menu():
-    show_menu([], 1, 0)
-    assert setup.display.shown is not None
 
 
 # --- every state a transition names actually exists ------------------------
@@ -127,27 +79,23 @@ def test_flashy_selects_an_animation_when_scrolled():
     machine = FakeMachine()
     state = FlashyState()
     state.enter(machine)
-    setup.select_enc.position = 1
+    before = state._animation
+    setup.select_enc.position += 1
     state.update(machine)
-    assert machine.animation is not None
+    assert state._animation is not before
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["rainbow", "rainbow_chase", "rainbow_comet", "rainbow_sparkle", "sparkle_pulse"],
-)
-def test_every_flashy_animation_can_be_constructed(name):
-    machine = FakeMachine()
-    FlashyState().animation_selector(machine, name)
-    assert machine.animation is not None
+def test_every_animation_on_the_menu_can_be_selected():
+    """A row naming an animation that does not exist would draw nothing."""
+    from engine import animation
 
-
-def test_flashy_menu_functions_are_all_selectable():
     machine = FakeMachine()
     state = FlashyState()
-    for item in FlashyState.menu_items:
-        state.animation_selector(machine, item["function"])
-        assert machine.animation is not None, item
+    state.enter(machine)
+    for index in range(len(animation.NAMES)):
+        setup.select_enc.position += 1
+        state.update(machine)
+        assert state._animation is animation.by_name(state.menu.selected.label)
 
 
 def test_flashy_returns_to_the_settings_tree_on_keypress():
@@ -159,12 +107,14 @@ def test_flashy_returns_to_the_settings_tree_on_keypress():
     assert machine.transitions == ["settings"]
 
 
-def test_animations_take_ownership_of_auto_write():
-    """adafruit_led_animation sets auto_write False; firmware relies on it."""
+def test_leaving_flashy_turns_the_strip_off():
+    """It is decoration; leaving it lit would read as the sampler's state."""
     machine = FakeMachine()
-    setup.neopixels.auto_write = True
-    FlashyState().animation_selector(machine, "rainbow")
-    assert setup.neopixels.auto_write is False
+    state = FlashyState()
+    state.enter(machine)
+    state.update(machine)
+    state.exit(machine)
+    assert setup.neopixels[0] == (0, 0, 0)
 
 
 # --- StartupState ---------------------------------------------------------
@@ -214,41 +164,17 @@ def test_startup_clears_the_strip_on_entry():
 # --- the menu draws without a full-width highlight bar --------------------
 
 
-def test_the_menu_marks_the_selection_with_a_cursor(setup_menu=None):
+def test_a_menu_marks_the_selection_with_a_cursor():
     """A filled highlight bar is a 128x10 block switching on every scroll step.
 
     That is the largest change this panel can make and the noisiest thing the
     display can do to the audio, so the selection is marked with a character.
     """
-    import utils
-
-    utils._menu_screen = None
-    items = [{"pretty": "alpha"}, {"pretty": "beta"}, {"pretty": "gamma"}]
-    utils.show_menu(items, 2, 0)
-    lines = [utils._menu_screen.line(i) for i in range(3)]
-    assert lines[1].startswith(">"), lines
-    assert lines[0].startswith(" ") and lines[2].startswith(" "), lines
-
-
-def test_the_menu_reuses_one_screen_across_calls():
-    """Rebuilding the scene graph each call would resend the whole display."""
-    import utils
-
-    utils._menu_screen = None
-    items = [{"pretty": "alpha"}, {"pretty": "beta"}]
-    utils.show_menu(items, 1, 0)
-    first = utils._menu_screen
-    utils.show_menu(items, 2, 0)
-    assert utils._menu_screen is first
-
-
-def test_the_menu_blanks_lines_past_the_end_of_a_short_list():
-    import utils
-
-    utils._menu_screen = None
-    utils.show_menu([{"pretty": "only"}], 1, 0)
-    assert utils._menu_screen.line(1) == " "
-    assert utils._menu_screen.line(2) == " "
+    state = FlashyState()
+    state.enter(FakeMachine())
+    rows = state.menu.rendered()
+    assert rows[0].startswith(">"), rows
+    assert rows[1].startswith(" "), rows
 
 
 # --- getting the display back ---------------------------------------------
@@ -260,29 +186,25 @@ def test_the_menu_blanks_lines_past_the_end_of_a_short_list():
 
 
 def test_entering_a_menu_puts_it_on_the_display():
-    import utils
-
-    menu = FlashyState()
-    menu.enter(FakeMachine())
-    assert setup.display.shown is utils._menu_screen.group
+    state = FlashyState()
+    state.enter(FakeMachine())
+    assert setup.display.shown is screen_module.shared(setup.display).group
 
 
 def test_a_menu_takes_the_display_back_from_another_state():
     """Returning from the sampler, or any state that shows its own group."""
     import displayio
 
-    import utils
-
     machine = FakeMachine()
-    menu = FlashyState()
-    menu.enter(machine)  # the menu owns the display
+    state = FlashyState()
+    state.enter(machine)  # the menu owns the display
 
     somebody_else = displayio.Group()
     setup.display.show(somebody_else)  # another state takes it
     assert setup.display.shown is somebody_else
 
-    menu.enter(machine)  # and we come back
-    assert setup.display.shown is utils._menu_screen.group
+    state.enter(machine)  # and we come back
+    assert setup.display.shown is screen_module.shared(setup.display).group
 
 
 def test_scrolling_does_not_reattach_the_display():
@@ -292,8 +214,8 @@ def test_scrolling_does_not_reattach_the_display():
     which happens for every detent.
     """
     machine = FakeMachine()
-    menu = FlashyState()
-    menu.enter(machine)
+    state = FlashyState()
+    state.enter(machine)
     attached = setup.display.shown
 
     calls = []
@@ -301,10 +223,11 @@ def test_scrolling_does_not_reattach_the_display():
     setup.display.show = lambda group: (calls.append(group), real(group))[1]
     try:
         for _ in range(10):
-            show_menu(menu.menu_items, menu.highlight, menu.shift)
+            setup.select_enc.position += 1
+            state.update(machine)
     finally:
         setup.display.show = real
-    assert calls == [], "show_menu reattached the display"
+    assert calls == [], "scrolling reattached the display"
     assert setup.display.shown is attached
 
 

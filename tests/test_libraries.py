@@ -27,9 +27,10 @@ LIB = os.path.join(PRODUCTION_DIR, "lib")
 BUILT_IN = {"adafruit_pixelbuf"}
 
 # Packages the firmware uses. Vendored whole, not pruned to the modules that
-# happen to be named: the modules inside them subclass each other, and the
-# saving from pruning adafruit_led_animation was 18 KB against 200 KB free.
-WHOLE_PACKAGES = ("adafruit_led_animation", "adafruit_hid", "adafruit_midi")
+# happen to be named: the modules inside them subclass each other, and
+# pruning adafruit_led_animation to the five names FlashyState used is what
+# left chase.mpy out and broke that screen.
+WHOLE_PACKAGES = ("adafruit_hid", "adafruit_midi")
 
 
 def firmware_imports():
@@ -74,12 +75,14 @@ def test_every_library_the_firmware_imports_is_vendored():
     assert missing == [], "the badge will raise ImportError on: %s" % missing
 
 
-def test_the_animation_package_is_whole():
-    """Pruning it is what broke Flashy: the rainbow classes subclass the base ones."""
-    animations = os.path.join(LIB, "adafruit_led_animation", "animation")
-    present = {name for name in os.listdir(animations) if name.endswith(".mpy")}
-    for base in ("chase.mpy", "comet.mpy", "sparkle.mpy", "pulse.mpy"):
-        assert base in present, "%s is what rainbowchase and friends subclass" % base
+def test_the_animation_library_is_gone():
+    """Flashy runs on engine/animation.py now, which follows the beat.
+
+    25 KB of a 490 KB card for five effects that could not see the tempo.
+    A stale copy here would be dead weight, and worse, an invitation to
+    import it again.
+    """
+    assert not os.path.exists(os.path.join(LIB, "adafruit_led_animation"))
 
 
 def test_the_packages_the_firmware_uses_are_vendored_whole():

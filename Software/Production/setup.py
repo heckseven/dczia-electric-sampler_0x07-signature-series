@@ -80,10 +80,13 @@ display = adafruit_displayio_ssd1306.SSD1306(display_bus, width=128, height=32)
 
 # Neopixels
 # auto_write pushes the whole strip on every single pixel assignment, so a
-# multi-pixel update costs one full write per pixel. adafruit_led_animation
-# also sets auto_write False on this object as soon as any animation is
-# constructed, so leaving it True here only made the behaviour inconsistent
-# depending on whether an animation had been created yet. Push explicitly.
+# multi-pixel update costs one full write per pixel. Everything that draws
+# here builds all ten colours and then shows once, so it stays off.
+#
+# brightness scales every colour the firmware produces, which is why the
+# values in engine/view.py and engine/animation.py look like full scale and
+# are not. Ten of these at full output is also the largest draw on a 3V3
+# rail whose only source is the Pico's own regulator.
 neopixels = neopixel.NeoPixel(board.GP3, 10, brightness=0.1, auto_write=False)
 
 # Board LED

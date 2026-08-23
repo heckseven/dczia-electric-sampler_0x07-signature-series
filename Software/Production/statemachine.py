@@ -17,15 +17,20 @@ import guard
 #
 # Importing is most of the cost, so this defers that too:
 #
-#     FlashyState   23.5 KB   pulls in five animations from adafruit_led_animation
-#     SamplerState  10.3 KB
-#     HIDState       9.6 KB   pulls in adafruit_hid
-#     MIDIState      5.1 KB
-#     StartupState   2.3 KB
-#     SettingsState  1.4 KB
+# Measured on the badge, as the heap each costs to build the first time:
 #
-# Playing a pattern needs Startup, Sampler and Settings. The other three are
-# 38 KB the badge was carrying for screens the player is not looking at.
+#     SettingsState  25.9 KB   the tree, plus msgpack and the file store
+#     HIDState       15.9 KB   pulls in adafruit_hid
+#     SamplerState   10.3 KB
+#     FlashyState     8.8 KB
+#     MIDIState       4.2 KB
+#     StartupState    2.3 KB
+#
+# Playing a pattern needs Startup, Sampler and Settings, so the other three
+# are memory the badge would otherwise carry for screens nobody is looking
+# at. FlashyState used to be the largest of them at 23.5 KB, almost all of it
+# adafruit_led_animation; engine/animation.py replaced that with animations
+# that follow the beat and cost nothing but their own code.
 #
 # Settings is in that list rather than deferred with the rest because its
 # modules take 1.3 seconds to compile off the card, and the audio buffer

@@ -7,6 +7,7 @@ tests drive the clock through exact simulated timelines rather than sleeping.
 import pytest
 
 from engine.clock import (
+    COUNT_WINDOW_BEATS,
     EXTERNAL,
     FLYWHEEL_AFTER_MS,
     INTERNAL,
@@ -173,11 +174,15 @@ def test_tempo_is_measured_from_the_pulse_interval():
     assert clock.bpm == pytest.approx(120, abs=0.5)
 
 
-def send_pulse_train(clock, bpm, start=1000, count=12):
+def send_pulse_train(clock, bpm, start=1000, count=None):
     """Feed a realistic stream of pulses at a given tempo.
 
     Timestamps are whole milliseconds, as supervisor.ticks_ms produces them.
     """
+    if count is None:
+        # Enough to fill the counting window a fast master is measured over,
+        # and more than enough for the gap averaging a slow one uses.
+        count = max(12, clock.sync_ppqn * COUNT_WINDOW_BEATS + 2)
     quarter_ms = 60000.0 / bpm
     interval = quarter_ms / clock.sync_ppqn
     for index in range(count):
@@ -200,23 +205,45 @@ def test_tempo_tracking_across_tempos(bpm):
     assert clock.bpm == pytest.approx(bpm, abs=2)
 
 
-def test_averaging_is_what_makes_a_fast_sync_rate_accurate():
+def test_a_fast_sync_rate_is_measured_by_counting_not_by_gaps():
     """A single 24 PPQN interval is only millisecond-accurate: about 4% out.
 
-    At 120 BPM a 24 PPQN pulse gap is 20.83 ms, so whole-millisecond timestamps
-    round it to 20 or 21 and one interval alone reads as 125 or 119 BPM.
-    Averaging over the window is what recovers the real tempo.
+    At 120 BPM the gap is 20.83 ms, so whole-millisecond timestamps round it
+    to 20 or 21 and one interval alone reads as 125 or 119 BPM. Worse, a fast
+    master is not read as it arrives - MIDI clock over USB is drained in
+    bursts, so several pulses share a timestamp and the gap between them is
+    zero. Counting pulses across a long span is immune to both, and measured
+    on the badge it is the difference between reading a 150 BPM master as 150
+    and reading it as 121.
     """
     single = Clock(sync_ppqn=24)
     single.start(0)
     single.external_pulse(1000)
-    single.external_pulse(1020)  # one truncated interval
-    assert abs(single.bpm - 120) > 2  # demonstrably inaccurate
+    single.external_pulse(1020)
+    assert single.bpm == 120, "two pulses is not a measurement"
 
-    averaged = Clock(sync_ppqn=24)
-    averaged.start(0)
-    send_pulse_train(averaged, 120)
-    assert averaged.bpm == pytest.approx(120, abs=2)
+    counted = Clock(sync_ppqn=24)
+    counted.start(0)
+    send_pulse_train(counted, 150)
+    assert counted.bpm == pytest.approx(150, abs=3)
+
+
+def test_a_fast_master_arriving_in_bursts_is_still_measured():
+    """Several clocks sharing one timestamp is what a 20 ms poll produces."""
+    clock = Clock(bpm=90)
+    clock.start(0)
+    now = 0
+    sent = 0
+    # 150 BPM is 60 clocks a second. Delivered eight at a time, that is a
+    # burst every 133 ms - which is what a 20 ms poll draining what it finds
+    # actually looks like from in here.
+    burst = 8
+    while sent < 24 * COUNT_WINDOW_BEATS + 2:
+        now += 133
+        for _ in range(burst):  # all at the same instant
+            clock.external_pulse(now, ppqn=24)
+            sent += 1
+    assert 140 <= clock.bpm <= 160, clock.bpm
 
 
 def test_tempo_window_scales_with_the_sync_rate():
@@ -344,3 +371,111 @@ def test_sync_rate_can_be_changed_and_rejects_junk():
     clock = Clock()
     assert clock.set_sync_ppqn(4) == 4
     assert clock.set_sync_ppqn(7) == 4
+
+
+# --- a 24 PPQN master ------------------------------------------------------
+#
+# MIDI clock is fixed at 24 a quarter note by the standard, which is exactly
+# this engine's tick rate, so one message is one tick. That is a different
+# arrangement from the analog jack, where one pulse is worth several ticks and
+# the clock free-runs between them - and getting the two confused is how a
+# badge walks away from whatever it is following.
+
+
+def test_a_24_ppqn_pulse_is_worth_exactly_one_tick():
+    clock = Clock(bpm=120)
+    clock.start(0)
+    before = clock.tick
+    clock.external_pulse(1000, ppqn=24)
+    assert clock.tick == before + 1
+
+
+def test_24_ppqn_pulses_do_not_also_free_run():
+    """The pulses are the clock; generating more here would race them."""
+    clock = Clock(bpm=120)
+    clock.start(0)
+    now = 0
+    for _ in range(24):
+        now += 20
+        clock.external_pulse(now, ppqn=24)
+        # A poll between pulses must not manufacture a tick of its own.
+        assert clock.update(now + 10) == 0
+    assert clock.tick == 24, "a quarter note of clocks is a quarter note of ticks"
+
+
+def test_a_24_ppqn_master_sets_the_tempo():
+    clock = Clock(bpm=90)
+    clock.start(0)
+    now = 0.0
+    # 150 BPM at 24 PPQN is one clock every 16.67 ms. The tempo is counted
+    # over a window of beats, so send more than one of them.
+    for _ in range(24 * COUNT_WINDOW_BEATS + 2):
+        now += 16.67
+        clock.external_pulse(int(now), ppqn=24)
+    assert clock.source == "ext"
+    assert 145 <= clock.bpm <= 155, clock.bpm
+
+
+def test_the_jacks_rate_does_not_change_what_a_midi_clock_means():
+    """The two can differ, and only one of them is a MIDI cable."""
+    clock = Clock(bpm=120, sync_ppqn=2)
+    clock.start(0)
+    before = clock.tick
+    clock.external_pulse(1000, ppqn=24)
+    assert clock.tick == before + 1, "it used the jack's rate"
+
+
+def test_an_analog_pulse_still_carries_several_ticks():
+    """The 24 PPQN path must not have changed the jack's behaviour."""
+    clock = Clock(bpm=120, sync_ppqn=2)
+    clock.start(0)
+    clock.tick = 5
+    clock.external_pulse(1000)
+    assert clock.tick % clock.ticks_per_pulse == 0, "the phase was not snapped"
+
+
+def test_an_analog_master_still_free_runs_between_pulses():
+    clock = Clock(bpm=120, sync_ppqn=2)
+    clock.start(0)
+    clock.external_pulse(1000)
+    assert clock.update(1200) > 0, "nothing ticked between two analog pulses"
+
+
+def test_a_master_that_stops_lets_the_clock_free_run_again():
+    """Flywheeling: it keeps playing on the last tempo it measured."""
+    clock = Clock(bpm=120)
+    clock.start(0)
+    now = 0
+    for _ in range(8):
+        now += 20
+        clock.external_pulse(now, ppqn=24)
+    quiet = now + FLYWHEEL_AFTER_MS + 500
+    assert clock.is_flywheeling(quiet) is True
+    assert clock.update(quiet) > 0, "it stopped dead when the clocks stopped"
+
+
+def test_changing_master_discards_the_tempo_measured_from_the_other():
+    """A history gathered at one rate means nothing at another."""
+    clock = Clock(bpm=120, sync_ppqn=2)
+    clock.start(0)
+    now = 0
+    for _ in range(4):
+        now += 250
+        clock.external_pulse(now)
+    at_two = clock.bpm
+    for _ in range(24 * COUNT_WINDOW_BEATS + 2):
+        now += 10  # 250 BPM at 24 PPQN
+        clock.external_pulse(now, ppqn=24)
+    assert clock.bpm != at_two
+    assert clock.bpm > 200, clock.bpm
+
+
+def test_stopping_forgets_which_master_was_driving():
+    clock = Clock(bpm=120)
+    clock.start(0)
+    clock.external_pulse(1000, ppqn=24)
+    clock.stop()
+    clock.start(2000)
+    before = clock.tick
+    clock.update(2100)
+    assert clock.tick > before, "it stayed pulse driven with no master"

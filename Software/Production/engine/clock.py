@@ -63,6 +63,13 @@ MAX_PULSE_MS = 3000
 MIN_PULSE_WINDOW = 2
 MAX_PULSE_WINDOW = 8
 
+# How many quarter notes a pulse-driven master's tempo is counted over. Two,
+# because the error is the timestamp resolution against the whole span: at
+# 150 BPM two beats is 800 ms, so a 20 ms reading error is 2.5% rather than
+# the 20% it would be across a single 16.7 ms clock. A MIDI master does not
+# change tempo often enough for the delay to matter.
+COUNT_WINDOW_BEATS = 2
+
 # After this long with no pulse the clock is running on its own memory of the
 # tempo. It keeps playing; this only drives the "flywheeling" indicator.
 FLYWHEEL_AFTER_MS = 1000
@@ -89,6 +96,18 @@ class Clock:
         self._last_update = 0
         self._last_pulse = None
         self._pulse_history = []
+        # The rate of whatever is driving the external sync, which is not
+        # always the jack's. MIDI clock is fixed at 24 PPQN by the standard;
+        # the analog input is whatever the player set.
+        self._external_ppqn = None
+        # For a pulse-driven master, tempo is counted rather than timed
+        # between pulses - see external_pulse.
+        self._pulse_epoch = None
+        self._pulse_count = 0
+        # True when one pulse means exactly one tick, which is the 24 PPQN
+        # case. Then the pulses are the clock and nothing is free-run
+        # between them - see update().
+        self._pulse_driven = False
 
     # --- tempo ------------------------------------------------------------
 
@@ -120,6 +139,18 @@ class Clock:
         self.source = INTERNAL
         self._last_pulse = None
         self._pulse_history = []
+        # The rate of whatever is driving the external sync, which is not
+        # always the jack's. MIDI clock is fixed at 24 PPQN by the standard;
+        # the analog input is whatever the player set.
+        self._external_ppqn = None
+        # For a pulse-driven master, tempo is counted rather than timed
+        # between pulses - see external_pulse.
+        self._pulse_epoch = None
+        self._pulse_count = 0
+        # True when one pulse means exactly one tick, which is the 24 PPQN
+        # case. Then the pulses are the clock and nothing is free-run
+        # between them - see update().
+        self._pulse_driven = False
         self._accum = 0.0
 
     def reset(self):
@@ -137,6 +168,18 @@ class Clock:
         elapsed = ticks_diff(now, self._last_update)
         self._last_update = now
         if elapsed <= 0:
+            return 0
+
+        if self._pulse_driven and not self.is_flywheeling(now):
+            # A 24 PPQN master sends one clock per tick, so the clocks are the
+            # tick and generating more here would race them. Which way it
+            # raced would depend on whether the measured tempo came out a
+            # hair fast or slow: fast and the ticks double up, slow and the
+            # accumulator is zeroed by the next pulse before its tick ever
+            # fires, losing it. Either way the badge walks away from the
+            # master. Free-running resumes the moment the clocks stop, which
+            # is what flywheeling is.
+            self._accum = 0.0
             return 0
 
         self._accum += elapsed
@@ -166,15 +209,39 @@ class Clock:
     @property
     def pulse_window(self):
         """How many pulses to average tempo over at the current sync rate."""
-        return clamp(self.sync_ppqn, MIN_PULSE_WINDOW, MAX_PULSE_WINDOW)
+        rate = self._external_ppqn or self.sync_ppqn
+        return clamp(rate, MIN_PULSE_WINDOW, MAX_PULSE_WINDOW)
 
-    def external_pulse(self, now):
-        """Handle one edge on the sync input.
+    def external_pulse(self, now, ppqn=None):
+        """Handle one pulse from whatever is driving the clock.
 
         Latches the clock to external, takes the tempo from the gap since the
         previous pulse, and snaps the phase so this pulse lands on a boundary.
+
+        `ppqn` is how many of these arrive per quarter note, and it is not
+        always the jack's rate: MIDI clock is fixed at 24 by the standard,
+        while the analog input is whatever the player selected. Passing it
+        rather than reading self.sync_ppqn is what lets both drive the same
+        clock without either having to know about the other.
+
+        At 24 the pulse is worth exactly one tick, so it is counted as one
+        here rather than left to update() - see the note there.
         """
-        if self._last_pulse is None:
+        if ppqn is None:
+            ppqn = self.sync_ppqn
+        if self._external_ppqn != ppqn:
+            # A different master, or the first pulse from this one. The
+            # history was measured against another rate and means nothing now.
+            self._pulse_history = []
+            self._last_pulse = None
+            self._pulse_epoch = None
+            self._pulse_count = 0
+            self._external_ppqn = ppqn
+        per_pulse = PPQN // ppqn if ppqn else 1
+        self._pulse_driven = per_pulse <= 1
+        if self._pulse_driven:
+            self._measure_by_counting(now, ppqn)
+        elif self._last_pulse is None:
             self._pulse_history = [now]
         else:
             gap = ticks_diff(now, self._last_pulse)
@@ -191,26 +258,63 @@ class Clock:
                     span = ticks_diff(self._pulse_history[-1], self._pulse_history[0])
                     intervals = len(self._pulse_history) - 1
                     average = span / float(intervals)
-                    measured = 60000.0 / (average * self.sync_ppqn)
+                    measured = 60000.0 / (average * ppqn)
                     self._bpm = clamp(measured, MIN_BPM, MAX_BPM)
         self._last_pulse = now
         self.source = EXTERNAL
 
-        # Snap to the nearest pulse boundary. Drift between pulses is small
-        # because the clock free-runs at the measured tempo, so this is a
-        # correction of a tick or two rather than an audible jump.
-        per_pulse = self.ticks_per_pulse
-        remainder = self.tick % per_pulse
-        if remainder:
-            if remainder * 2 >= per_pulse:
-                self.tick += per_pulse - remainder
-            else:
-                self.tick -= remainder
+        if self._pulse_driven:
+            # One pulse, one tick. Nothing to snap to and nothing generating
+            # ticks in between, so this is the whole of the clock.
+            self.tick += 1
+        else:
+            # Snap to the nearest pulse boundary. Drift between pulses is
+            # small because the clock free-runs at the measured tempo, so
+            # this is a correction of a tick or two rather than an audible
+            # jump.
+            remainder = self.tick % per_pulse
+            if remainder:
+                if remainder * 2 >= per_pulse:
+                    self.tick += per_pulse - remainder
+                else:
+                    self.tick -= remainder
         self._accum = 0.0
         # The span since the last poll has been consumed by the snap above.
         # Without this, update() would count it a second time and fire a burst
         # of catch-up ticks.
         self._last_update = now
+
+    def _measure_by_counting(self, now, ppqn):
+        """Tempo from how many pulses arrived over how long, not from gaps.
+
+        A fast master is not read as it arrives. MIDI clock over USB is
+        collected on a 20 ms timer and drained in bursts, so several clocks
+        share one timestamp and the gap between them reads as zero - which
+        the gap check below throws away as noise, leaving the tempo measured
+        from the poll interval rather than from the music. Measured on the
+        badge: a 150 BPM master read as 121.
+
+        Counting is immune to that. However bunched the arrivals are, the
+        number of them is exact and the span is long, so the average holds
+        even when no single interval does. Over a window this size the error
+        is the timestamp resolution against most of a second.
+        """
+        if self._pulse_epoch is None:
+            self._pulse_epoch = now
+            self._pulse_count = 0
+            return
+        self._pulse_count += 1
+        span = ticks_diff(now, self._pulse_epoch)
+        if self._pulse_count < ppqn * COUNT_WINDOW_BEATS:
+            return
+        if span >= MIN_PULSE_MS:
+            quarters = self._pulse_count / float(ppqn)
+            measured = 60000.0 * quarters / span
+            self._bpm = clamp(measured, MIN_BPM, MAX_BPM)
+        # Start the next window here rather than keeping a rolling one: the
+        # arithmetic is only exact between two real pulses.
+        self._pulse_epoch = now
+        self._pulse_count = 0
 
     def is_flywheeling(self, now):
         """External clock latched, but running on the last measured tempo."""

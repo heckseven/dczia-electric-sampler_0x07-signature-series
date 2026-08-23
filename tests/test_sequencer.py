@@ -1465,3 +1465,123 @@ def test_the_knob_moves_from_where_the_level_actually_is(seq):
     assert seq.volume == pytest.approx(
         sequencer_module.level_for_position(position + 1)
     )
+
+
+# --- MIDI clock ------------------------------------------------------------
+#
+# The badge followed a MIDI master's Start and Stop but not its tempo: it ran
+# on at whatever its own knob said. Confirmed on hardware by sending it 720
+# clocks at 150 BPM while its own tempo was 90, and watching its tick counter
+# advance at exactly 90. TimingClock was never imported, so 0xF8 was never
+# decoded.
+
+
+class FakePort:
+    """A MIDI port that hands out prepared messages, then nothing."""
+
+    def __init__(self, messages=()):
+        self.messages = list(messages)
+        self.calls = 0
+
+    def receive(self):
+        self.calls += 1
+        if self.messages:
+            return self.messages.pop(0)
+        return None
+
+
+def test_a_midi_clock_advances_the_tick(seq):
+    from adafruit_midi.timing_clock import TimingClock
+
+    before = seq.clock.tick
+    seq._handle_midi(TimingClock(), now=1000)
+    assert seq.clock.tick == before + 1
+
+
+def test_a_midi_clock_latches_the_clock_external(seq):
+    from adafruit_midi.timing_clock import TimingClock
+
+    seq._handle_midi(TimingClock(), now=1000)
+    assert seq.clock.source == "ext"
+
+
+def test_a_run_of_midi_clocks_sets_the_tempo(seq):
+    """24 a quarter note. This is what did not happen before."""
+    from adafruit_midi.timing_clock import TimingClock
+
+    seq.clock.set_bpm(90)
+    now = 0.0
+    # The tempo is counted across a window of beats, so send more than one.
+    for _ in range(24 * 3):
+        now += 16.67
+        seq._handle_midi(TimingClock(), now=int(now))
+    assert 145 <= seq.clock.bpm <= 155, seq.clock.bpm
+
+
+def test_the_badge_does_not_run_at_its_own_tempo_under_a_master(seq):
+    """The exact failure measured on hardware: 90 BPM under a 150 BPM master."""
+    from adafruit_midi.timing_clock import TimingClock
+
+    seq.clock.set_bpm(90)
+    seq.transport.start()
+    seq.clock.start(0)
+    now = 0
+    for _ in range(96):  # four quarter notes of a 150 BPM master
+        now += 16.67
+        seq._handle_midi(TimingClock(), now=int(now))
+        seq.clock.update(int(now))
+    assert seq.clock.tick == 96, "one clock is one tick, whatever the knob says"
+
+
+def test_a_midi_clock_can_start_the_transport(seq):
+    from adafruit_midi.timing_clock import TimingClock
+
+    seq.transport.stop()
+    seq.sync_starts_transport = True
+    seq._handle_midi(TimingClock(), now=1000)
+    assert seq.transport.playing is True
+
+
+def test_handling_reports_whether_there_was_a_message(seq):
+    """This is what lets a caller stop draining a port."""
+    from adafruit_midi.timing_clock import TimingClock
+
+    assert seq._handle_midi(None) is False
+    assert seq._handle_midi(TimingClock(), now=1000) is True
+
+
+def test_a_poll_drains_more_than_one_message(monkeypatch, seq):
+    """At 300 BPM a master sends 120 clocks a second; one a poll loses most."""
+    import sequencer as sequencer_module
+    from adafruit_midi.timing_clock import TimingClock
+
+    port = FakePort([TimingClock() for _ in range(5)])
+    monkeypatch.setattr(sequencer_module, "midi_usb", port)
+    seq._last_usb_midi_poll = -1000
+    before = seq.clock.tick
+    seq.poll_midi_in(now=5000)
+    assert seq.clock.tick == before + 5
+
+
+def test_a_poll_is_bounded_however_much_is_waiting(monkeypatch, seq):
+    """Unbounded draining spends a pass the audio buffer needed."""
+    import sequencer as sequencer_module
+    from adafruit_midi.timing_clock import TimingClock
+
+    port = FakePort([TimingClock() for _ in range(200)])
+    monkeypatch.setattr(sequencer_module, "midi_usb", port)
+    seq._last_usb_midi_poll = -1000
+    before = seq.clock.tick
+    seq.poll_midi_in(now=5000)
+    assert seq.clock.tick - before == sequencer_module.MAX_MIDI_PER_POLL
+
+
+def test_an_empty_port_costs_one_call(monkeypatch, seq):
+    """Draining must not spin on a port with nothing on it."""
+    import sequencer as sequencer_module
+
+    port = FakePort([])
+    monkeypatch.setattr(sequencer_module, "midi_usb", port)
+    seq._last_usb_midi_poll = -1000
+    seq.poll_midi_in(now=5000)
+    assert port.calls == 1

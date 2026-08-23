@@ -19,7 +19,6 @@ from FlashyState import FlashyState
 from HIDState import HIDState
 from MIDIState import MIDIState
 from StartupState import StartupState
-from utils import neoindex
 
 TOTAL_LINES = 3
 

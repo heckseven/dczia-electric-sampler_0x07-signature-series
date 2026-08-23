@@ -23,6 +23,7 @@ from adafruit_midi.midi_continue import Continue
 from adafruit_midi.note_on import NoteOn
 from adafruit_midi.start import Start
 from adafruit_midi.stop import Stop
+from adafruit_midi.timing_clock import TimingClock
 from audiocore import RawSample, WaveFile
 from supervisor import ticks_ms
 
@@ -150,11 +151,30 @@ MAX_VOLUME = 1.0
 # every pass, is untouched.
 MIDI_POLL_MS = 2
 
+# What a MIDI clock message is worth. Fixed at 24 a quarter note by the MIDI
+# standard, and the same rate this engine ticks at, so one message is one
+# tick. Not the same thing as the analog jack's rate, which the player picks.
+MIDI_CLOCK_PPQN = 24
+
 # USB MIDI is polled on its own timer because, unlike the serial port, it
 # cannot be asked whether anything is waiting: receive() allocates on every
 # call regardless. Transport messages are rare enough that 20 ms is
 # imperceptible, and it turns 64 bytes every 2 ms into 64 bytes every 20.
+#
+# A clock over USB is the one thing this interval is not good enough for. The
+# ticks come out right - one message is one tick however late it is read - but
+# their timing is quantised to this, and 20 ms against a 20.8 ms tick period
+# at 120 BPM is audible jitter. A hardware MIDI lead, drained every 2 ms
+# above, is the accurate way to be clocked.
 USB_MIDI_POLL_MS = 20
+
+# How many messages one poll will take. A clock master sends 24 a quarter
+# note, which at 300 BPM is 120 a second, so a poll that took one message
+# would drop most of them and the badge would run behind whatever it was
+# following. Bounded for the same reason the key queue is: a backlog must not
+# be able to spend an unbounded amount of one pass, because the audio buffer
+# holds 32 ms and nothing refills it while this runs.
+MAX_MIDI_PER_POLL = 8
 
 
 def list_samples(lister=None, dirs=None, limit=MAX_SAMPLES):
@@ -800,14 +820,23 @@ class Sequencer:
         # free memory was seen dipping to a couple of hundred bytes while a
         # pattern played. Nothing was connected to either port.
         #
-        # The serial port can be asked whether anything is waiting, for free.
-        if midi_uart.in_waiting:
-            self._handle_midi(midi_serial.receive())
+        # The serial port can be asked whether anything is waiting, for free,
+        # so it is drained until it is empty rather than a message per pass.
+        for _ in range(MAX_MIDI_PER_POLL):
+            if not midi_uart.in_waiting:
+                break
+            if not self._handle_midi(midi_serial.receive(), now):
+                # A partial message: the rest of its bytes have not arrived
+                # yet, and asking again now only spins.
+                break
 
         # USB has no equivalent - PortIn offers only read and readinto - so it
-        # is polled on its own slower timer instead. Transport messages are
-        # rare and a few milliseconds late costs nothing; a clock arriving
-        # over USB is handled by the sync path, not here.
+        # is polled on its own slower timer instead, and drained when it does
+        # get polled. Transport messages are rare and a few milliseconds late
+        # costs nothing. A clock over USB is a different matter: the ticks
+        # will be right, because one clock is one tick however late it is
+        # read, but their timing is only as good as this interval. A hardware
+        # MIDI lead, polled every 2 ms above, is the accurate way in.
         #
         # `now` comes from the caller, which already has it: asking for the
         # time again would be another call on the hottest path in the loop.
@@ -815,12 +844,31 @@ class Sequencer:
             now = ticks_ms()
         if ticks_diff(now, self._last_usb_midi_poll) >= USB_MIDI_POLL_MS:
             self._last_usb_midi_poll = now
-            self._handle_midi(midi_usb.receive())
+            for _ in range(MAX_MIDI_PER_POLL):
+                if not self._handle_midi(midi_usb.receive(), now):
+                    break
 
-    def _handle_midi(self, message):
+    def _handle_midi(self, message, now=None):
+        """Act on one message. Returns whether there was one.
+
+        The answer is what lets the caller stop draining: None means the port
+        had nothing, or had part of something whose remaining bytes have not
+        arrived.
+        """
         if message is None:
-            return
-        if isinstance(message, Start):
+            return False
+        if isinstance(message, TimingClock):
+            # 24 a quarter note, fixed by the standard, which is exactly this
+            # engine's tick rate - so one clock is one tick. Told to the clock
+            # explicitly rather than left to the jack's setting, because the
+            # two can differ and only one of them is a MIDI cable.
+            if now is None:
+                now = ticks_ms()
+            self.clock.external_pulse(now, ppqn=MIDI_CLOCK_PPQN)
+            if not self.transport.playing and self.sync_starts_transport:
+                self.transport.start()
+                self.clock.start(now)
+        elif isinstance(message, Start):
             self._remote_start(reset=True)
         elif isinstance(message, Continue):
             self._remote_start(reset=False)
@@ -828,6 +876,7 @@ class Sequencer:
             if self.transport.playing:
                 self.transport.stop()
                 self.clock.stop()
+        return True
 
     def _remote_start(self, reset):
         if self.transport.playing:

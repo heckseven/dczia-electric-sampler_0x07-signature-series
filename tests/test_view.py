@@ -24,6 +24,7 @@ from engine.view import (
     SEQ,
     STEP_ON,
     STOPPED,
+    TRACK_PICK,
     TRACK_FLASH,
     TRACK_LOADED,
     TRACK_MUTED,
@@ -37,6 +38,7 @@ from engine.view import (
     seq_pads,
     status_line,
     step_row,
+    track_pads,
 )
 
 LOADED_ALL = [True] * TRACK_COUNT
@@ -70,56 +72,73 @@ def test_brightness_rises_with_velocity():
 
 
 # --- SEQ pads -------------------------------------------------------------
+#
+# One light at a time. The pads used to paint the whole pattern - every
+# recorded step lit and dimmed by its velocity - and on a diffused panel that
+# reads as a wall of blue rather than as information. The pattern is on the
+# screen instead, as the `*...o...` row, which is where something you read
+# rather than glance at belongs.
 
 
 def test_a_page_shows_eight_pads(song):
     assert len(seq_pads(song, 0, 0)) == STEPS_PER_PAGE
 
 
-def test_a_recorded_step_lights(song):
+def test_only_the_playhead_is_lit(song):
     song.set_step(0, 2, 100)
-    assert seq_pads(song, 0, 0)[2] != OFF
+    song.set_step(0, 5, 100)
+    row = seq_pads(song, 0, 0, playhead=5)
+    assert row[5] == PLAYHEAD
+    assert [color for index, color in enumerate(row) if index != 5] == [OFF] * 7
 
 
-def test_an_empty_step_is_dark(song):
-    assert seq_pads(song, 0, 0)[2] == OFF
-
-
-def test_only_the_selected_track_is_shown(song):
-    song.set_step(1, 2, 100)
-    assert seq_pads(song, 0, 0)[2] == OFF
-    assert seq_pads(song, 1, 0)[2] != OFF
-
-
-def test_the_second_page_shows_later_steps(song):
-    song.set_step(0, 9, 100)
-    assert seq_pads(song, 0, 0)[1] == OFF
-    assert seq_pads(song, 0, 1)[1] != OFF
-
-
-def test_steps_past_the_loop_point_are_marked(song):
-    """They exist in the buffer but never play, so they must not look empty."""
-    song.set_length(4)
-    row = seq_pads(song, 0, 0)
-    assert row[3] == OFF, "step 4 is inside the pattern"
-    assert row[4] == OUT_OF_PATTERN
-    assert row[7] == OUT_OF_PATTERN
-
-
-def test_the_playhead_overrides_the_step_colour(song):
+def test_a_recorded_step_is_not_lit_on_its_own(song):
+    """It is on the screen. Painting it here is what made the panel unreadable."""
     song.set_step(0, 2, 100)
-    assert seq_pads(song, 0, 0, playhead=2)[2] == PLAYHEAD
+    assert seq_pads(song, 0, 0)[2] == OFF
 
 
 def test_the_playhead_shows_on_an_empty_step_too(song):
     assert seq_pads(song, 0, 0, playhead=5)[5] == PLAYHEAD
 
 
-def test_velocity_is_visible_in_the_pad_brightness(song):
-    song.set_step(0, 0, 30)
-    song.set_step(0, 1, 127)
-    row = seq_pads(song, 0, 0)
-    assert sum(row[0]) < sum(row[1])
+def test_nothing_is_lit_when_the_pattern_is_not_playing(song):
+    """No playhead means no position to show."""
+    song.set_step(0, 2, 100)
+    assert seq_pads(song, 0, 0) == [OFF] * STEPS_PER_PAGE
+
+
+def test_the_playhead_only_lights_on_the_page_it_is_on(song):
+    """Step 9 is on page two, so page one shows nothing."""
+    assert seq_pads(song, 0, 0, playhead=9) == [OFF] * STEPS_PER_PAGE
+    assert seq_pads(song, 0, 1, playhead=9)[1] == PLAYHEAD
+
+
+def test_steps_past_the_loop_point_are_dark_like_the_rest(song):
+    """They were marked; with one light at a time there is nothing to mark."""
+    song.set_length(4)
+    assert seq_pads(song, 0, 0) == [OFF] * STEPS_PER_PAGE
+
+
+# --- the track picker -----------------------------------------------------
+#
+# Function plus a pad chooses a track, so Function alone shows which one is
+# chosen. Eight lit answers is not an answer to "which one".
+
+
+def test_holding_function_shows_the_selected_track():
+    row = track_pads(3)
+    assert row[3] == TRACK_PICK
+    assert [color for index, color in enumerate(row) if index != 3] == [OFF] * 7
+
+
+def test_the_track_picker_covers_every_track():
+    for track in range(TRACK_COUNT):
+        assert track_pads(track)[track] == TRACK_PICK
+
+
+def test_the_track_picker_is_one_pad_per_track():
+    assert len(track_pads(0)) == TRACK_COUNT
 
 
 # --- LIVE pads ------------------------------------------------------------
@@ -156,9 +175,20 @@ def test_a_muted_track_reads_as_muted(song):
 
 
 def test_pads_dispatches_on_mode(song):
-    song.set_step(0, 0, 100)
-    assert pads(song, SEQ, LOADED_ALL, track=0, page=0)[0] != OFF
+    assert pads(song, SEQ, LOADED_ALL, track=0, page=0, playhead=0)[0] == PLAYHEAD
     assert pads(song, LIVE, LOADED_ALL, track=0)[0] == TRACK_SELECTED
+
+
+def test_holding_function_overrides_the_sequencer_view(song):
+    row = pads(song, SEQ, LOADED_ALL, track=5, page=0, playhead=0, function_held=True)
+    assert row[5] == TRACK_PICK
+    assert row[0] == OFF, "the playhead was still lit under the picker"
+
+
+def test_holding_function_overrides_the_live_view(song):
+    row = pads(song, LIVE, LOADED_ALL, track=5, function_held=True)
+    assert row[5] == TRACK_PICK
+    assert row[0] == OFF
 
 
 # --- indicators -----------------------------------------------------------

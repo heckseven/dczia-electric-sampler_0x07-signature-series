@@ -405,34 +405,58 @@ def test_the_display_is_not_redrawn_on_every_pass(state):
     assert len(calls) < passes / 10, "redrawing far too often"
 
 
-def test_an_encoder_edit_reaches_the_pixels(state):
+def test_holding_function_reaches_the_pixels(state):
     """The gate is only safe if every path that changes a colour marks it.
 
-    A velocity nudge changes a pad's brightness without moving the playhead
-    or the blink phase, so without an explicit mark it would not be drawn
-    until some unrelated event happened to invalidate the cache.
+    Holding Function turns the pads into a track picker, and holding it
+    produces no action at all - the controls return an empty list. So the
+    redraw cannot be hung off an action; it has to be marked for any key
+    event whatsoever, which is what this pins down.
     """
     engine = sequencer_module.engine
     engine.mode = SEQ
     state.controls.set_mode(SEQ)
-    engine.song.set_step(0, 0, 40)
-    for action, value in state.controls.press(0):
-        state._act(action, value, None)
-    # Render after the press, so the press's own invalidation is spent and
-    # only the encoder turn can account for a change.
+    engine.select_track(3)
     state._render(force=True)
     before = list(state._last_pixels)
 
-    setup.select_enc.position += 5
-    state._handle_encoders()
-    state._render()
+    press(FUNCTION)
+    run(state)
 
-    assert engine.song.velocity(0, 0) > 40, "the nudge itself must have landed"
-    assert state._last_pixels != before, "brighter step, unchanged pixels"
+    assert state.controls.function_held is True
+    assert state._last_pixels != before, "Function held, unchanged pixels"
 
 
-def test_changing_the_pattern_length_reaches_the_pixels(state):
-    """Moving the loop point changes which pads read as out of pattern."""
+def test_the_track_picker_shows_the_selected_track(state):
+    engine = sequencer_module.engine
+    engine.mode = SEQ
+    state.controls.set_mode(SEQ)
+    engine.select_track(6)
+    press(FUNCTION)
+    run(state)
+    assert state._last_pixels[6] == view.TRACK_PICK
+    assert state._last_pixels[0] == view.OFF
+
+
+def test_letting_function_go_puts_the_pads_back(state):
+    engine = sequencer_module.engine
+    engine.mode = SEQ
+    state.controls.set_mode(SEQ)
+    press(FUNCTION)
+    run(state)
+    held = list(state._last_pixels)
+    release(FUNCTION)
+    run(state)
+    assert state._last_pixels != held, "the picker stayed up after the release"
+
+
+def test_changing_the_pattern_length_reaches_the_display(state):
+    """The pads no longer mark the loop point, so the number has to be read.
+
+    It is on the detail line as L<n>. Without an explicit mark the text waits
+    for the periodic redraw, which is long enough that the value cannot be
+    dialled in by watching it.
+    """
     engine = sequencer_module.engine
     engine.mode = SEQ
     state.controls.set_mode(SEQ)
@@ -440,14 +464,15 @@ def test_changing_the_pattern_length_reaches_the_pixels(state):
     for action, value in state.controls.press(FUNCTION):
         state._act(action, value, None)
     state._render(force=True)
-    before = list(state._last_pixels)
+    before = [state._screen.line(i) for i in range(len(state._screen))]
 
     setup.select_enc.position -= 12
     state._handle_encoders()
     state._render()
 
     assert engine.song.length < 16, "the length change must have landed"
-    assert state._last_pixels != before, "loop point moved, unchanged pixels"
+    after = [state._screen.line(i) for i in range(len(state._screen))]
+    assert after != before, "loop point moved, unchanged display"
 
 
 def test_the_display_does_not_follow_the_playhead(state):

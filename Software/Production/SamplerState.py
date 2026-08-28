@@ -146,6 +146,10 @@ class SamplerState(State):
             event = keys.events.get()
             if not event:
                 break
+            # Any key event can change what the pads show, including the ones
+            # that produce no action at all: holding Function is not an
+            # action, and it is what turns the pads into a track picker.
+            self._pixels_dirty = True
             for action, value in self.controls.handle(event.key_number, event.pressed):
                 if self._act(action, value, machine):
                     return True
@@ -318,6 +322,7 @@ class SamplerState(State):
             page=sequencer.page,
             playhead=playhead,
             flashing=set(self._flash),
+            function_held=self.controls.function_held,
         )
         colors.append(view.play_indicator(sequencer.transport, blink))
         colors.append(

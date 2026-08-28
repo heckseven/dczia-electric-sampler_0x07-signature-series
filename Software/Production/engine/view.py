@@ -19,9 +19,21 @@ from engine.song import MAX_VELOCITY, STEPS_PER_PAGE, TRACK_COUNT
 OFF = (0, 0, 0)
 
 # SEQ view
+#
+# One light at a time, deliberately. The pads showed the whole pattern at
+# once - every recorded step lit and dimmed by its velocity - and on a
+# diffused panel at arm's length that reads as a wall of blue rather than as
+# information. What the eye actually wants from ten LEDs is where it is now.
+# The pattern itself is still on screen, as the `*...o...` row, which is the
+# right place for something you read rather than glance at.
 STEP_ON = (0, 0, 255)  # a recorded note, dimmed by its velocity
 PLAYHEAD = (255, 255, 255)  # the step sounding right now
 OUT_OF_PATTERN = (12, 0, 0)  # past the loop point: present but not playing
+
+# Which of the eight tracks the encoders are editing, shown while Function is
+# held down - which is also the chord that selects one, so the panel answers
+# the question the gesture asks.
+TRACK_PICK = (255, 255, 255)
 
 # LIVE view
 TRACK_LOADED = (0, 40, 40)  # a pad with a sample behind it
@@ -60,19 +72,26 @@ def scale(color, velocity):
 
 
 def seq_pads(song, track, page, playhead=None):
-    """The eight pad colours while editing a track's steps."""
+    """The eight pad colours while editing a track's steps.
+
+    The step sounding now, and nothing else. See the note above STEP_ON for
+    why the pattern is not painted here any more.
+    """
     colors = []
     for slot in range(STEPS_PER_PAGE):
         step = page * STEPS_PER_PAGE + slot
-        if step >= song.track_length(track):
-            colors.append(OUT_OF_PATTERN)
-            continue
-        if step == playhead:
-            colors.append(PLAYHEAD)
-            continue
-        velocity = song.velocity(track, step)
-        colors.append(scale(STEP_ON, velocity) if velocity else OFF)
+        colors.append(PLAYHEAD if step == playhead else OFF)
     return colors
+
+
+def track_pads(selected):
+    """The eight pad colours while Function is held: which track is current.
+
+    Function plus a pad is how a track is chosen, so holding Function alone
+    shows which one is chosen already. Every other pad is dark, because the
+    question being asked is "which one", and eight lit answers is not one.
+    """
+    return [TRACK_PICK if track == selected else OFF for track in range(TRACK_COUNT)]
 
 
 def live_pads(song, loaded, selected=None, flashing=()):
@@ -92,7 +111,19 @@ def live_pads(song, loaded, selected=None, flashing=()):
     return colors
 
 
-def pads(song, mode, loaded, track=0, page=0, playhead=None, flashing=()):
+def pads(
+    song,
+    mode,
+    loaded,
+    track=0,
+    page=0,
+    playhead=None,
+    flashing=(),
+    function_held=False,
+):
+    """What the eight pads show. Holding Function overrides either view."""
+    if function_held:
+        return track_pads(track)
     if mode == SEQ:
         return seq_pads(song, track, page, playhead)
     return live_pads(song, loaded, selected=track, flashing=flashing)

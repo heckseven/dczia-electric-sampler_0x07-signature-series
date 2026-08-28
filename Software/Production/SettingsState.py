@@ -251,7 +251,7 @@ class SettingsState(State):
             return False
 
         if self._entry is not None:
-            return self._name_key(forward)
+            return self._name_key(key)
         if self._editor is not None:
             return self._editor_key(forward)
         if self._confirm is not None:
@@ -271,13 +271,22 @@ class SettingsState(State):
             return True
         return False
 
-    def _name_key(self, forward):
-        if forward:
+    def _name_key(self, key):
+        """Play finishes, the encoder's click sets a letter, Function rubs out.
+
+        Play means yes everywhere else on the badge, so it means yes here
+        too. Setting a letter is the click of the knob already being turned,
+        which is a shorter reach than either.
+        """
+        if key == PLAY_KEY:
+            self._entry.finish()
+            self._finish_name()
+        elif key == SELECT_KEY:
             if self._entry.accept():
                 self._finish_name()
         elif not self._entry.backspace():
-            # Backspacing past the first letter is how a name is abandoned:
-            # there is no third button to cancel with.
+            # Backspacing past the first letter is how a name is abandoned;
+            # there is nothing left to rub out, so it means "never mind".
             self._entry = None
             self._pending = None
             self._show("cancelled")
@@ -706,10 +715,10 @@ class SettingsState(State):
         """One line of whichever screen is showing."""
         if self._entry is not None:
             if index == 0:
-                return "Name:"
+                return "Name:      Play=ok"
             if index == 1:
                 return self._entry.preview[:WIDTH]
-            return "[" + self._entry.letter_label + "] B=del"
+            return "[%s] Sel=add Fn=del" % self._entry.letter_label
         if self._editor is not None:
             if index == 0:
                 return self.menu.breadcrumb(WIDTH)

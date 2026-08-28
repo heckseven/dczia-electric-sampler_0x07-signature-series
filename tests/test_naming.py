@@ -9,7 +9,7 @@ back from A, which is where the hand already is after choosing a letter.
 import pytest
 
 import circuitpython_stubs  # noqa: F401  (installs the stubs)
-from engine.naming import ALPHABET, DONE, DONE_LABEL, NameEntry
+from engine.naming import ALPHABET, NameEntry
 
 
 @pytest.fixture
@@ -32,7 +32,6 @@ def spell(entry, word):
 def test_it_starts_empty_and_on_a_letter(entry):
     assert entry.text == ""
     assert entry.letter == "A"
-    assert not entry.at_end_marker
 
 
 def test_turning_moves_through_the_alphabet(entry):
@@ -60,26 +59,14 @@ def test_a_word_can_be_spelled(entry):
 
 def test_the_alphabet_wraps(entry):
     """A ring the hand spins, unlike the settings list which has real ends."""
-    entry.turn(-1)
-    assert entry.at_end_marker
+    assert entry.letter == "A"
     entry.turn(-1)
     assert entry.letter == ALPHABET[-1]
+    entry.turn(1)
+    assert entry.letter == "A"
 
 
 # --- finishing and undoing ------------------------------------------------
-
-
-def test_the_end_marker_is_one_turn_back_from_the_start(entry):
-    entry.turn(-1)
-    assert entry.at_end_marker
-
-
-def test_accepting_the_end_marker_finishes(entry):
-    spell(entry, "BEAT")
-    entry.turn(-ALPHABET.index(entry.letter))
-    assert entry.accept() is True
-    assert entry.finished
-    assert entry.result() == "BEAT"
 
 
 def test_backspace_rubs_out_the_last_letter(entry):
@@ -113,8 +100,7 @@ def test_a_name_that_is_only_spaces_is_no_name(entry):
 
 def test_nothing_happens_after_finishing(entry):
     spell(entry, "A")
-    entry.turn(-ALPHABET.index(entry.letter))
-    entry.accept()
+    entry.finish()
     entry.turn(5)
     entry.accept()
     entry.backspace()
@@ -130,19 +116,6 @@ def test_the_preview_shows_the_letter_being_chosen(entry):
     assert entry.preview == "BEX"
 
 
-def test_the_preview_drops_the_marker(entry):
-    spell(entry, "BE")
-    entry.turn(-ALPHABET.index(entry.letter))
-    assert entry.preview == "BE"
-
-
-def test_the_end_marker_is_spelled_out(entry):
-    """The badge's font is ASCII, so a tick or an arrow draws as a blank box."""
-    entry.turn(-ALPHABET.index(entry.letter))
-    assert entry.letter_label == DONE_LABEL
-    assert DONE not in entry.letter_label
-
-
 def test_a_space_is_drawn_as_something_visible(entry):
     """An invisible character under the cursor looks like a dead knob."""
     entry.turn(ALPHABET.index(" ") - ALPHABET.index(entry.letter))
@@ -152,7 +125,7 @@ def test_a_space_is_drawn_as_something_visible(entry):
 def test_every_letter_can_be_drawn():
     """Anything not in the badge's font would appear as a blank box."""
     for letter in ALPHABET:
-        if letter == DONE:
+        if False:
             continue
         assert 0x20 <= ord(letter) <= 0x7E, repr(letter)
 
@@ -161,12 +134,16 @@ def test_every_letter_can_be_drawn():
 
 
 def test_a_name_stops_at_the_limit():
+    """Play still finishes and Function still rubs out, so it is not stuck -
+    and the preview visibly stops growing, which says why."""
     entry = NameEntry(max_length=4)
     spell(entry, "ABCD")
     assert entry.full
     entry.accept()
-    assert entry.finished, "a full name should finish rather than swallow keys"
-    assert entry.result() == "ABCD"
+    assert entry.text == "ABCD", "it took a fifth letter"
+    assert not entry.finished, "a full name should not finish on its own"
+    entry.backspace()
+    assert entry.text == "ABC", "a full name could not be corrected"
 
 
 def test_an_existing_name_can_be_edited():
@@ -180,3 +157,47 @@ def test_an_existing_name_can_be_edited():
 def test_an_initial_name_is_trimmed_to_the_limit():
     entry = NameEntry(initial="A" * 40, max_length=8)
     assert len(entry.text) == 8
+
+
+# --- the three gestures ----------------------------------------------------
+#
+# Play finishes, the encoder's click sets a letter, Function rubs out. The
+# end marker that used to live before A is gone: the knob's own click is a
+# shorter reach than turning to a hidden entry, and it frees Play to mean
+# yes here as it does everywhere else on the badge.
+
+
+def test_play_finishes_wherever_the_knob_is(entry):
+    spell(entry, "HI")
+    entry.turn(7)  # somewhere in the middle of the alphabet
+    assert entry.finish() is True
+    assert entry.finished
+    assert entry.result() == "HI"
+
+
+def test_finishing_does_not_keep_the_letter_under_the_knob(entry):
+    spell(entry, "HI")
+    entry.turn(3)
+    entry.finish()
+    assert entry.result() == "HI"
+
+
+def test_the_click_sets_a_letter_without_finishing(entry):
+    assert entry.accept() is False
+    assert entry.finished is False
+    assert entry.text == "A"
+
+
+def test_finishing_an_empty_name_yields_nothing(entry):
+    entry.finish()
+    assert entry.result() is None
+
+
+def test_the_alphabet_has_no_hidden_entry():
+    """Every position is a character that can be drawn."""
+    for letter in ALPHABET:
+        assert 32 <= ord(letter) < 127, repr(letter)
+
+
+def test_the_first_letter_is_a():
+    assert ALPHABET[0] == "A"

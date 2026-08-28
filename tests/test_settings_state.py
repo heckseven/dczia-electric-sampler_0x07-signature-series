@@ -19,6 +19,7 @@ import circuitpython_stubs
 from conftest import FakeMachine
 import kitfile
 import prefs
+from engine.naming import ALPHABET
 import screen as screen_module
 import sequencer as sequencer_module
 import setup
@@ -265,17 +266,18 @@ def test_leaving_the_editor_returns_to_the_rows(state):
 
 
 def name_it(state, text):
-    """Type a name on the one-knob alphabet and accept it."""
-    from engine.naming import ALPHABET
+    """Spell a name the way the badge does it.
 
+    Turn to a letter, click the encoder to set it, and press Play when the
+    name is right. Play is yes here as it is everywhere else; the click of
+    the knob already being turned is what sets a character.
+    """
     machine = FakeMachine()
     for letter in text:
         target = ALPHABET.index(letter)
         turn(state, target - ALPHABET.index(state._entry.letter), machine)
-        press(A)
+        press(SELECT_KEY)
         run(state, machine)
-    # Back to the end marker, and accept it to finish.
-    turn(state, -ALPHABET.index(state._entry.letter), machine)
     press(A)
     run(state, machine)
     return machine

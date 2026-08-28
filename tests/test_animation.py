@@ -16,8 +16,10 @@ from engine.animation import (
     ANIMATIONS,
     BEATS_PER_BAR,
     COLUMNS,
+    FUNCTION_PIXEL,
     INDICATORS,
     PATH,
+    PLAY_PIXEL,
     LOWER,
     NAMES,
     OFF,
@@ -81,10 +83,13 @@ def test_the_rows_are_the_two_halves_of_the_grid():
     assert len(UPPER) == len(LOWER) == 4
 
 
-def test_a_column_is_the_pad_above_and_the_pad_below():
+def test_a_column_runs_down_the_panel():
+    """Four columns. The left two carry a button above the pads as well."""
     assert len(COLUMNS) == 4
-    for index, column in enumerate(COLUMNS):
-        assert column == (UPPER[index], LOWER[index])
+    assert COLUMNS[0] == (FUNCTION_PIXEL, UPPER[0], LOWER[0])
+    assert COLUMNS[1] == (PLAY_PIXEL, UPPER[1], LOWER[1])
+    for index in (2, 3):
+        assert COLUMNS[index] == (UPPER[index], LOWER[index])
 
 
 # --- time -----------------------------------------------------------------
@@ -239,50 +244,44 @@ def _lit(colors):
     return [index for index, color in enumerate(colors) if color != OFF]
 
 
-def test_the_chase_moves_one_pad_a_sixteenth():
-    """Along the pads in reading order, not along the strip's wiring."""
-    for step in range(len(PATH) - 1):
-        here = _lit(chase(TICKS_PER_SIXTEENTH * step))[0]
-        there = _lit(chase(TICKS_PER_SIXTEENTH * (step + 1)))[0]
-        assert (PATH.index(here), PATH.index(there)) == (step, step + 1)
+def test_the_chase_goes_once_round_the_panel_in_a_bar():
+    """Every pixel, buttons included, one lap per bar.
 
-
-def test_the_chase_goes_round_twice_in_a_bar():
-    """Eight pads into sixteen sixteenths. Ten pixels would not divide.
-
-    The position comes back, not the whole frame: the hue walks the bar in
-    sixteen steps, so the second lap is the same path in another colour.
+    Positioned by where it is in the bar rather than counted in sixteenths,
+    because ten pixels do not divide sixteen sixteenths - a stepped version
+    would only come back to the top every five bars.
     """
-    assert _lit(chase(0)) == _lit(chase(TICKS_PER_SIXTEENTH * len(PATH)))
-    assert chase(0) != chase(TICKS_PER_SIXTEENTH * len(PATH)), "the colour stood still"
-
-
-def test_the_chase_leaves_the_buttons_alone():
+    seen = []
     for tick in range(TICKS_PER_BAR):
-        for pixel in INDICATORS:
-            assert chase(tick)[pixel] == OFF
+        lit = _lit(chase(tick))
+        if lit and (not seen or lit[0] != seen[-1]):
+            seen.append(lit[0])
+    assert sorted(seen) == sorted(PATH), seen
 
 
-def test_the_chase_does_not_change_at_all_inside_a_sixteenth():
-    """Including its colour: a still dot whose hue slides looks like a fault."""
-    assert chase(0) == chase(TICKS_PER_SIXTEENTH - 1)
+def test_the_chase_starts_a_new_lap_each_bar():
+    assert _lit(chase(0)) == _lit(chase(TICKS_PER_BAR))
+
+
+def test_the_chase_covers_the_buttons_too():
+    """They are part of the panel; an animation that skips them looks broken."""
+    lit_somewhere = set()
+    for tick in range(TICKS_PER_BAR):
+        lit_somewhere.update(_lit(chase(tick)))
+    for pixel in INDICATORS:
+        assert pixel in lit_somewhere, pixel
 
 
 def test_the_comet_has_a_tail_behind_its_head():
-    assert len(_lit(comet(TICKS_PER_SIXTEENTH * 5, tail=4))) == 4
+    assert len(_lit(comet(TICKS_PER_BAR // 2, tail=4))) == 4
 
 
 def test_the_comet_tail_fades_away_from_the_head():
-    head = 5
-    colors = comet(TICKS_PER_SIXTEENTH * head, tail=4)
+    tick = TICKS_PER_BAR // 2
+    colors = comet(tick, tail=4)
+    head = int((tick % TICKS_PER_BAR) / TICKS_PER_BAR * len(PATH))
     levels = [sum(colors[PATH[(head - step) % len(PATH)]]) for step in range(4)]
     assert levels == sorted(levels, reverse=True)
-
-
-def test_the_comet_leaves_the_buttons_alone():
-    for tick in range(TICKS_PER_BAR):
-        for pixel in INDICATORS:
-            assert comet(tick)[pixel] == OFF
 
 
 def test_the_sweep_travels_across_the_columns_and_back():
@@ -298,18 +297,22 @@ def test_the_sweep_travels_across_the_columns_and_back():
     assert brightest_column(TICKS_PER_BAR - 1) == 0
 
 
-def test_the_sweep_lights_a_column_top_and_bottom_together():
+def test_the_sweep_lights_a_whole_column_together():
+    """The left two columns have a button on top of them; all of it lights."""
     colors = sweep(0)
-    upper, lower = COLUMNS[0]
-    assert colors[upper] == colors[lower]
+    column = COLUMNS[0]
+    assert len(column) == 3, "the leftmost column should include a button"
+    assert len({colors[pixel] for pixel in column}) == 1
 
 
-def test_the_sweep_leaves_the_buttons_alone():
-    """They mean something; a sweep running over them reads as state."""
-    for tick in range(TICKS_PER_BAR):
-        colors = sweep(tick)
-        for pixel in INDICATORS:
-            assert colors[pixel] == OFF
+def test_the_right_hand_columns_are_pads_only():
+    assert len(COLUMNS[2]) == 2
+    assert len(COLUMNS[3]) == 2
+
+
+def test_the_columns_between_them_cover_every_pixel():
+    covered = [pixel for column in COLUMNS for pixel in column]
+    assert sorted(covered) == list(range(PIXEL_COUNT))
 
 
 def test_the_rainbow_shows_a_different_hue_on_each_pixel():
@@ -346,6 +349,10 @@ def test_the_sparkle_lights_at_most_what_was_asked_for():
     assert len(lit) <= 3
 
 
+def test_the_heartbeat_covers_the_whole_panel():
+    assert len(_lit(heartbeat(0))) == PIXEL_COUNT
+
+
 def test_the_heartbeat_beats_twice_a_bar():
     """On beats one and three, which is what a bar of four feels like."""
 
@@ -356,12 +363,6 @@ def test_the_heartbeat_beats_twice_a_bar():
     assert loud(1) == 0
     assert loud(2) > 0
     assert loud(3) == 0
-
-
-def test_the_heartbeat_leaves_the_buttons_alone():
-    for tick in range(TICKS_PER_BAR):
-        for pixel in INDICATORS:
-            assert heartbeat(tick)[pixel] == OFF
 
 
 def test_off_is_dark_at_every_tick():

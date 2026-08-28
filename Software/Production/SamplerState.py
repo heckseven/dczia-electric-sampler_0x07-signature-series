@@ -13,6 +13,7 @@ badge crackle whenever a pattern played.
 
 from supervisor import ticks_ms
 
+import prefs
 import screen as screen_module
 from engine import animation, view
 from engine.clock import ticks_diff
@@ -356,6 +357,7 @@ class SamplerState(State):
         if ticks_diff(ticks_ms(), self._last_touch) >= IDLE_MS:
             self._idle = True
             self._pixels_dirty = True
+            self._text_dirty = True
 
     def _expire_message(self):
         if self._message_until is None:
@@ -539,6 +541,14 @@ class SamplerState(State):
         return animation.by_name(animation.NAMES[0])
 
     def _render_display(self):
+        if self._idle:
+            # Whatever the player put there, alone on the middle row. If they
+            # have set nothing the sampler's own text stays, which is what it
+            # did before there was a setting for this.
+            words = prefs.text()
+            if words:
+                self._screen.set_lines(("", words, ""))
+                return
         # A held modifier takes the screen over, at exactly the moment it
         # stops being a tap - so the screen changing is itself the feedback
         # that you have crossed from tap into hold. A tap never flashes it.

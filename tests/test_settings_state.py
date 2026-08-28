@@ -881,3 +881,29 @@ def test_the_saved_brightness_is_applied_while_the_badge_warms(state):
     while state.warm_step():
         pass
     assert setup.neopixels.brightness == pytest.approx(0.22)
+
+
+def test_the_screen_text_lives_under_tools(state):
+    go(state, "Tools")
+    assert "Screen text" in [item.label for item in state.menu.items]
+
+
+def test_setting_the_screen_text_asks_for_one(state):
+    go(state, "Tools", "Screen text")
+    assert state._entry is not None
+
+
+def test_the_screen_text_is_written_to_the_card(state):
+    import prefs
+
+    go(state, "Tools", "Screen text")
+    name_it(state, "HELLO")
+    assert prefs.text() == "HELLO"
+
+
+def test_renaming_the_screen_text_starts_from_what_is_there(state):
+    import prefs
+
+    prefs.set_text("OLD")
+    go(state, "Tools", "Screen text")
+    assert state._entry.text == "OLD", "it started from empty"

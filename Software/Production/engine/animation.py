@@ -42,25 +42,41 @@ PADS = (5, 4, 3, 2, 6, 7, 8, 9)
 UPPER = PADS[:4]
 LOWER = PADS[4:]
 
-# Left to right across the panel, each column being the pad above and the pad
-# below it. What a sweep travels along.
-COLUMNS = tuple((UPPER[column], LOWER[column]) for column in range(4))
-
-# The two button pixels. Kept apart from the grid because they are physically
-# apart from it, and an animation that treats all ten as one row looks wrong.
+# The two button pixels. They are a row of their own, sitting above the pads
+# and aligned with the left edge of them - so the panel is three rows, the
+# top one only two wide:
+#
+#     [Fn][Play]
+#     [p1][p2][p3][p4]
+#     [p5][p6][p7][p8]
+#
+# That shape is why COLUMNS is ragged: the two left-hand columns are three
+# pixels tall and the two right-hand ones are two.
 FUNCTION_PIXEL = 0
 PLAY_PIXEL = 1
 INDICATORS = (FUNCTION_PIXEL, PLAY_PIXEL)
+BUTTONS = INDICATORS
 
-# What anything that travels goes round: the eight pads, in reading order.
+# Left to right across the panel. The first two columns have a button on top
+# of them; the other two are pads only. What a sweep travels along.
+COLUMNS = (
+    (FUNCTION_PIXEL, UPPER[0], LOWER[0]),
+    (PLAY_PIXEL, UPPER[1], LOWER[1]),
+    (UPPER[2], LOWER[2]),
+    (UPPER[3], LOWER[3]),
+)
+
+# What anything that travels goes round: every pixel, in strip order, which
+# is already a serpentine over the panel - along the buttons, back along the
+# top pad row, forward along the bottom one.
 #
-# The pads rather than all ten pixels, for two reasons. The buttons mean
-# something - Play is lit when the transport is running - and a chase running
-# over them reads as state rather than decoration. And eight divides the
-# sixteen sixteenths of a bar, where ten does not: a lap over ten pixels comes
-# back to the top every five bars, which is exactly the drift against the
-# music this rework exists to remove.
-PATH = PADS
+# Ten does not divide the sixteen sixteenths of a bar, so anything stepping
+# on the sixteenth would come back to the top only every five bars. Travelling
+# animations are therefore positioned by where they are *in* the bar rather
+# than counted in sixteenths: one lap per bar, whatever the path length. The
+# steps no longer land on the beat grid, which is the price of the buttons
+# joining in, and the lap staying locked to the bar is worth more.
+PATH = tuple(range(PIXEL_COUNT))
 
 TICKS_PER_BEAT = PPQN
 BEATS_PER_BAR = 4
@@ -149,18 +165,28 @@ def _step_hue(tick):
     return (sixteenth(tick) % SIXTEENTHS_PER_BAR) * (255.0 / SIXTEENTHS_PER_BAR)
 
 
+def _travelling_position(tick):
+    """Where a travelling animation is, as an index into PATH.
+
+    Taken from the position in the bar rather than counted in sixteenths, so
+    a lap is exactly one bar however many pixels the path has.
+    """
+    return int(bar_phase(tick) * len(PATH)) % len(PATH)
+
+
 def chase(tick, brightness=1.0):
-    """One lit pad, stepping a place every sixteenth. Twice round a bar."""
-    lit = sixteenth(tick) % len(PATH)
+    """One lit pixel, once round the whole panel every bar."""
     colors = _blank()
-    colors[PATH[lit]] = dim(wheel(_step_hue(tick)), brightness)
+    colors[PATH[_travelling_position(tick)]] = dim(
+        wheel(bar_phase(tick) * 255), brightness
+    )
     return colors
 
 
 def comet(tick, brightness=1.0, tail=4):
     """A chase with a tail behind it, so the direction reads at speed."""
-    head = sixteenth(tick) % len(PATH)
-    hue = _step_hue(tick)
+    head = _travelling_position(tick)
+    hue = bar_phase(tick) * 255
     colors = _blank()
     for step in range(tail):
         colors[PATH[(head - step) % len(PATH)]] = dim(
@@ -170,7 +196,7 @@ def comet(tick, brightness=1.0, tail=4):
 
 
 def sweep(tick, brightness=1.0):
-    """A column of light crossing the pads and coming back, once a bar.
+    """A column of light crossing the panel and coming back, once a bar.
 
     Travels in real space rather than along the strip, so it reads as a left
     to right movement rather than as the snake the wiring actually is.
@@ -237,10 +263,7 @@ def heartbeat(tick, brightness=1.0):
     else:
         level = 0.0
     color = dim((180, 0, 40), level * brightness)
-    colors = _blank()
-    for pixel in PADS:
-        colors[pixel] = color
-    return colors
+    return [color] * PIXEL_COUNT
 
 
 def off(tick, brightness=1.0):

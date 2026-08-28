@@ -63,6 +63,38 @@ def set_brightness(percent):
     return save(values)
 
 
+# What the panel says while the lights are running. Empty means "say
+# nothing", which is the default: a badge should not arrive with somebody
+# else's words on it.
+DEFAULT_TEXT = ""
+MAX_TEXT = 21  # one row of the display
+
+
+def text():
+    """The screensaver line, or empty if none has been set."""
+    return clean_text(load().get("text", DEFAULT_TEXT))
+
+
+def set_text(value):
+    """Remember what to show while an animation is up."""
+    values = load()
+    values["text"] = clean_text(value)
+    return save(values)
+
+
+def clean_text(value):
+    """Bound anything that came off a card written by who knows what.
+
+    terminalio is ASCII only - anything outside it draws as a blank box -
+    and the row is 21 characters, so both are enforced here rather than
+    trusted from the file.
+    """
+    if not isinstance(value, str):
+        return DEFAULT_TEXT
+    kept = "".join(c for c in value if 32 <= ord(c) < 127)
+    return kept[:MAX_TEXT]
+
+
 def clamp_brightness(percent):
     """Bound a value that may have come off a card written by anything."""
     try:

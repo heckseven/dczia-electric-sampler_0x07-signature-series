@@ -21,6 +21,7 @@ one before it is not pushed at all, which is most of them at a slow tempo.
 
 from supervisor import ticks_ms
 
+import prefs
 import screen as screen_module
 from engine import animation
 from engine.clock import ticks_diff
@@ -145,8 +146,15 @@ class FlashyState(State):
 
     def _lines(self):
         position, total = self.menu.position
-        heading = "Flashy"
-        if total > MENU_ROWS:
+        # The player's own words head the screen if they set any. This is the
+        # animation screen, so it is the other place the badge is being
+        # looked at rather than used - see prefs.text.
+        heading = prefs.text() or "Flashy"
+        if total > MENU_ROWS and len(heading) + 4 <= WIDTH:
             count = " %d/%d" % (position, total)
-            heading = "%-*s%s" % (WIDTH - len(count), heading, count)
-        return [heading] + self.menu.rendered(WIDTH)[:MENU_ROWS]
+            heading = "%-*s%s" % (
+                WIDTH - len(count),
+                heading[: WIDTH - len(count)],
+                count,
+            )
+        return [heading[:WIDTH]] + self.menu.rendered(WIDTH)[:MENU_ROWS]

@@ -339,6 +339,9 @@ class SettingsState(State):
             self._confirm = (command, value)
             return False
 
+        if command == settings.TOOL_SCREENSAVER:
+            self._ask_name(command, value, prefs.text())
+            return False
         if command in (settings.SONG_SAVE_AS, settings.SONG_RENAME):
             self._ask_name(command, value, sequencer.song.name)
             return False
@@ -372,7 +375,11 @@ class SettingsState(State):
     def _ask_name(self, command, value, initial):
         # Rename starts from the current name, because it is usually a small
         # change to it. Save-as starts empty, because it is usually not.
-        if command not in (settings.SONG_RENAME, settings.KIT_RENAME):
+        if command not in (
+            settings.SONG_RENAME,
+            settings.KIT_RENAME,
+            settings.TOOL_SCREENSAVER,
+        ):
             initial = ""
         self._entry = NameEntry(initial=initial or "")
         self._pending = (command, value)
@@ -459,6 +466,9 @@ class SettingsState(State):
             self._set_sample(value[0], value[1])
         elif command == settings.SAMPLE_CLEAR:
             self._set_sample(value, None)
+        elif command == settings.TOOL_SCREENSAVER:
+            self._quietly(lambda: prefs.set_text(name or ""))
+            self._show("saved")
         elif command == settings.LIST_TRUNCATED:
             self._show("%d more on card" % value)
         else:

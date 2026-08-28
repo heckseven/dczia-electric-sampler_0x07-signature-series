@@ -78,3 +78,40 @@ def test_saving_without_a_card_says_so_rather_than_raising(tmp_path, monkeypatch
     """The badge still works; it just forgets between power-ups."""
     monkeypatch.setattr(prefs.store, "directory", str(tmp_path / "nope" / "deeper"))
     assert prefs.set_brightness(20) is False
+
+
+# --- what the badge says while the lights run ------------------------------
+
+
+def test_a_fresh_badge_says_nothing(card):
+    """It should not arrive with somebody else's words on it."""
+    assert prefs.text() == ""
+
+
+def test_text_survives_being_saved(card):
+    prefs.set_text("HELLO DCZIA")
+    assert prefs.text() == "HELLO DCZIA"
+
+
+def test_text_is_cut_to_one_row(card):
+    prefs.set_text("X" * 60)
+    assert len(prefs.text()) == prefs.MAX_TEXT
+
+
+def test_characters_the_font_cannot_draw_are_dropped(card):
+    """terminalio is ASCII; anything else draws as a blank box."""
+    # The characters go; the spaces that flanked them are ASCII and stay.
+    prefs.set_text("café — ok")
+    assert prefs.text() == "caf  ok"
+
+
+def test_text_that_is_not_a_string_falls_back(card):
+    prefs.save({"text": 42})
+    assert prefs.text() == ""
+
+
+def test_setting_text_keeps_the_brightness(card):
+    prefs.set_brightness(30)
+    prefs.set_text("BADGE")
+    assert prefs.brightness() == 30
+    assert prefs.text() == "BADGE"

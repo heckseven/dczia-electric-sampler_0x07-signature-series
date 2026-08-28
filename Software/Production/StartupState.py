@@ -10,10 +10,16 @@ from setup import (
     neopixels,
 )
 
-# Imported during the banner, one per pass, in the order they are needed. The
-# sequencer is first because it is the largest single cost and everything else
-# is quick beside it. The settings tree follows, and the sampler screen and its
-# own three modules come last.
+# Imported during the banner, one per pass, in the order they are needed: the
+# audio engine and the settings tree first, then the four modules nothing
+# earlier in the list pulls in, then the sampler screen itself.
+#
+# "sequencer" is a no-op here and kept on purpose. main imports it at module
+# scope, before the banner exists, so warming finds it already loaded -
+# measured, free memory moved 32 bytes across that pass where a 48 KB module
+# would have shown. It stays listed so this remains a complete statement of
+# what has to be up before the sampler runs, rather than one that quietly
+# depends on an import in another file.
 #
 # SamplerState is in this list because `state_for` compiles a screen the first
 # time it is asked for, and the sampler used to be asked for at the very end of
@@ -29,11 +35,14 @@ from setup import (
 # way - the only choice is whether it is spent on a clean heap or a ruined one.
 #
 # engine.animation, engine.view, engine.controls and utils are named here for
-# the same reason the list exists at all. Nothing else imports them - the
-# sequencer covers engine.clock, song, transport, util, quantize and wav, and
-# the settings modules cover the rest - so without them the SamplerState pass
-# compiles 62 KB rather than 24 KB, in one pass, which is the banner freeze
-# this whole mechanism exists to avoid. One per pass only works if every entry
+# the same reason the list exists at all: nothing *earlier in this list* pulls
+# them in. The sequencer covers engine.clock, song, transport, util, quantize
+# and wav, and the settings modules cover the rest, but those four are reached
+# first by SamplerState - so without them its pass compiles 62 KB rather than
+# 24 KB, in one pass, which is the banner freeze this whole mechanism exists to
+# avoid. (They are not the sampler's alone: FlashyState imports animation, and
+# HIDState and MIDIState import utils. Being unwarmed until now is what they
+# have in common, not being exclusive to the sampler.) One per pass only works if every entry
 # really is one module's worth of work, and
 # test_the_sampler_pass_imports_only_the_sampler is what keeps it that way.
 WARM = (

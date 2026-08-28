@@ -2,8 +2,8 @@
 """Compile the firmware to bytecode for deployment.
 
 CIRCUITPY is a 490 KB filesystem and the firmware is 300 KB of source, which
-left 25 KB free - not enough for the samples the badge would like to hold, and
-not the real problem either.
+left 22 KB free once the samples were on it - not enough for the kit the badge
+would like to hold, and not the real problem either.
 
 The real problem is that CircuitPython compiles a module the first time it is
 imported, and compiling needs a large contiguous run of heap. The badge died
@@ -12,8 +12,17 @@ the heap in pieces, it could not allocate 195 bytes with 42 KB free. A .mpy
 file is already bytecode, so importing one does not run the compiler at all
 and that working set never exists.
 
-    source .py    298390 bytes
-    compiled       65166 bytes   (21%)
+    source .py    298390 bytes        CIRCUITPY free:  22 KB
+    compiled       65166 bytes  (21%)                    252 KB
+
+Measured on the badge, at the moment the sampler screen takes over:
+
+    from source     27568 bytes free, largest single block  6912
+    from bytecode   25264 bytes free, largest single block 11840
+
+Slightly *less* free memory in total, and a 71% bigger contiguous block. That
+is the trade, and the contiguous one is the half that matters: a badge dying on
+startup with a MemoryError is usually short of a run of memory, not of memory.
 
 Docstrings are not the reason. CircuitPython's compiler discards them, measured:
 5450 bytes of docstring compiled to the same bytecode as a comment saying the
@@ -62,7 +71,16 @@ wrong. Adafruit publish a static binary per release:
 mpy-cross-linux-amd64-<version>.static
 
 Download the one matching boot_out.txt on the badge, chmod +x it, and pass it
-with --mpy-cross (or put it on PATH as mpy-cross).\
+with --mpy-cross (or put it on PATH as mpy-cross).
+
+It is a binary you are about to run. Verify it against Adafruit's own published
+checksum. For the record, the linux-amd64 build this firmware was compiled with
+on 2026-08-28 was 1411184 bytes, sha256
+
+  c85a9bdb3db06d8e77b600d1d025686b753448be89bb14082ee6e3a01e3c13fe
+
+which is an observation from one download, not an authority - if it disagrees
+with Adafruit's, believe theirs.\
 """
 
 

@@ -96,3 +96,18 @@ To update the software on the board you can do two things.
 1. Use the fimware blob from our release section. To use this, unplug and turn off the module. Using something non conductivem press and hold the button on the RPI 2040 (The BootSelect Button) while powering on the unit via a micro usb cable. You should then see a mass storage drive appear on your computer. Drag the single uf2 file onto the drive. Then the unit should restart with the new firmware.
 
 2. You can also plug the unit into your computer via the micro usb and drag the contents of the Production/Software folder onto the mass storage drive. The unit should reboot when complete. Sometimes if your computer transfers the files too slow this can cause issues with the RPI rebooting before all the software is complete.
+
+3. Or compile it to bytecode first, which is what `Tools/build.py` is for:
+
+       python3 Tools/build.py -o /media/you/CIRCUITPY
+
+   The firmware is 298 KB of source and CIRCUITPY holds 490 KB, which left
+   22 KB free once the samples were on it. Compiled, the same firmware is 65 KB
+   and leaves 252 KB, so a kit no longer has to be chosen around the
+   filesystem. It also makes the badge less likely to run out of memory while
+   starting up.
+
+   It needs an `mpy-cross` matching the CircuitPython version in the badge's
+   `boot_out.txt`; the tool says where to get one and refuses to run if the
+   versions disagree. See the top of `Tools/build.py` for the measurements and
+   the reasoning.

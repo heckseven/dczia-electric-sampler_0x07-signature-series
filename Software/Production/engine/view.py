@@ -20,14 +20,24 @@ OFF = (0, 0, 0)
 
 # SEQ view
 #
-# One light at a time, deliberately. The pads showed the whole pattern at
-# once - every recorded step lit and dimmed by its velocity - and on a
-# diffused panel at arm's length that reads as a wall of blue rather than as
-# information. What the eye actually wants from ten LEDs is where it is now.
-# The pattern itself is still on screen, as the `*...o...` row, which is the
-# right place for something you read rather than glance at.
-STEP_ON = (0, 0, 255)  # a recorded note, dimmed by its velocity
-PLAYHEAD = (255, 255, 255)  # the step sounding right now
+# Two levels of one colour, not a palette. The pads used to paint every
+# recorded step in blue dimmed by its velocity, which on a diffused panel at
+# arm's length reads as a wall rather than as information. Showing only the
+# playhead was the other extreme and went too far: with the transport stopped
+# the panel went dark, so there was no way to see what you had just toggled -
+# and toggling steps is the whole of sequence editing.
+#
+# So: a recorded step is dim, the step sounding now is bright, and the same
+# white says both. One glance answers "what is in this bar" and "where am I"
+# without the two competing.
+STEP_ON = (28, 28, 28)  # a recorded note, waiting its turn
+# Magenta rather than white, and at full scale on both its channels. It
+# cannot be made brighter than this here: the strip is built at
+# brightness=0.1 in setup.py, so that is the knob for the whole panel. Note
+# also that magenta reads dimmer than a white of the same numbers because
+# green carries most of what the eye counts as brightness, which is why the
+# recorded steps are pulled down a little to keep the contrast.
+PLAYHEAD = (255, 0, 255)  # the step sounding right now
 OUT_OF_PATTERN = (12, 0, 0)  # past the loop point: present but not playing
 
 # Which of the eight tracks the encoders are editing, shown while Function is
@@ -74,13 +84,20 @@ def scale(color, velocity):
 def seq_pads(song, track, page, playhead=None):
     """The eight pad colours while editing a track's steps.
 
-    The step sounding now, and nothing else. See the note above STEP_ON for
-    why the pattern is not painted here any more.
+    Bright where the playhead is, dim where a step is recorded, dark
+    otherwise. The playhead wins when it is standing on a recorded step: the
+    question "where am I" is the more urgent of the two, and the step is
+    audible at that moment anyway.
     """
     colors = []
     for slot in range(STEPS_PER_PAGE):
         step = page * STEPS_PER_PAGE + slot
-        colors.append(PLAYHEAD if step == playhead else OFF)
+        if step == playhead:
+            colors.append(PLAYHEAD)
+        elif step < song.track_length(track) and song.velocity(track, step):
+            colors.append(STEP_ON)
+        else:
+            colors.append(OFF)
     return colors
 
 

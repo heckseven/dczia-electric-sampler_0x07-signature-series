@@ -12,6 +12,7 @@ from setup import (
 # quick beside it; SettingsState is last because it imports most of the
 # rest, so by the time it is reached there is little left to do.
 WARM = (
+    "prefs",
     "sequencer",
     "store",
     "songfile",

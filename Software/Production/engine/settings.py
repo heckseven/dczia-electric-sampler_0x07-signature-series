@@ -53,6 +53,7 @@ LIST_TRUNCATED = "list.truncated"  # value: how many are not shown
 
 TOOL_MIDI = "tool.midi"
 TOOL_HID = "tool.hid"
+TOOL_BRIGHTNESS = "tool.brightness"
 
 # What a row that clears a track's sample is called. Named because the
 # firmware and the tests both have to recognise it.
@@ -216,6 +217,7 @@ def build(catalog=None):
             Item(
                 "Tools",
                 children=[
+                    Item("Brightness", command=TOOL_BRIGHTNESS),
                     Item("MIDI controller", command=TOOL_MIDI),
                     Item("USB HID", command=TOOL_HID),
                 ],

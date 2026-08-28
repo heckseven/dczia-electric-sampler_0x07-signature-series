@@ -18,6 +18,7 @@ import pytest
 import circuitpython_stubs
 from conftest import FakeMachine
 import kitfile
+import prefs
 import screen as screen_module
 import sequencer as sequencer_module
 import setup
@@ -52,6 +53,7 @@ def card(tmp_path, monkeypatch):
         (tmp_path / name).mkdir()
     monkeypatch.setattr(songfile.store, "directory", str(tmp_path / "songs"))
     monkeypatch.setattr(kitfile.store, "directory", str(tmp_path / "kits"))
+    monkeypatch.setattr(prefs.store, "directory", str(tmp_path))
     paths = [write_wav(tmp_path / "samples" / ("s%d.wav" % n)) for n in range(3)]
     monkeypatch.setattr(sequencer_module, "SAMPLE_DIRS", (str(tmp_path / "samples"),))
     return paths
@@ -528,18 +530,30 @@ def test_every_line_is_printable_on_the_builtin_font(state):
 
 
 def test_the_startup_screen_imports_the_settings_modules():
-    """1.3 s of compiling off the card must not land on a playing pattern."""
+    """1.3 s of compiling off the card must not land on a playing pattern.
+
+    The modules are put back afterwards. Dropping one and letting it be
+    imported again leaves a second copy of it: whatever was already holding
+    the first - a fixture that patched its store, say - is then talking to a
+    different object than the code under test, and the two disagree silently.
+    """
     import sys
 
     from StartupState import WARM, StartupState
 
-    for name in WARM:
-        sys.modules.pop(name, None)
-    state = StartupState()
-    state.warmed = 0
-    state._warm(FakeMachine())
-    for name in WARM:
-        assert name in sys.modules, "%s is still uncompiled" % name
+    saved = {name: sys.modules.get(name) for name in WARM}
+    try:
+        for name in WARM:
+            sys.modules.pop(name, None)
+        state = StartupState()
+        state.warmed = 0
+        state._warm(FakeMachine())
+        for name in WARM:
+            assert name in sys.modules, "%s is still uncompiled" % name
+    finally:
+        for name, module in saved.items():
+            if module is not None:
+                sys.modules[name] = module
 
 
 def test_the_banner_keeps_animating_while_the_badge_warms():
@@ -561,13 +575,19 @@ def test_warming_imports_one_module_per_pass():
 
     from StartupState import WARM, StartupState
 
-    for name in WARM:
-        sys.modules.pop(name, None)
-    state = StartupState()
-    state.warmed = 0
-    assert state._warm_step(FakeMachine()) is True
-    assert state.warmed == 1
-    assert sys.modules.get(WARM[1]) is None, "it imported more than one"
+    saved = {name: sys.modules.get(name) for name in WARM}
+    try:
+        for name in WARM:
+            sys.modules.pop(name, None)
+        state = StartupState()
+        state.warmed = 0
+        assert state._warm_step(FakeMachine()) is True
+        assert state.warmed == 1
+        assert sys.modules.get(WARM[1]) is None, "it imported more than one"
+    finally:
+        for name, module in saved.items():
+            if module is not None:
+                sys.modules[name] = module
 
 
 def test_warming_stops_when_there_is_nothing_left():
@@ -734,9 +754,12 @@ def test_warming_reads_every_listing(state):
 
 
 def test_warming_does_one_slow_thing_per_call(state):
+    """One per call, whatever it is. Brightness comes first, then the card."""
     state.catalog._songs = state.catalog._kits = None
     state._warmed = 0
-    state.warm_step()
+    state.warm_step()  # brightness
+    assert state.catalog._songs is None, "it did two things in one call"
+    state.warm_step()  # songs
     assert state.catalog._songs is not None
     assert state.catalog._kits is None, "it read more than one listing"
 
@@ -776,3 +799,85 @@ def test_a_card_that_will_not_answer_does_not_stop_the_banner(state, monkeypatch
         steps += 1
         assert steps < 100
     assert steps == len(settings_module._WARM_CARD)
+
+
+# --- brightness ------------------------------------------------------------
+
+
+def test_brightness_lives_under_tools(state):
+    go(state, "Tools")
+    assert "Brightness" in [item.label for item in state.menu.items]
+
+
+def test_opening_brightness_gives_a_number_to_turn(state):
+    go(state, "Tools", "Brightness")
+    assert state._editor is not None
+    assert state._editor.label == "Bright"
+
+
+def test_the_panel_changes_as_the_knob_turns(state):
+    """It is judged by looking at it, so it applies live rather than on accept."""
+    go(state, "Tools", "Brightness")
+    before = setup.neopixels.brightness
+    turn(state, 4)
+    assert setup.neopixels.brightness != before
+
+
+def test_cancelling_puts_the_old_brightness_back(state):
+    go(state, "Tools", "Brightness")
+    before = setup.neopixels.brightness
+    turn(state, 5)
+    press(B)
+    run(state)
+    assert setup.neopixels.brightness == pytest.approx(before)
+
+
+def test_accepting_writes_it_to_the_card(state):
+    import prefs
+
+    go(state, "Tools", "Brightness")
+    turn(state, 5)
+    chosen = state._editor.value
+    press(A)
+    run(state)
+    assert prefs.brightness() == chosen
+
+
+def test_cancelling_writes_nothing(state):
+    import prefs
+
+    prefs.set_brightness(12)
+    go(state, "Tools", "Brightness")
+    turn(state, 6)
+    press(B)
+    run(state)
+    assert prefs.brightness() == 12
+
+
+def test_the_knob_cannot_exceed_the_power_ceiling(state):
+    import prefs
+
+    go(state, "Tools", "Brightness")
+    turn(state, 400)
+    assert state._editor.value == prefs.MAX_BRIGHTNESS
+    assert setup.neopixels.brightness <= prefs.MAX_BRIGHTNESS / 100.0
+
+
+def test_the_knob_cannot_turn_the_panel_off(state):
+    import prefs
+
+    go(state, "Tools", "Brightness")
+    turn(state, -400)
+    assert state._editor.value == prefs.MIN_BRIGHTNESS
+
+
+def test_the_saved_brightness_is_applied_while_the_badge_warms(state):
+    """The panel comes up at the built-in default; warming corrects it."""
+    import prefs
+
+    prefs.set_brightness(22)
+    setup.neopixels.brightness = 0.1
+    state._warmed = 0
+    while state.warm_step():
+        pass
+    assert setup.neopixels.brightness == pytest.approx(0.22)

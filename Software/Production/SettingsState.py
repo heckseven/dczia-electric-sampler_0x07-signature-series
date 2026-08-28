@@ -27,6 +27,7 @@ from supervisor import ticks_ms
 
 import guard
 import kitfile
+import prefs
 import screen as screen_module
 import sequencer as sequencer_module
 import songfile
@@ -37,7 +38,7 @@ from engine.menu import Menu
 from engine.naming import NameEntry
 from engine.song import MAX_STEPS, MIN_LENGTH, TRACK_COUNT
 from sequencer import engine as sequencer
-from setup import display, keys, select_enc, volume_enc
+from setup import display, keys, neopixels, select_enc, volume_enc
 from State import State
 from store import StoreError
 
@@ -287,6 +288,10 @@ class SettingsState(State):
         editor = self._editor
         self._editor = None
         if forward:
+            if editor.label == "Bright":
+                # The only editor whose value outlives the song, so it is the
+                # only one with anywhere to be written.
+                self._quietly(lambda: prefs.set_brightness(editor.value))
             self._show("%s %s" % (editor.label, editor.text))
         else:
             editor.cancel()
@@ -348,6 +353,9 @@ class SettingsState(State):
             self._ask_name(settings.KIT_SAVE_AS, value, "")
             return False
 
+        if command == settings.TOOL_BRIGHTNESS:
+            self._edit_brightness()
+            return False
         if command == settings.LENGTH_GLOBAL:
             self._edit_length(None)
             return False
@@ -389,6 +397,22 @@ class SettingsState(State):
             MIN_LENGTH,
             MAX_STEPS,
             apply=lambda steps: song.set_track_length(track, steps),
+        )
+
+    def _edit_brightness(self):
+        """Turn the knob, watch the panel. Committed to the card on accept.
+
+        Applied as the knob turns because brightness is judged by looking at
+        it, and written only on accept because a card write is most of a
+        second and doing one per detent would be unusable.
+        """
+        self._editor = Editor(
+            "Bright",
+            int(round(neopixels.brightness * 100)),
+            prefs.MIN_BRIGHTNESS,
+            prefs.MAX_BRIGHTNESS,
+            apply=_set_brightness,
+            formatter=lambda percent: "%d%%" % percent,
         )
 
     def _run_command(self, command, value, name=None):
@@ -696,12 +720,20 @@ class SettingsState(State):
 # Creating the directories is here rather than at the first save because on
 # an empty card that measured eight seconds.
 _WARM_CARD = (
+    # First, because it is the one the player sees immediately: the panel
+    # comes up at the built-in default and this is what corrects it.
+    lambda state: _set_brightness(prefs.brightness()),
     lambda state: state.catalog.songs(),
     lambda state: state.catalog.kits(),
     lambda state: state.catalog.samples(),
     lambda state: songfile.available(),
     lambda state: kitfile.available(),
 )
+
+
+def _set_brightness(percent):
+    neopixels.brightness = percent / 100.0
+    neopixels.show()
 
 
 def _collect(item, found):

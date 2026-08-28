@@ -17,7 +17,6 @@ from engine.view import (
     MODE_LIVE,
     MODE_SEQ,
     OFF,
-    OUT_OF_PATTERN,
     PLAYHEAD,
     PLAYING,
     RECORDING,
@@ -84,28 +83,46 @@ def test_a_page_shows_eight_pads(song):
     assert len(seq_pads(song, 0, 0)) == STEPS_PER_PAGE
 
 
-def test_only_the_playhead_is_lit(song):
+def test_the_playhead_is_the_bright_one(song):
     song.set_step(0, 2, 100)
     song.set_step(0, 5, 100)
     row = seq_pads(song, 0, 0, playhead=5)
     assert row[5] == PLAYHEAD
-    assert [color for index, color in enumerate(row) if index != 5] == [OFF] * 7
+    assert row[2] == STEP_ON
+    assert sum(row[5]) > sum(row[2]), "the playhead must outshine a plain step"
 
 
-def test_a_recorded_step_is_not_lit_on_its_own(song):
-    """It is on the screen. Painting it here is what made the panel unreadable."""
+def test_a_recorded_step_is_dim_rather_than_dark(song):
+    """Showing only the playhead left the panel blank while stopped, and
+    toggling steps with no feedback is the whole of sequence editing."""
     song.set_step(0, 2, 100)
-    assert seq_pads(song, 0, 0)[2] == OFF
+    assert seq_pads(song, 0, 0)[2] == STEP_ON
+    assert seq_pads(song, 0, 0)[3] == OFF
+
+
+def test_the_playhead_wins_where_it_stands_on_a_step(song):
+    song.set_step(0, 4, 100)
+    assert seq_pads(song, 0, 0, playhead=4)[4] == PLAYHEAD
+
+
+def test_a_recorded_step_is_the_same_whatever_its_velocity(song):
+    """Brightness says where the playhead is, not how hard a hit was."""
+    song.set_step(0, 1, 10)
+    song.set_step(0, 2, 127)
+    row = seq_pads(song, 0, 0)
+    assert row[1] == row[2] == STEP_ON
 
 
 def test_the_playhead_shows_on_an_empty_step_too(song):
     assert seq_pads(song, 0, 0, playhead=5)[5] == PLAYHEAD
 
 
-def test_nothing_is_lit_when_the_pattern_is_not_playing(song):
-    """No playhead means no position to show."""
+def test_the_pattern_is_still_visible_when_stopped(song):
+    """There is no playhead, but there is still a pattern to edit."""
     song.set_step(0, 2, 100)
-    assert seq_pads(song, 0, 0) == [OFF] * STEPS_PER_PAGE
+    row = seq_pads(song, 0, 0)
+    assert row[2] == STEP_ON
+    assert row.count(OFF) == STEPS_PER_PAGE - 1
 
 
 def test_the_playhead_only_lights_on_the_page_it_is_on(song):
@@ -114,10 +131,11 @@ def test_the_playhead_only_lights_on_the_page_it_is_on(song):
     assert seq_pads(song, 0, 1, playhead=9)[1] == PLAYHEAD
 
 
-def test_steps_past_the_loop_point_are_dark_like_the_rest(song):
-    """They were marked; with one light at a time there is nothing to mark."""
+def test_steps_past_the_loop_point_stay_dark(song):
+    """They exist in the buffer but never play, so they must not read as on."""
     song.set_length(4)
-    assert seq_pads(song, 0, 0) == [OFF] * STEPS_PER_PAGE
+    song.set_step(0, 6, 100)
+    assert seq_pads(song, 0, 0)[6] == OFF
 
 
 # --- the track picker -----------------------------------------------------

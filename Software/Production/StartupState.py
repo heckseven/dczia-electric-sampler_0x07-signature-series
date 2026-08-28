@@ -1,4 +1,7 @@
+import gc
 import time
+
+import guard
 import screen
 from State import State
 from setup import (
@@ -7,10 +10,32 @@ from setup import (
     neopixels,
 )
 
-# Imported during the banner, in the order they are needed. The sequencer
-# is first because it is the largest single cost and everything else is
-# quick beside it; SettingsState is last because it imports most of the
-# rest, so by the time it is reached there is little left to do.
+# Imported during the banner, one per pass, in the order they are needed. The
+# sequencer is first because it is the largest single cost and everything else
+# is quick beside it. The settings tree follows, and the sampler screen and its
+# own three modules come last.
+#
+# SamplerState is in this list because `state_for` compiles a screen the first
+# time it is asked for, and the sampler used to be asked for at the very end of
+# the banner - after every other module and the whole settings tree had been
+# built, which is the most fragmented the heap ever gets. Compiling 24 KB of
+# source needs a lot of contiguous memory and there was none: measured on the
+# badge, 22 KB free at that point, and a gc.collect() lifting it to 42 KB still
+# could not satisfy a 195-byte allocation. The badge rebooted in a loop.
+#
+# Deferring it bought nothing anyway. Every other screen is deferred so that a
+# badge only playing a pattern does not pay for them; the sampler IS that
+# badge, reached on every boot without exception. The memory is spent either
+# way - the only choice is whether it is spent on a clean heap or a ruined one.
+#
+# engine.animation, engine.view, engine.controls and utils are named here for
+# the same reason the list exists at all. Nothing else imports them - the
+# sequencer covers engine.clock, song, transport, util, quantize and wav, and
+# the settings modules cover the rest - so without them the SamplerState pass
+# compiles 62 KB rather than 24 KB, in one pass, which is the banner freeze
+# this whole mechanism exists to avoid. One per pass only works if every entry
+# really is one module's worth of work, and
+# test_the_sampler_pass_imports_only_the_sampler is what keeps it that way.
 WARM = (
     "prefs",
     "sequencer",
@@ -22,6 +47,11 @@ WARM = (
     "engine.naming",
     "engine.settings",
     "SettingsState",
+    "engine.animation",
+    "engine.view",
+    "engine.controls",
+    "utils",
+    "SamplerState",
 )
 
 
@@ -104,6 +134,14 @@ class StartupState(State):
         """Finish warming. Whatever is left runs before the sampler does."""
         while self._warm_step(machine):
             pass
+        # The banner allocates on every one of its ~1100 passes and nothing
+        # collects while it runs: main's loop only collects below GC_FLOOR,
+        # and the heap sits above it the whole time. Measured, that leaves
+        # about 20 KB of garbage standing at exactly the moment the sampler
+        # is built. Collecting is 28-48 ms, which is free here and nowhere
+        # else - the badge is already showing a banner and no audio is
+        # playing yet.
+        gc.collect()
 
     def _warm_step(self, machine):
         """Do one slow thing. Called once per pass, so the banner keeps moving.
@@ -130,7 +168,13 @@ class StartupState(State):
             name = WARM[self.warmed]
             self.warmed += 1
             try:
-                __import__(name)
+                # Held off for the same reason statemachine.state_for holds it
+                # off: compiling a module off the card is slower than the
+                # watchdog, and _warm runs the whole remaining list inside a
+                # single pass when the banner is cut short by a key press -
+                # with nothing feeding the dog in between. A reset there looks
+                # exactly like a crash, because a reset is not an exception.
+                guard.slowly(lambda: __import__(name))
             except (ImportError, MemoryError):
                 # Warming is an optimisation. A module that will not import
                 # here will fail the same way when it is really needed, and

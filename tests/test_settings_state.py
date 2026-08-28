@@ -578,6 +578,99 @@ def test_the_banner_keeps_animating_while_the_badge_warms():
     assert state.timer > before, "the animation stopped for the warm-up"
 
 
+def test_the_sampler_screen_is_warmed():
+    """It is the one screen every boot reaches, so it must not be left deferred.
+
+    state_for compiles a screen the first time it is asked for. Left out of
+    WARM, the sampler was compiled at the end of the banner - after every
+    other module and the settings tree - and there was no longer a contiguous
+    run of heap big enough for 24 KB of source. Measured on the badge: 22 KB
+    free, and a gc.collect() lifting it to 42 KB still could not satisfy a
+    195-byte allocation. The badge rebooted in a loop.
+    """
+    from StartupState import WARM
+
+    assert "SamplerState" in WARM
+
+
+def test_the_sampler_pass_imports_only_the_sampler():
+    """One module per pass only holds if each entry is one module's worth.
+
+    SamplerState imports engine.animation, engine.view and engine.controls,
+    and nothing earlier in WARM pulls any of them in - 38 KB that would land
+    on the sampler's own pass and freeze the banner, which is the thing the
+    whole mechanism exists to prevent.
+
+    Written this way rather than as a list of names so it stays honest if
+    those imports change again: warm everything up to the sampler, then check
+    that reaching it adds nothing but itself.
+    """
+    import sys
+
+    from StartupState import WARM
+
+    from conftest import PRODUCTION_DIR
+
+    # What StartupState has already imported by the time warming starts. On the
+    # badge these are loaded before the first pass, so they are not part of what
+    # a pass costs - everything else must be, or the test is measuring a heap
+    # that a real boot never has.
+    ALREADY = ("screen", "State", "setup", "guard", "StartupState", "statemachine")
+
+    index = WARM.index("SamplerState")
+    # Selected by where the module actually lives rather than by name, so a
+    # module added later is covered without anyone remembering to list it.
+    # Restored wholesale afterwards: re-importing leaves a second copy behind,
+    # and a fixture patching one while the code under test uses the other is a
+    # debugging afternoon nobody needs.
+    saved = {
+        name: module
+        for name, module in sys.modules.items()
+        if name not in ALREADY
+        and getattr(module, "__file__", None)
+        and module.__file__.startswith(PRODUCTION_DIR)
+    }
+    try:
+        for name in saved:
+            del sys.modules[name]
+        for name in WARM[:index]:
+            __import__(name)
+        before = set(sys.modules)
+        __import__("SamplerState")
+        added = set(sys.modules) - before - {"SamplerState"}
+        assert not added, "the sampler's pass also compiled %s" % sorted(added)
+    finally:
+        sys.modules.update(saved)
+
+
+def test_warming_collects_before_the_sampler_is_built(monkeypatch):
+    """The banner leaves about 20 KB of garbage standing at the worst moment.
+
+    Nothing collects while it runs - main only collects below GC_FLOOR and the
+    heap stays above it - so the sampler was built on whatever the banner had
+    left behind. Driven through update() rather than by calling _warm, so the
+    ordering the name claims is the ordering actually checked.
+    """
+    import gc
+
+    from StartupState import WARM, StartupState
+
+    events = []
+    monkeypatch.setattr(gc, "collect", lambda: events.append("collect"))
+
+    state = StartupState()
+    state.warmed = len(WARM)
+    state.stage = 2
+    state.timer = 255 * 8
+    machine = FakeMachine()
+    machine.go_to_state = lambda name: events.append("go_to_" + name)
+    state.update(machine)
+
+    assert "go_to_sampler" in events, "it never handed over"
+    assert "collect" in events, "it handed over without collecting"
+    assert events.index("collect") < events.index("go_to_sampler")
+
+
 def test_warming_imports_one_module_per_pass():
     """Doing the lot in one call freezes the banner for twelve seconds."""
     import sys

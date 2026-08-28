@@ -38,7 +38,13 @@ from engine.util import (
     position_for_level,
 )
 from engine.clock import Clock, ticks_diff
-from engine.song import DEFAULT_VELOCITY, MAX_VELOCITY, TRACK_COUNT, Song
+from engine.song import (
+    DEFAULT_LENGTH,
+    DEFAULT_VELOCITY,
+    MAX_VELOCITY,
+    TRACK_COUNT,
+    Song,
+)
 from engine.transport import LIVE, SEQ, Transport
 from setup import midi_serial, midi_uart, midi_usb, sync_in, sync_out
 
@@ -236,6 +242,18 @@ def sample_candidates(name, lister=None, dirs=None):
         if name in names:
             found.append(directory + "/" + name)
     return found
+
+
+def _track_of_voice(index):
+    """Which track owns a mixer voice, or None for the floating ones.
+
+    The strip is laid out as VOICES_PER_TRACK per track and then the
+    audition and metronome on the end, so this is arithmetic rather than a
+    lookup - but it is arithmetic that has to agree with _voices_of.
+    """
+    if index >= AUDITION_VOICE:
+        return None
+    return index // VOICES_PER_TRACK
 
 
 def _listdir(directory):
@@ -485,19 +503,22 @@ class Sequencer:
     def load_demo_pattern(self):
         """A plain beat, so Play does something on a badge straight out of a box.
 
-        Deliberately simple and easy to take apart: four on the floor, a
-        backbeat, and offbeat toms. Function plus a Volume click clears a
-        track when it is in the way.
+        Deliberately simple and easy to take apart: a kick, a backbeat and
+        offbeat toms. Function plus a Volume click clears a track when it is
+        in the way.
+
+        Eight steps, matching what a new song is, so the first thing the
+        badge plays is the same shape as the first thing you would write -
+        and the whole of it is on one page of pads.
         """
         song = self.song
         song.clear_all()
-        song.set_length(16)
+        song.set_length(DEFAULT_LENGTH)
         song.set_division(3)  # 1/16
-        for step in (0, 4, 8, 12):
+        for step in (0, 4):
             song.set_step(0, step, 110)
-        for step in (4, 12):
-            song.set_step(1, step, 100)
-        for step in (2, 6, 10, 14):
+        song.set_step(1, 4, 100)
+        for step in (2, 6):
             song.set_step(2, step, 70)
         return song
 
@@ -586,6 +607,21 @@ class Sequencer:
 
     # --- voices -----------------------------------------------------------
 
+    def _level_for(self, track, velocity):
+        """One voice's level: master, the track's own trim, then the hit.
+
+        The trim is the song's if it has an opinion and the kit's otherwise,
+        so a sample that is simply too loud can be fixed once with the sounds
+        rather than in every song that uses them.
+
+        `track` may be None, for the voices that belong to no track - the
+        audition and the metronome - which take the master level alone.
+        """
+        level = self.volume * (velocity / 127.0)
+        if track is None:
+            return level
+        return level * self.song.volume_for(track)
+
     def _voice_for(self, track):
         """Which mixer voice this track's next hit should use.
 
@@ -661,7 +697,7 @@ class Sequencer:
         # remember the velocity against the next.
         index = self._voice_for(track)
         voice = self.mixer.voice[index]
-        voice.level = self.volume * (velocity / 127.0)
+        voice.level = self._level_for(track, velocity)
         self._voice_velocity[index] = velocity
         try:
             # Starting here means the stream's own transient lands under a
@@ -973,8 +1009,24 @@ class Sequencer:
         for index in range(MIXER_VOICES):
             velocity = self._voice_velocity[index]
             if velocity:
-                self.mixer.voice[index].level = self.volume * (velocity / 127.0)
+                self.mixer.voice[index].level = self._level_for(
+                    _track_of_voice(index), velocity
+                )
         return self.volume
+
+    def refresh_levels(self):
+        """Push current levels at whatever is already sounding.
+
+        A track's trim changing mid-hit should be audible on that hit rather
+        than only on the next one; the whole point of turning the knob is to
+        hear the balance change.
+        """
+        for index in range(MIXER_VOICES):
+            velocity = self._voice_velocity[index]
+            if velocity:
+                self.mixer.voice[index].level = self._level_for(
+                    _track_of_voice(index), velocity
+                )
 
     def nudge_volume(self, steps, now=None):
         """Move the volume by that many detents, scaled by how fast it turned.

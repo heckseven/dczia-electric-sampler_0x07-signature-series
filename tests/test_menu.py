@@ -37,6 +37,21 @@ class FakeCatalog:
         return [(name, "/sd/samples/" + name) for name in self._samples]
 
 
+def enter_by_label(menu, *labels):
+    """Walk down to a row by name.
+
+    By name and not by index, because a menu grows: every one of these tests
+    broke the day Division was added to Track, and none of them were about
+    where Division sits.
+    """
+    for label in labels:
+        rows = [item.label for item in menu.items]
+        assert label in rows, "%s is not in %s" % (label, rows)
+        menu.move(rows.index(label) - menu.cursor)
+        menu.enter()
+    return menu
+
+
 @pytest.fixture
 def menu():
     return Menu(settings.build(FakeCatalog()))
@@ -152,10 +167,7 @@ def test_exactly_one_row_is_highlighted(menu):
 
 def test_the_view_scrolls_to_keep_the_cursor_on_screen(menu):
     """Track 8 is the ninth row of Length; it has to be reachable."""
-    menu.move(1)  # Track
-    menu.enter()
-    menu.move(1)  # Length
-    menu.enter()
+    enter_by_label(menu, "Track", "Length")
     menu.move(TRACK_COUNT)  # Global plus eight tracks: the last one
     labels = [label for label, _ in menu.visible()]
     assert "Track %d" % TRACK_COUNT in labels
@@ -221,10 +233,7 @@ def test_every_command_is_unique_except_the_ones_carrying_a_value():
 
 
 def test_the_per_track_length_rows_carry_their_track_number(menu):
-    menu.move(1)  # Track
-    menu.enter()
-    menu.move(1)  # Length
-    menu.enter()
+    enter_by_label(menu, "Track", "Length")
     for track in range(TRACK_COUNT):
         item = menu.items[track + 1]  # after Global
         assert item.label == "Track %d" % (track + 1)
@@ -310,10 +319,7 @@ def test_song_offers_the_five_operations(menu):
 
 
 def test_length_offers_global_and_every_track(menu):
-    menu.move(1)
-    menu.enter()  # Track
-    menu.move(1)
-    menu.enter()  # Length
+    enter_by_label(menu, "Track", "Length")
     assert len(menu.items) == TRACK_COUNT + 1
     assert menu.items[0].label == "Global"
 
@@ -348,10 +354,7 @@ def test_a_longer_list_says_there_is_more_below(menu):
 
 
 def test_scrolling_down_says_there_is_more_above(menu):
-    menu.move(1)
-    menu.enter()  # Track
-    menu.move(1)
-    menu.enter()  # Length, nine rows
+    enter_by_label(menu, "Track", "Length")  # nine rows
     menu.move(6)
     rows = menu.rendered()
     assert rows[0].endswith("^"), rows
@@ -401,11 +404,9 @@ def test_the_position_tells_you_where_you_are(menu):
 
 
 def test_the_breadcrumb_names_the_level(menu):
-    menu.move(1)
-    menu.enter()
+    enter_by_label(menu, "Track")
     assert menu.breadcrumb() == "Track"
-    menu.move(1)
-    menu.enter()
+    enter_by_label(menu, "Length")
     assert menu.breadcrumb() == "Track/Length"
 
 

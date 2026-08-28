@@ -35,6 +35,21 @@ DEFAULT_VELOCITY = 100
 OFFSET_BIAS = 128
 
 MIN_LENGTH = 1
+
+# What a new song is. Eight steps is one page, so the eight pads are the
+# whole pattern and there is no paging to understand before you can write a
+# beat. At the default 1/16 division that is half a bar of 4/4, which is the
+# trade: the pads no longer line up with anything you would count, but what
+# you see is all there is.
+DEFAULT_LENGTH = 8
+
+# Per-track loudness, as a multiplier. One is the sample as recorded. The
+# ceiling is above one so a quiet sample can be brought up rather than only
+# pulled down; the mixer sums voices, so the sum still has to fit - see the
+# level budget in sequencer.py.
+MIN_TRACK_VOLUME = 0.0
+MAX_TRACK_VOLUME = 2.0
+DEFAULT_TRACK_VOLUME = 1.0
 MIN_BPM = 20
 MAX_BPM = 300
 
@@ -53,7 +68,7 @@ DEFAULT_DIVISION = 3  # 1/16
 class Song:
     """One pattern: step data for 8 tracks, plus the kit they play."""
 
-    def __init__(self, length=16, division=DEFAULT_DIVISION, bpm=120):
+    def __init__(self, length=DEFAULT_LENGTH, division=DEFAULT_DIVISION, bpm=120):
         self.steps = [bytearray(MAX_STEPS) for _ in range(TRACK_COUNT)]
         self.offsets = [bytearray(b"\x80" * MAX_STEPS) for _ in range(TRACK_COUNT)]
         # Sample path per track; None means the track has no sound loaded.
@@ -64,6 +79,14 @@ class Song:
         # which is what every track does until one is deliberately given its
         # own feel - a swung hat over a straight kick, say.
         self.track_strength = [None] * TRACK_COUNT
+        # How loud each track is, as a multiplier on the hit's own velocity.
+        # None means "no opinion", and the kit's baseline is used instead -
+        # see kit_volume. Turning the knob is what sets one.
+        self.track_volume = [None] * TRACK_COUNT
+        # The baseline that came with the kit, for tracks the song has no
+        # opinion about. A too-loud kick is a property of the sample rather
+        # than of the arrangement, so it travels with the sounds.
+        self.kit_volume = [DEFAULT_TRACK_VOLUME] * TRACK_COUNT
         # Every track has its own length, so tracks of different lengths
         # drift against each other and realign on their own cycle. A
         # sixteen-step kick under a twelve-step hat repeats every forty-eight
@@ -241,6 +264,36 @@ class Song:
     def set_sample(self, track, path):
         self.kit[track] = path
 
+    # --- per-track loudness -----------------------------------------------
+
+    def volume_for(self, track):
+        """What this track's hits are scaled by, song first then kit."""
+        chosen = self.track_volume[track]
+        if chosen is None:
+            return self.kit_volume[track]
+        return chosen
+
+    def set_track_volume(self, track, value):
+        """Give the song an opinion about one track. Clamped."""
+        self.track_volume[track] = _clamp_volume(value)
+        return self.track_volume[track]
+
+    def clear_track_volume(self, track):
+        """Forget the song's opinion, falling back to the kit's."""
+        self.track_volume[track] = None
+
+    def set_kit_volume(self, track, value):
+        self.kit_volume[track] = _clamp_volume(value)
+        return self.kit_volume[track]
+
+    def capture_kit_volumes(self):
+        """Make what is currently sounding the kit's baseline.
+
+        What `Kit > Save` writes: balance the tracks by ear, then save, and
+        the balance travels with the sounds rather than with the song.
+        """
+        return [self.volume_for(track) for track in range(TRACK_COUNT)]
+
     def toggle_mute(self, track):
         self.muted[track] = not self.muted[track]
         return self.muted[track]
@@ -277,6 +330,8 @@ class Song:
             "kit": list(self.kit),
             "muted": list(self.muted),
             "track_strength": list(self.track_strength),
+            "track_volume": list(self.track_volume),
+            "kit_volume": list(self.kit_volume),
             "steps": [bytes(row) for row in self.steps],
             "offsets": [bytes(row) for row in self.offsets],
         }
@@ -292,7 +347,7 @@ class Song:
         as a slightly wrong song, never as an exception on the main loop.
         """
         song = cls(
-            length=data.get("length", 16),
+            length=data.get("length", DEFAULT_LENGTH),
             division=data.get("division", DEFAULT_DIVISION),
             bpm=data.get("bpm", 120),
         )
@@ -313,6 +368,21 @@ class Song:
         strengths = data.get("track_strength") or []
         for track in range(min(TRACK_COUNT, len(strengths))):
             song.set_track_strength(track, _as_number(strengths[track], 1.0))
+        # None is a real value here and means "no opinion, use the kit's", so
+        # it survives rather than being coerced to a number.
+        volumes = data.get("track_volume") or []
+        for track in range(min(TRACK_COUNT, len(volumes))):
+            if volumes[track] is None:
+                song.clear_track_volume(track)
+            else:
+                song.set_track_volume(
+                    track, _as_number(volumes[track], DEFAULT_TRACK_VOLUME)
+                )
+        kit_volumes = data.get("kit_volume") or []
+        for track in range(min(TRACK_COUNT, len(kit_volumes))):
+            song.set_kit_volume(
+                track, _as_number(kit_volumes[track], DEFAULT_TRACK_VOLUME)
+            )
         # Copy through the same clamps every other write path uses. A file
         # written by another version, or a corrupted one, must not be able to
         # smuggle in a velocity above MAX_VELOCITY or an offset wider than half
@@ -338,6 +408,13 @@ class Song:
                 )
         song._reclamp_offsets()
         return song
+
+
+def _clamp_volume(value):
+    """A loudness multiplier from anything, bounded to what the mixer can take."""
+    return clamp(
+        _as_number(value, DEFAULT_TRACK_VOLUME), MIN_TRACK_VOLUME, MAX_TRACK_VOLUME
+    )
 
 
 def _as_int(value, default):

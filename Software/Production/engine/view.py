@@ -45,6 +45,12 @@ OUT_OF_PATTERN = (12, 0, 0)  # past the loop point: present but not playing
 # the question the gesture asks.
 TRACK_PICK = (255, 255, 255)
 
+# The dim tier of the same white. One rule across every overlay: bright is
+# where you are, dim is something that exists but is not current, off is
+# nothing there. Same value as a recorded step, so the panel has one idea of
+# "present but not now".
+PRESENT = STEP_ON
+
 # LIVE view
 TRACK_LOADED = (0, 40, 40)  # a pad with a sample behind it
 TRACK_EMPTY = OFF
@@ -101,14 +107,42 @@ def seq_pads(song, track, page, playhead=None):
     return colors
 
 
-def track_pads(selected):
+def track_pads(selected, loaded=()):
     """The eight pad colours while Function is held: which track is current.
 
-    Function plus a pad is how a track is chosen, so holding Function alone
-    shows which one is chosen already. Every other pad is dark, because the
-    question being asked is "which one", and eight lit answers is not one.
+    Bright where the cursor is, dim where a track has a sample to play, dark
+    where there is nothing - so the same glance answers "which one am I on"
+    and "which ones are worth going to".
     """
-    return [TRACK_PICK if track == selected else OFF for track in range(TRACK_COUNT)]
+    colors = []
+    for track in range(TRACK_COUNT):
+        if track == selected:
+            colors.append(TRACK_PICK)
+        elif track < len(loaded) and loaded[track]:
+            colors.append(PRESENT)
+        else:
+            colors.append(OFF)
+    return colors
+
+
+def page_pads(song, track, page):
+    """The eight pad colours while Play is held: which page is showing.
+
+    Bright for the page in front of you, dim for the pages this track
+    actually has, dark past the end of the pattern. Turning Select while Play
+    is held changes the length, so the dim run grows and shrinks under your
+    fingers as you do it.
+    """
+    pages = song.page_count_for(track)
+    colors = []
+    for slot in range(STEPS_PER_PAGE):
+        if slot == page:
+            colors.append(TRACK_PICK)
+        elif slot < pages:
+            colors.append(PRESENT)
+        else:
+            colors.append(OFF)
+    return colors
 
 
 def live_pads(song, loaded, selected=None, flashing=()):
@@ -137,10 +171,19 @@ def pads(
     playhead=None,
     flashing=(),
     function_held=False,
+    play_held=False,
 ):
-    """What the eight pads show. Holding Function overrides either view."""
+    """What the eight pads show.
+
+    A held modifier takes the panel over, because while one is down the pads
+    mean what it says they mean rather than what the view says. Function asks
+    "which track", Play asks "which page"; Function wins if somehow both are
+    down, matching the chord order in controls.
+    """
     if function_held:
-        return track_pads(track)
+        return track_pads(track, loaded)
+    if play_held:
+        return page_pads(song, track, page)
     if mode == SEQ:
         return seq_pads(song, track, page, playhead)
     return live_pads(song, loaded, selected=track, flashing=flashing)

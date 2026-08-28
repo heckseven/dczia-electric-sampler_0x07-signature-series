@@ -34,6 +34,7 @@ SONG_LOAD = "song.load"  # value: the song's name
 SONG_DELETE = "song.delete"  # value: the song's name
 
 TRACK_FLASHY = "track.flashy"
+TRACK_DIVISION = "track.division"
 LENGTH_GLOBAL = "length.global"
 LENGTH_TRACK = "length.track"  # value: track index
 
@@ -173,6 +174,7 @@ def build(catalog=None):
                 "Track",
                 children=[
                     Item("Flashy", command=TRACK_FLASHY),
+                    Item("Division", command=TRACK_DIVISION),
                     Item(
                         "Length",
                         children=[Item("Global", command=LENGTH_GLOBAL)]

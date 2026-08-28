@@ -14,8 +14,11 @@ badge crackle whenever a pattern played.
 from supervisor import ticks_ms
 
 import screen as screen_module
-from engine import view
+from engine import animation, view
+from engine.clock import ticks_diff
 from engine.controls import (
+    FUNCTION,
+    PLAY,
     ARM_RECORD,
     SETTINGS,
     CLEAR_TRACK,
@@ -65,6 +68,21 @@ INDICATOR_PIXELS = 2
 REDRAW_EVERY = 400
 
 
+# How long a word stays on the middle line. Long enough to read, short
+# enough that the numbers it covers are not hidden for long.
+MESSAGE_MS = 1200
+
+# How long the badge sits untouched before the lights take over. Long enough
+# that thinking about a pattern does not trigger it, short enough that a
+# badge left on a table becomes an ornament rather than a status readout.
+IDLE_MS = 15000
+
+# Smallest gap between animation frames while idle. The same reasoning as
+# the Flashy screen's: finer than the fastest thing the animations do, and
+# far coarser than the loop, which turns over thousands of times a second.
+IDLE_FRAME_MS = 25
+
+
 class SamplerState(State):
     @property
     def name(self):
@@ -77,6 +95,21 @@ class SamplerState(State):
         # Editing suppresses the toggle on release, so adjusting a step's level
         # does not also switch the step off underneath you.
         self._edited = set()
+        self._message = None
+        self._message_until = None
+        # When the badge was last touched, and the animation that stands in
+        # for the pads while it is left alone. See _idle_pixels.
+        self._last_touch = None
+        self._idle = False
+        self._timebase = animation.Timebase()
+        # Kept from enter, so the idle animation can ask Flashy what it is
+        # showing without a module-level back door.
+        self._machine = None
+        # Whether a legend was on screen last pass, so its appearing and
+        # disappearing each force a redraw. Without this the legend waits for
+        # the periodic rebuild and shows up long after the gesture.
+        self._legend_shown = False
+        self._last_idle_frame = None
         self._last_select = 0
         self._last_volume = 0
         self._passes = 0
@@ -108,6 +141,9 @@ class SamplerState(State):
         self._pixels_dirty = True
         self._text_dirty = True
         self._edited = set()
+        self._machine = machine
+        self._last_touch = ticks_ms()
+        self._idle = False
         self._screen.attach()
         self._attached = True
         self._render(force=True)
@@ -125,11 +161,19 @@ class SamplerState(State):
 
     def update(self, machine):
         self._passes += 1
+        if self._last_touch is None:
+            self._last_touch = ticks_ms()
         leaving = self._handle_keys(machine)
         if leaving:
             return
         self._handle_encoders()
         self._expire_flashes()
+        self._expire_message()
+        self._update_idle()
+        showing = self._legend() is not None
+        if showing != self._legend_shown:
+            self._legend_shown = showing
+            self._text_dirty = True
         self._render()
 
     def _handle_keys(self, machine):
@@ -150,7 +194,12 @@ class SamplerState(State):
             # that produce no action at all: holding Function is not an
             # action, and it is what turns the pads into a track picker.
             self._pixels_dirty = True
-            for action, value in self.controls.handle(event.key_number, event.pressed):
+            self._text_dirty = True
+            self._touched()
+            now = ticks_ms()
+            for action, value in self.controls.handle(
+                event.key_number, event.pressed, now
+            ):
                 if self._act(action, value, machine):
                     return True
         return False
@@ -208,6 +257,9 @@ class SamplerState(State):
 
     def _handle_encoders(self):
         position = select_enc.position
+        if position != self._last_select or volume_enc.position != self._last_volume:
+            self._touched()
+        position = select_enc.position
         if position != self._last_select:
             self._select_turned(position - self._last_select)
             self._last_select = position
@@ -237,8 +289,13 @@ class SamplerState(State):
             sequencer.set_page(
                 min(sequencer.page, song.page_count_for(sequencer.selected_track) - 1)
             )
-        elif target == "step_velocity":
-            self._nudge_velocity(delta)
+        elif target in ("track_pitch", "track_pitch_held", "step_pitch"):
+            # Reserved, not built. Changing a sample's pitch means resampling
+            # its buffer - the mixer will not play a sample whose rate differs
+            # from its own, measured - and that is a piece of work of its own.
+            # The gesture and the legend exist so the shape is settled; this
+            # says so rather than silently doing nothing.
+            self._pitch_unavailable()
         else:
             sequencer.set_bpm(sequencer.clock.bpm + delta)
 
@@ -249,11 +306,82 @@ class SamplerState(State):
             song.set_division(song.division + delta)
         elif target == "quantize":
             sequencer.nudge_strength(1 if delta > 0 else -1)
+        elif target == "track_volume":
+            self._nudge_track_volume(delta, (sequencer.selected_track,))
+        elif target == "track_volume_held":
+            self._nudge_track_volume(delta, self.controls.held_pads)
+        elif target == "step_velocity":
+            self._nudge_velocity(delta)
         else:
             # The whole delta, not just its sign, and scaled by how fast
             # the knob is turning: creep it for a small change, spin it to
             # cross the range.
             sequencer.nudge_volume(delta, ticks_ms())
+
+    def _pitch_unavailable(self):
+        self._say("pitch: not yet")
+
+    def _say(self, text):
+        """Put a word on the middle line for a moment."""
+        self._message = text
+        self._message_until = ticks_ms() + MESSAGE_MS
+        self._text_dirty = True
+
+    def _touched(self):
+        """Called for any key or knob. Ends the animation and restarts the wait."""
+        self._last_touch = ticks_ms()
+        if self._idle:
+            self._idle = False
+            self._pixels_dirty = True
+            self._text_dirty = True
+
+    def _update_idle(self):
+        """Decide whether the lights have the panel.
+
+        Only while stopped: a pattern playing is the badge being used, even
+        if nobody has touched it. The screen is left alone either way - the
+        sampler's own text stays readable across a room.
+        """
+        if sequencer.transport.playing:
+            self._last_touch = ticks_ms()
+            if self._idle:
+                self._idle = False
+                self._pixels_dirty = True
+            return
+        if self._idle:
+            return
+        if ticks_diff(ticks_ms(), self._last_touch) >= IDLE_MS:
+            self._idle = True
+            self._pixels_dirty = True
+
+    def _expire_message(self):
+        if self._message_until is None:
+            return
+        if ticks_diff(ticks_ms(), self._message_until) >= 0:
+            self._message = None
+            self._message_until = None
+            self._text_dirty = True
+
+    def _nudge_track_volume(self, delta, tracks):
+        """Set the loudness of whichever tracks the gesture named.
+
+        Holding a pad in LIVE names its own track, so a kit can be balanced
+        without stepping the selection through eight of them; holding
+        Function means the selected one, for when a pad is not to hand.
+        """
+        song = sequencer.song
+        touched = False
+        for track in tracks:
+            # A step is worth a fortieth of full scale, so the whole range is
+            # about eighty detents - fine enough to balance a kit by ear and
+            # coarse enough to cross it with one spin.
+            song.set_track_volume(track, song.volume_for(track) + delta * 0.025)
+            touched = True
+            # A held pad that has been used for an edit must not also toggle
+            # its step when it is released.
+            self._edited.add(track)
+        if touched:
+            sequencer.refresh_levels()
 
     def _nudge_velocity(self, delta):
         """Holding a pad and turning Select edits that step's level."""
@@ -283,6 +411,23 @@ class SamplerState(State):
     def _render(self, force=False):
         playhead = sequencer.current_step if sequencer.transport.playing else None
         blink = (self._passes // BLINK_PASSES) % 2 == 0
+        if self._idle:
+            # The animation moves on its own, so nothing marks it dirty. It
+            # is paced instead, exactly as the Flashy screen paces its own:
+            # a frame is cheap but a NeoPixel write is a bit-banged one with
+            # interrupts off, and doing it thousands of times a second is
+            # heat rather than animation.
+            now = ticks_ms()
+            if self._last_idle_frame is None or (
+                ticks_diff(now, self._last_idle_frame) >= IDLE_FRAME_MS
+            ):
+                self._last_idle_frame = now
+                self._render_idle_pixels()
+            if force or self._text_dirty or self._passes % REDRAW_EVERY == 0:
+                self._render_display()
+                self._text_dirty = False
+            self._screen.flush()
+            return
         # Only rebuild colours when something that decides them has moved.
         # This runs on every pass of a loop that turns over about 4000 times a
         # second, and building the colour list allocates: a list per call, a
@@ -323,6 +468,7 @@ class SamplerState(State):
             playhead=playhead,
             flashing=set(self._flash),
             function_held=self.controls.function_held,
+            play_held=self.controls.play_held,
         )
         colors.append(view.play_indicator(sequencer.transport, blink))
         colors.append(
@@ -337,7 +483,51 @@ class SamplerState(State):
             neopixels[neoindex(key_number)] = colors[key_number]
         neopixels.show()
 
+    def _render_idle_pixels(self):
+        """The last animation Flashy was left on, over the whole strip.
+
+        Beat-locked like everything else in engine/animation.py, so it moves
+        at the tempo even with the transport stopped - and follows an
+        external clock if one is running.
+        """
+        colors = self._idle_animation()(
+            self._timebase.step(
+                ticks_ms(),
+                sequencer.clock.bpm,
+                sequencer.clock.tick if sequencer.clock.running else None,
+            )
+        )
+        if colors == self._last_pixels:
+            return
+        self._last_pixels = colors
+        for index in range(animation.PIXEL_COUNT):
+            neopixels[index] = colors[index]
+        neopixels.show()
+
+    def _idle_animation(self):
+        """Whichever animation Flashy was last left showing.
+
+        Asked of the Flashy state rather than remembered here, so the two
+        cannot disagree - and asked only if it has been built, because
+        building it to find out would defeat the point of deferring it.
+        A badge that has never been there gets the first in the list, which
+        is the one that states the tempo most plainly.
+        """
+        machine = self._machine
+        if machine is not None:
+            flashy = machine.states.get("flashy")
+            if flashy is not None:
+                return flashy._animation
+        return animation.by_name(animation.NAMES[0])
+
     def _render_display(self):
+        # A held modifier takes the screen over, at exactly the moment it
+        # stops being a tap - so the screen changing is itself the feedback
+        # that you have crossed from tap into hold. A tap never flashes it.
+        legend = self._legend()
+        if legend is not None:
+            self._screen.set_lines(legend)
+            return
         song = sequencer.song
         top = view.status_line(
             song,
@@ -353,6 +543,16 @@ class SamplerState(State):
         # frames pop the amplifier. The playhead lives on the pad LEDs
         # instead, which cost about 2 ms and are electrically quiet.
         bottom = view.step_row(song, sequencer.selected_track, sequencer.page)
+        if self._message is not None:
+            middle = self._message[:21]
         # Only ask for the text. Drawing is paced by flush below, so a
         # three-line change never lands in one pass of the main loop.
         self._screen.set_lines((top, middle, bottom))
+
+    def _legend(self):
+        """The held modifier's own gestures, or None if nothing is held long."""
+        now = ticks_ms()
+        for key in (FUNCTION, PLAY) + tuple(self.controls.held_pads):
+            if self.controls.held_long(key, now):
+                return self.controls.legend()
+        return None

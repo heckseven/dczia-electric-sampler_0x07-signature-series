@@ -16,6 +16,7 @@ from engine import view
 from engine.controls import FUNCTION, PLAY, SELECT, VOLUME
 from engine.song import STEPS_PER_PAGE
 from engine.transport import LIVE, SEQ
+import engine.controls as controls_module
 import SamplerState as sampler_module
 from SamplerState import SamplerState
 
@@ -275,10 +276,11 @@ def test_the_select_encoder_changes_tempo(state):
     assert engine.clock.bpm == before + 5
 
 
-def test_function_puts_length_on_the_select_encoder(state):
+def test_play_puts_length_on_the_select_encoder(state):
+    """Play is pattern-scoped: how long it is, and how hard it is quantised."""
     engine = sequencer_module.engine
     before = engine.song.length
-    press(FUNCTION)
+    press(PLAY)
     run(state)
     setup.select_enc.position += 3
     run(state)
@@ -286,14 +288,17 @@ def test_function_puts_length_on_the_select_encoder(state):
     assert engine.clock.bpm == 120, "tempo must not move too"
 
 
-def test_function_puts_division_on_the_volume_encoder(state):
+def test_function_puts_track_volume_on_the_volume_encoder(state):
+    """Function is track-scoped throughout; it acts on the selected track."""
     engine = sequencer_module.engine
-    before = engine.song.division
+    engine.select_track(3)
+    before = engine.song.volume_for(3)
     press(FUNCTION)
     run(state)
-    setup.volume_enc.position += 1
+    setup.volume_enc.position += 2
     run(state)
-    assert engine.song.division == before + 1
+    assert engine.song.volume_for(3) > before
+    assert engine.song.division == 3, "division must not move; it is in Settings now"
 
 
 def test_play_puts_quantise_on_the_volume_encoder(state):
@@ -313,7 +318,7 @@ def test_holding_a_pad_edits_that_steps_velocity(state):
     engine.song.set_step(engine.selected_track, 2, 100)
     press(2)
     run(state)
-    setup.select_enc.position += 2
+    setup.volume_enc.position += 2
     run(state)
     assert engine.song.velocity(engine.selected_track, 2) > 100
 
@@ -326,7 +331,7 @@ def test_editing_a_velocity_does_not_also_toggle_the_step_off(state):
     engine.song.set_step(engine.selected_track, 2, 100)
     press(2)
     run(state)
-    setup.select_enc.position += 2
+    setup.volume_enc.position += 2
     run(state)
     release(2)
     run(state)
@@ -461,7 +466,7 @@ def test_changing_the_pattern_length_reaches_the_display(state):
     engine.mode = SEQ
     state.controls.set_mode(SEQ)
     engine.song.set_length(16)
-    for action, value in state.controls.press(FUNCTION):
+    for action, value in state.controls.press(PLAY):
         state._act(action, value, None)
     state._render(force=True)
     before = [state._screen.line(i) for i in range(len(state._screen))]
@@ -633,10 +638,11 @@ def test_the_bare_knob_is_volume(state):
     assert state.controls.volume_turn_target() == "volume"
 
 
-def test_holding_function_still_gets_division(state):
+def test_holding_function_gets_the_tracks_volume(state):
+    """Function is track-scoped throughout; division moved to Settings."""
     for action, value in state.controls.press(FUNCTION):
         state._act(action, value, None)
-    assert state.controls.volume_turn_target() == "division"
+    assert state.controls.volume_turn_target() == "track_volume"
 
 
 def test_the_volume_is_on_the_display(state):
@@ -725,3 +731,129 @@ def module_redraw_every():
     import SamplerState as module
 
     return module.REDRAW_EVERY
+
+
+# --- the idle animation ----------------------------------------------------
+#
+# Left alone and not playing, the badge becomes an ornament. Any touch puts
+# it back exactly as it was, and the touch still does its normal job.
+
+
+def idle_out(state, machine=None):
+    """Advance past the idle threshold without touching anything."""
+    circuitpython_stubs.ticks.value += sampler_module.IDLE_MS + 100
+    run(state, machine, passes=2)
+
+
+def test_the_lights_take_over_after_a_while(state):
+    engine = sequencer_module.engine
+    engine.transport.stop()
+    idle_out(state)
+    assert state._idle is True
+
+
+def test_a_playing_pattern_is_never_idle(state):
+    """A pattern playing is the badge being used, touched or not."""
+    engine = sequencer_module.engine
+    engine.toggle_play()
+    idle_out(state)
+    assert state._idle is False
+
+
+def test_a_keypress_puts_it_back(state):
+    idle_out(state)
+    assert state._idle is True
+    press(2)
+    run(state)
+    assert state._idle is False
+
+
+def test_a_knob_puts_it_back(state):
+    idle_out(state)
+    assert state._idle is True
+    setup.select_enc.position += 1
+    run(state)
+    assert state._idle is False
+
+
+def test_the_waking_press_still_does_its_job(state):
+    """Waking is transparent: hit a pad and you get the sound."""
+    engine = sequencer_module.engine
+    engine.mode = LIVE
+    state.controls.set_mode(LIVE)
+    idle_out(state)
+    press(2)
+    run(state)
+    base = 2 * sequencer_module.VOICES_PER_TRACK
+    assert any(
+        engine.mixer.voice[base + i].playing
+        for i in range(sequencer_module.VOICES_PER_TRACK)
+    ), "the pad that woke it did not sound"
+
+
+def test_the_screen_keeps_the_samplers_text_while_idle(state):
+    """Chosen over blanking, knowing it is the OLED burn-in case."""
+    idle_out(state)
+    assert state._idle is True
+    lines = [state._screen.line(i) for i in range(len(state._screen))]
+    assert any("T1" in line or "LIVE" in line for line in lines), lines
+
+
+def test_the_idle_animation_follows_the_tempo(state):
+    """Beat-locked like everything else, even with the transport stopped."""
+    idle_out(state)
+    first = list(state._last_pixels)
+    circuitpython_stubs.ticks.value += 400
+    run(state, passes=2)
+    assert state._last_pixels != first, "the animation stood still"
+
+
+def test_a_badge_that_has_never_seen_flashy_still_has_an_animation(state):
+    from engine import animation
+
+    state._machine = None
+    assert state._idle_animation() is animation.by_name(animation.NAMES[0])
+
+
+def test_the_idle_animation_is_whatever_flashy_was_left_on(state):
+    from engine import animation
+    from FlashyState import FlashyState
+
+    machine = FakeMachine()
+    flashy = FlashyState()
+    flashy._animation = animation.by_name("Sweep")
+    machine.states["flashy"] = flashy
+    state._machine = machine
+    assert state._idle_animation() is animation.by_name("Sweep")
+
+
+# --- the legend ------------------------------------------------------------
+
+
+def test_holding_a_modifier_puts_its_gestures_on_the_screen(state):
+    press(PLAY)
+    run(state)
+    circuitpython_stubs.ticks.value += controls_module.HOLD_MS
+    run(state)
+    lines = [state._screen.line(i) for i in range(len(state._screen))]
+    assert any("page" in line for line in lines), lines
+    assert any("length" in line for line in lines), lines
+
+
+def test_a_tap_never_flashes_the_legend(state):
+    """The legend appears at the threshold, which is what makes it a hold."""
+    press(PLAY)
+    run(state)
+    lines = [state._screen.line(i) for i in range(len(state._screen))]
+    assert not any("quantize" in line for line in lines), lines
+
+
+def test_letting_go_puts_the_sampler_text_back(state):
+    press(FUNCTION)
+    run(state)
+    circuitpython_stubs.ticks.value += controls_module.HOLD_MS
+    run(state)
+    release(FUNCTION)
+    run(state)
+    lines = [state._screen.line(i) for i in range(len(state._screen))]
+    assert not any("Vol" in line for line in lines), lines

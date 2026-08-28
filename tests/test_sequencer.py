@@ -787,12 +787,26 @@ def test_the_default_kit_is_named_by_bare_filenames(seq):
 
 
 def test_the_demo_pattern_is_a_recognisable_beat(seq):
+    """Eight steps, so the whole of it is on one page of pads - the same
+    shape as a new song, which is what a fresh badge should demonstrate."""
+    from engine.song import DEFAULT_LENGTH
+
     seq.load_demo_pattern()
     song = seq.song
-    assert song.length == 16
-    assert [s for s in range(16) if song.is_on(0, s)] == [0, 4, 8, 12]
-    assert [s for s in range(16) if song.is_on(1, s)] == [4, 12]
-    assert [s for s in range(16) if song.is_on(2, s)] == [2, 6, 10, 14]
+    assert song.length == DEFAULT_LENGTH
+    assert [s for s in range(8) if song.is_on(0, s)] == [0, 4]
+    assert [s for s in range(8) if song.is_on(1, s)] == [4]
+    assert [s for s in range(8) if song.is_on(2, s)] == [2, 6]
+
+
+def test_a_new_song_is_one_page_long():
+    """Eight pads, eight steps: no paging to understand before writing a beat."""
+    from engine.song import DEFAULT_LENGTH, STEPS_PER_PAGE, Song
+
+    assert DEFAULT_LENGTH == STEPS_PER_PAGE
+    song = Song()
+    assert song.length == DEFAULT_LENGTH
+    assert all(song.track_length(t) == DEFAULT_LENGTH for t in range(8))
 
 
 def test_the_demo_pattern_replaces_whatever_was_there(seq):

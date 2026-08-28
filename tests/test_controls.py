@@ -8,6 +8,7 @@ rather than single events.
 import pytest
 
 from engine.controls import (
+    HOLD_MS,
     ARM_RECORD,
     SETTINGS,
     CLEAR_TRACK,
@@ -190,14 +191,14 @@ def test_select_encoder_defaults_to_bpm(controls):
     assert controls.select_turn_target() == "bpm"
 
 
-def test_function_puts_length_on_the_select_encoder(controls):
+def test_function_puts_the_tracks_pitch_on_the_select_encoder(controls):
     controls.press(FUNCTION)
-    assert controls.select_turn_target() == "length"
+    assert controls.select_turn_target() == "track_pitch"
 
 
-def test_function_puts_division_on_the_volume_encoder(controls):
+def test_function_puts_the_tracks_volume_on_the_volume_encoder(controls):
     controls.press(FUNCTION)
-    assert controls.volume_turn_target() == "division"
+    assert controls.volume_turn_target() == "track_volume"
 
 
 def test_play_puts_quantise_on_the_volume_encoder(controls):
@@ -205,9 +206,18 @@ def test_play_puts_quantise_on_the_volume_encoder(controls):
     assert controls.volume_turn_target() == "quantize"
 
 
-def test_holding_a_pad_puts_step_velocity_on_the_select_encoder(controls):
+def test_holding_a_pad_in_seq_puts_step_velocity_on_the_volume_encoder():
+    controls = Controls(mode=SEQ)
     controls.press(2)
-    assert controls.select_turn_target() == "step_velocity"
+    assert controls.volume_turn_target() == "step_velocity"
+
+
+def test_holding_a_pad_in_live_puts_that_tracks_volume_on_the_volume_encoder():
+    """A pad is a step in SEQ and a track in LIVE, so the same chord scopes
+    to whichever the pad currently means."""
+    controls = Controls(mode=LIVE)
+    controls.press(2)
+    assert controls.volume_turn_target() == "track_volume_held"
 
 
 def test_releasing_the_pad_returns_the_encoder_to_bpm(controls):
@@ -236,3 +246,128 @@ def test_modifiers_released_out_of_order_leave_no_state(controls):
     actions(controls, (FUNCTION, True), (PLAY, True), (FUNCTION, False), (PLAY, False))
     assert not controls.function_held
     assert not controls.play_held
+
+
+# --- tap versus hold -------------------------------------------------------
+#
+# The consumed flag handles chords. It cannot handle holding a modifier by
+# itself, which is now a real gesture - Function shows a track picker, Play
+# shows the pages - with nothing to consume it. Duration is the second test,
+# and HOLD_MS is the whole of its definition.
+
+
+def test_a_quick_tap_of_function_still_switches_mode():
+    controls = Controls()
+    controls.press(FUNCTION, now=1000)
+    assert controls.release(FUNCTION, now=1000 + HOLD_MS - 1) == [(TOGGLE_MODE, None)]
+
+
+def test_holding_function_and_letting_go_does_nothing():
+    """Releasing a hold used to toggle the mode, which mid-set is a surprise."""
+    controls = Controls()
+    controls.press(FUNCTION, now=1000)
+    assert controls.release(FUNCTION, now=1000 + HOLD_MS) == []
+
+
+def test_a_quick_tap_of_play_still_moves_the_transport():
+    controls = Controls()
+    controls.press(PLAY, now=1000)
+    assert controls.release(PLAY, now=1000 + HOLD_MS - 1) == [(TOGGLE_TRANSPORT, None)]
+
+
+def test_holding_play_and_letting_go_does_not_move_the_transport():
+    controls = Controls()
+    controls.press(PLAY, now=1000)
+    assert controls.release(PLAY, now=1000 + HOLD_MS + 500) == []
+
+
+def test_the_threshold_is_one_number():
+    """Raising or lowering HOLD_MS must move every gesture at once."""
+    import engine.controls as module
+
+    original = module.HOLD_MS
+    try:
+        module.HOLD_MS = 1000
+        controls = Controls()
+        controls.press(FUNCTION, now=0)
+        assert controls.release(FUNCTION, now=500) == [(TOGGLE_MODE, None)]
+        controls.press(PLAY, now=0)
+        assert controls.release(PLAY, now=500) == [(TOGGLE_TRANSPORT, None)]
+    finally:
+        module.HOLD_MS = original
+
+
+def test_without_a_clock_every_press_is_a_tap():
+    """The chord tests are pure logic and pass no time at all."""
+    controls = Controls()
+    controls.press(FUNCTION)
+    assert controls.release(FUNCTION) == [(TOGGLE_MODE, None)]
+
+
+def test_a_consumed_modifier_stays_silent_however_briefly_it_was_held():
+    controls = Controls()
+    controls.press(FUNCTION, now=1000)
+    controls.press(0, now=1010)
+    assert controls.release(FUNCTION, now=1020) == []
+
+
+def test_is_hold_says_no_before_the_threshold():
+    controls = Controls()
+    controls.press(FUNCTION, now=1000)
+    assert controls.is_hold(FUNCTION, 1000 + HOLD_MS - 1) is False
+    assert controls.is_hold(FUNCTION, 1000 + HOLD_MS) is True
+
+
+def test_a_key_that_is_not_down_is_not_held():
+    controls = Controls()
+    assert controls.held_long(FUNCTION, 99999) is False
+
+
+def test_held_long_is_what_the_legend_waits_for():
+    controls = Controls()
+    controls.press(PLAY, now=1000)
+    assert controls.held_long(PLAY, 1100) is False
+    assert controls.held_long(PLAY, 1000 + HOLD_MS) is True
+
+
+def test_releasing_forgets_when_the_key_went_down():
+    controls = Controls()
+    controls.press(FUNCTION, now=1000)
+    controls.release(FUNCTION, now=2000)
+    assert controls.is_hold(FUNCTION, 3000) is False
+
+
+# --- the legend ------------------------------------------------------------
+
+
+def test_each_modifier_names_its_own_gestures():
+    controls = Controls()
+    controls.press(FUNCTION)
+    assert controls.legend() == ("pad  track", "Sel  pitch", "Vol  volume")
+    controls.release(FUNCTION)
+    controls.press(PLAY)
+    assert controls.legend() == ("pad  page", "Sel  length", "Vol  quantize")
+
+
+def test_a_held_pad_names_what_it_scopes_to():
+    controls = Controls(mode=SEQ)
+    controls.press(0)
+    assert controls.legend()[0] == "Sel  step pitch"
+    controls.release(0)
+    live = Controls(mode=LIVE)
+    live.press(0)
+    assert live.legend()[0] == "Sel  pitch"
+
+
+def test_nothing_held_has_no_legend():
+    assert Controls().legend() is None
+
+
+def test_every_legend_line_fits_the_display():
+    """terminalio on a 128px panel is about 21 characters."""
+    for mode in (LIVE, SEQ):
+        for key in (FUNCTION, PLAY, 0):
+            controls = Controls(mode=mode)
+            controls.press(key)
+            for line in controls.legend():
+                assert len(line) <= 21, line

@@ -36,7 +36,7 @@ from engine.clock import ticks_diff
 from engine.editor import Editor
 from engine.menu import Menu
 from engine.naming import NameEntry
-from engine.song import MAX_STEPS, MIN_LENGTH, TRACK_COUNT
+from engine.song import DIVISIONS, MAX_STEPS, MIN_LENGTH, TRACK_COUNT
 from sequencer import engine as sequencer
 from setup import display, keys, neopixels, select_enc, volume_enc
 from State import State
@@ -356,6 +356,9 @@ class SettingsState(State):
         if command == settings.TOOL_BRIGHTNESS:
             self._edit_brightness()
             return False
+        if command == settings.TRACK_DIVISION:
+            self._edit_division()
+            return False
         if command == settings.LENGTH_GLOBAL:
             self._edit_length(None)
             return False
@@ -383,6 +386,19 @@ class SettingsState(State):
             self._show("cancelled")
             return
         self._run_command(command, value, name)
+
+    def _edit_division(self):
+        """How long a step is. Set once when a pattern is started, which is
+        why it lives here rather than on a modifier a thumb has to hold."""
+        song = sequencer.song
+        self._editor = Editor(
+            "Div",
+            song.division,
+            0,
+            len(DIVISIONS) - 1,
+            apply=song.set_division,
+            formatter=lambda index: DIVISIONS[index][0],
+        )
 
     def _edit_length(self, track):
         song = sequencer.song
@@ -523,8 +539,11 @@ class SettingsState(State):
 
     def _save_kit(self, name):
         song = sequencer.song
+        # Whatever is currently sounding becomes this kit's baseline, so
+        # balancing a kit by ear and saving it is the whole workflow.
+        volumes = song.capture_kit_volumes()
         try:
-            self._quietly(lambda: kitfile.save(song.kit, name))
+            self._quietly(lambda: kitfile.save(song.kit, name, volumes))
         except StoreError as error:
             self._fail(error)
             return
@@ -572,8 +591,10 @@ class SettingsState(State):
             self._fail(error)
             return
         song = sequencer.song
+        volumes = self._quietly(lambda: kitfile.load_volumes(name))
         for track in range(TRACK_COUNT):
             song.set_sample(track, paths[track])
+            song.set_kit_volume(track, volumes[track])
         song.kit_name = name
         loaded = sequencer.load_kit(paths)
         self.menu.back()

@@ -41,7 +41,9 @@ class FakeMachine:
         self.last_state = None
         self.transitions = []
         self.state = None
-        self._built = {}
+        # Named as the real machine names it, because states reach for
+        # machine.states to ask about their neighbours.
+        self.states = {}
 
     def go_to_state(self, name):
         self.transitions.append(name)
@@ -49,9 +51,9 @@ class FakeMachine:
     def state_for(self, name):
         import statemachine
 
-        state = self._built.get(name)
+        state = self.states.get(name)
         if state is None:
             module_name, class_name = statemachine.STATES[name]
             state = getattr(__import__(module_name), class_name)()
-            self._built[name] = state
+            self.states[name] = state
         return state

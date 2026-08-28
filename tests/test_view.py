@@ -21,6 +21,7 @@ from engine.view import (
     PLAYING,
     RECORDING,
     SEQ,
+    PRESENT,
     STEP_ON,
     STOPPED,
     TRACK_PICK,
@@ -36,6 +37,7 @@ from engine.view import (
     scale,
     seq_pads,
     status_line,
+    page_pads,
     step_row,
     track_pads,
 )
@@ -200,13 +202,70 @@ def test_pads_dispatches_on_mode(song):
 def test_holding_function_overrides_the_sequencer_view(song):
     row = pads(song, SEQ, LOADED_ALL, track=5, page=0, playhead=0, function_held=True)
     assert row[5] == TRACK_PICK
-    assert row[0] == OFF, "the playhead was still lit under the picker"
+    assert row[0] == PRESENT, "the playhead was still showing under the picker"
 
 
 def test_holding_function_overrides_the_live_view(song):
     row = pads(song, LIVE, LOADED_ALL, track=5, function_held=True)
     assert row[5] == TRACK_PICK
-    assert row[0] == OFF
+    assert row[0] == PRESENT
+
+
+def test_a_track_with_no_sample_is_dark_in_the_picker(song):
+    loaded = [False] * TRACK_COUNT
+    loaded[3] = True
+    row = track_pads(0, loaded)
+    assert row[3] == PRESENT
+    assert row[5] == OFF
+
+
+def test_the_picker_still_works_without_a_loaded_list(song):
+    """Callers that have not built one get the cursor and nothing else."""
+    row = track_pads(2)
+    assert row[2] == TRACK_PICK
+    assert row.count(OFF) == TRACK_COUNT - 1
+
+
+# --- the page picker ------------------------------------------------------
+
+
+def test_holding_play_shows_which_page(song):
+    song.set_length(24)  # three pages
+    row = page_pads(song, 0, 1)
+    assert row[1] == TRACK_PICK
+    assert row[0] == PRESENT
+    assert row[2] == PRESENT
+    assert row[3] == OFF, "a page past the end of the pattern was lit"
+
+
+def test_a_one_page_pattern_lights_only_the_page_you_are_on(song):
+    song.set_length(8)
+    row = page_pads(song, 0, 0)
+    assert row[0] == TRACK_PICK
+    assert row.count(OFF) == STEPS_PER_PAGE - 1
+
+
+def test_the_dim_run_grows_with_the_pattern(song):
+    song.set_length(8)
+    before = page_pads(song, 0, 0).count(PRESENT)
+    song.set_length(32)
+    after = page_pads(song, 0, 0).count(PRESENT)
+    assert after > before
+
+
+def test_holding_play_overrides_the_sequencer_view(song):
+    song.set_length(16)
+    row = pads(song, SEQ, LOADED_ALL, track=0, page=0, playhead=3, play_held=True)
+    assert row[0] == TRACK_PICK
+    assert row[3] != PLAYHEAD, "the playhead showed through the page picker"
+
+
+def test_function_wins_if_both_modifiers_are_down(song):
+    """Matches the chord order in controls, where Function is tested first."""
+    row = pads(
+        song, SEQ, LOADED_ALL, track=5, page=0, function_held=True, play_held=True
+    )
+    assert row[5] == TRACK_PICK
 
 
 # --- indicators -----------------------------------------------------------

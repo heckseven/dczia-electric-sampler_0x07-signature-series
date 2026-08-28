@@ -14,7 +14,31 @@ callback, so this module never has to know what saving a song means, and
 the tests never have to mock it.
 """
 
+from engine.clock import ticks_diff
+
 VISIBLE_ROWS = 3
+
+# Sliding a name that does not fit.
+#
+# A row has 19 columns for a label, and a sample library does not care: the
+# Kosmo set alone has "cymbals_crucible-center_1.wav" and
+# "cymbals_crucible-center_2.wav", which truncate to the same 19 characters
+# and leave the browser showing two rows that read identically. Rather than
+# shorten the names on the card - they are the player's files, and the badge
+# is not the only thing that reads them - the selected row slides sideways so
+# the rest can be read.
+#
+# Only after a pause, though. A list that starts moving the instant the cursor
+# lands on a row is harder to scan than one that truncates, because every turn
+# of the knob sets something going. Waiting for the player to stop means the
+# motion only ever appears where they are actually looking.
+#
+# The cycle is: hold at the start, slide a character at a time, hold at the
+# end, then jump back and repeat - so a name that is read too slowly comes
+# round again from the beginning rather than resuming mid-word.
+SCROLL_DWELL_MS = 800
+SCROLL_STEP_MS = 200
+SCROLL_TAIL_MS = 1000
 
 # What a row is marked with. Three things a player needs to see without
 # reading: which row the knob is on, which rows lead somewhere rather than
@@ -102,6 +126,14 @@ class Menu:
         # the row you came from rather than to the top of the list.
         self._path = [root]
         self._cursor = [0]
+        # What the slide is measured from, and what it was measured for.
+        # Compared rather than reset by each of move/enter/back/refresh, so a
+        # list that rebuilds underneath the cursor restarts the slide too -
+        # which is why the anchor carries the label and not just the position.
+        # A rebuilt listing can put a different name on the same row without
+        # changing the cursor, the offset, or the length of the list.
+        self._scroll_anchor = None
+        self._scroll_since = None
 
     # --- where we are -----------------------------------------------------
 
@@ -263,7 +295,66 @@ class Menu:
             for index, item in enumerate(window)
         ]
 
-    def row(self, index, width=21):
+    def scroll_shift(self, now, width=21):
+        """How far the selected label has slid, in characters.
+
+        `now` is a millisecond count from whoever has a clock; None means the
+        caller has none, which reads as "do not move" and keeps this module
+        free of CircuitPython. Returns 0 whenever the label fits, so a caller
+        can ask on every pass without checking first.
+
+        Asking has an effect: when the selected row is not the one the slide
+        was last measured for, this restarts the wait rather than reporting a
+        position for a name that is no longer there. There is no hook to reset
+        from - move, enter, back and refresh all change the selection and none
+        of them know a slide exists - so the first ask about a new row is what
+        starts its clock.
+        """
+        if now is None:
+            return 0
+        item = self.selected
+        if item is None:
+            return 0
+        extra = len(item.label) - (width - 2)
+        if extra <= 0:
+            return 0
+
+        anchor = (self.cursor, self.offset, item.label)
+        if anchor != self._scroll_anchor or self._scroll_since is None:
+            self._scroll_anchor = anchor
+            self._scroll_since = now
+            return 0
+
+        travel = extra * SCROLL_STEP_MS
+        cycle = SCROLL_DWELL_MS + travel + SCROLL_TAIL_MS
+        # Modulo rather than a running counter: the cycle repeats forever and
+        # nothing has to be advanced on a schedule, so a screen that is not
+        # being drawn costs nothing and rejoins wherever it should be. It is
+        # also what makes a backwards clock harmless - Python's % takes the
+        # sign of the divisor, so a negative difference still lands inside the
+        # cycle rather than slicing a label from a negative index.
+        phase = ticks_diff(now, self._scroll_since) % cycle
+        if phase < SCROLL_DWELL_MS:
+            return 0
+        phase -= SCROLL_DWELL_MS
+        if phase >= travel:
+            return extra
+        return phase // SCROLL_STEP_MS
+
+    def reset_scroll(self):
+        """Forget where the slide had got to.
+
+        The states are built once and kept, so this Menu outlives any one
+        visit to the screen. Without this, leaving mid-slide and coming back
+        to the same row - same cursor, same label - matches the anchor and
+        carries on from a phase measured minutes ago, so the name arrives
+        already halfway through sliding. The wait is the feature; a screen
+        has to open showing the start of the name.
+        """
+        self._scroll_anchor = None
+        self._scroll_since = None
+
+    def row(self, index, width=21, now=None):
         """One finished row, markers and all.
 
         A row at a time rather than a screenful, because the screen draws a
@@ -298,9 +389,10 @@ class Menu:
         room = width - 2
         label = item.label
         if len(label) > room:
-            label = label[:room]
+            shift = self.scroll_shift(now, width) if position == self.cursor else 0
+            label = label[shift : shift + room]
         return cursor + label + " " * (room - len(label)) + edge
 
-    def rendered(self, width=21):
+    def rendered(self, width=21, now=None):
         """Every visible row. For tests and for a screen being entered."""
-        return [self.row(index, width) for index in range(self.rows)]
+        return [self.row(index, width, now) for index in range(self.rows)]

@@ -11,7 +11,14 @@ import pytest
 
 import circuitpython_stubs  # noqa: F401  (installs the stubs)
 from engine import settings
-from engine.menu import EMPTY, Item, Menu
+from engine.menu import (
+    EMPTY,
+    SCROLL_DWELL_MS,
+    SCROLL_STEP_MS,
+    SCROLL_TAIL_MS,
+    Item,
+    Menu,
+)
 from engine.song import TRACK_COUNT
 
 
@@ -387,6 +394,129 @@ def test_a_long_label_is_trimmed_rather_than_wrapped():
     long_menu = Menu(Item("Root", children=[Item("A" * 60, command="x")]))
     rows = long_menu.rendered(width=21)
     assert len(rows[0]) == 21
+
+
+# --- sliding a name that does not fit -------------------------------------
+#
+# A row has 19 columns for a label and sample filenames routinely exceed that,
+# so two different files can draw as the same row. The selected one slides,
+# but only once the player has stopped moving - see engine/menu.py.
+
+NAME = "cymbals_crucible-center_1.wav"  # 29 characters, from the shipped kit
+ROOM = 19  # what a 21-column row leaves for a label
+EXTRA = len(NAME) - ROOM
+
+
+def scrolling_menu(labels=(NAME,)):
+    return Menu(Item("Root", children=[Item(name, command="x") for name in labels]))
+
+
+def test_a_label_that_fits_never_moves():
+    """Most rows are short, and a menu that twitches is worse than one that does not."""
+    menu = scrolling_menu(("Save",))
+    for elapsed in (0, SCROLL_DWELL_MS, SCROLL_DWELL_MS * 10):
+        assert menu.scroll_shift(elapsed, 21) == 0
+
+
+def test_a_long_label_holds_still_until_the_player_pauses():
+    """The dwell is the whole point: motion appears only where someone is looking."""
+    menu = scrolling_menu()
+    menu.scroll_shift(0, 21)  # first ask starts the clock
+    assert menu.scroll_shift(SCROLL_DWELL_MS - 1, 21) == 0
+
+
+def test_a_long_label_slides_a_character_at_a_time():
+    menu = scrolling_menu()
+    menu.scroll_shift(0, 21)
+    assert menu.scroll_shift(SCROLL_DWELL_MS, 21) == 0
+    assert menu.scroll_shift(SCROLL_DWELL_MS + SCROLL_STEP_MS, 21) == 1
+    assert menu.scroll_shift(SCROLL_DWELL_MS + SCROLL_STEP_MS * 4, 21) == 4
+
+
+def test_the_slide_stops_at_the_end_of_the_name():
+    """Sliding past the end would scroll the label off the row entirely."""
+    menu = scrolling_menu()
+    menu.scroll_shift(0, 21)
+    at_end = SCROLL_DWELL_MS + SCROLL_STEP_MS * EXTRA
+    assert menu.scroll_shift(at_end, 21) == EXTRA
+    assert menu.scroll_shift(at_end + SCROLL_TAIL_MS - 1, 21) == EXTRA
+
+
+def test_the_slide_returns_to_the_start_and_repeats():
+    """A name read too slowly comes round again from the beginning."""
+    menu = scrolling_menu()
+    menu.scroll_shift(0, 21)
+    cycle = SCROLL_DWELL_MS + SCROLL_STEP_MS * EXTRA + SCROLL_TAIL_MS
+    assert menu.scroll_shift(cycle, 21) == 0
+    assert menu.scroll_shift(cycle + SCROLL_DWELL_MS + SCROLL_STEP_MS, 21) == 1
+
+
+def test_moving_the_cursor_starts_the_wait_again():
+    """Otherwise a row would arrive mid-slide, showing the middle of a name."""
+    menu = scrolling_menu((NAME, NAME.replace("center", "edge")))
+    menu.scroll_shift(0, 21)
+    assert menu.scroll_shift(SCROLL_DWELL_MS + SCROLL_STEP_MS * 3, 21) == 3
+    menu.move(1)
+    now = SCROLL_DWELL_MS + SCROLL_STEP_MS * 3
+    assert menu.scroll_shift(now, 21) == 0
+    assert menu.scroll_shift(now + SCROLL_DWELL_MS - 1, 21) == 0
+    assert menu.scroll_shift(now + SCROLL_DWELL_MS + SCROLL_STEP_MS, 21) == 1
+
+
+def test_a_rebuilt_list_starts_the_wait_again():
+    """A listing can put a different name on the same row without moving.
+
+    Songs and samples are read from the card, so a branch can be rebuilt with
+    the same number of rows and different names in them. Measuring the slide
+    from the position alone would carry the old phase onto the new name and
+    open it halfway through.
+    """
+    root = Item("Root", children=[Item(NAME, command="x")])
+    menu = Menu(root)
+    menu.scroll_shift(0, 21)
+    moved = SCROLL_DWELL_MS + SCROLL_STEP_MS * 3
+    assert menu.scroll_shift(moved, 21) == 3
+
+    root.children = [Item(NAME.replace("center", "edge"), command="x")]
+    assert menu.scroll_shift(moved, 21) == 0
+
+
+def test_forgetting_the_slide_starts_it_over():
+    """What a screen being reopened needs; the menu itself is never rebuilt."""
+    menu = scrolling_menu()
+    menu.scroll_shift(0, 21)
+    moved = SCROLL_DWELL_MS + SCROLL_STEP_MS * 3
+    assert menu.scroll_shift(moved, 21) == 3
+
+    menu.reset_scroll()
+    assert menu.scroll_shift(moved, 21) == 0
+    assert menu.scroll_shift(moved + SCROLL_DWELL_MS + SCROLL_STEP_MS, 21) == 1
+
+
+def test_without_a_clock_a_long_label_is_simply_trimmed():
+    """engine/ has no clock of its own; a caller with none gets the old behaviour."""
+    menu = scrolling_menu()
+    assert menu.scroll_shift(None, 21) == 0
+    assert menu.row(0, 21, None) == menu.row(0, 21)
+
+
+def test_a_sliding_row_still_fills_the_width_and_keeps_its_markers():
+    """The row is built by concatenation, so a short slice would shorten the row."""
+    menu = scrolling_menu()
+    menu.row(0, 21, 0)
+    row = menu.row(0, 21, SCROLL_DWELL_MS + SCROLL_STEP_MS * 4)
+    assert len(row) == 21
+    assert row.startswith(">")
+    assert row[1:-1].strip() == NAME[4 : 4 + ROOM]
+
+
+def test_only_the_selected_row_slides():
+    """Two long names moving at once is noise; the cursor says which one matters."""
+    menu = scrolling_menu((NAME, NAME))
+    menu.row(0, 21, 0)
+    later = SCROLL_DWELL_MS + SCROLL_STEP_MS * 4
+    assert menu.row(0, 21, later)[1:-1].strip() == NAME[4 : 4 + ROOM]
+    assert menu.row(1, 21, later)[1:-1].strip() == NAME[:ROOM]
 
 
 def test_empty_rows_are_blank_not_missing(small):

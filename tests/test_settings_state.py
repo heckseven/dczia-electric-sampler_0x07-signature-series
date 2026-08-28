@@ -25,8 +25,15 @@ import sequencer as sequencer_module
 import setup
 import songfile
 import SettingsState as settings_module
+from engine.menu import SCROLL_DWELL_MS, SCROLL_STEP_MS, SCROLL_TAIL_MS, Item, Menu
 from engine.song import MAX_STEPS, TRACK_COUNT
-from SettingsState import FUNCTION_KEY, PLAY_KEY, SELECT_KEY, SettingsState
+from SettingsState import (
+    FUNCTION_KEY,
+    MENU_ROWS,
+    PLAY_KEY,
+    SELECT_KEY,
+    SettingsState,
+)
 
 A = PLAY_KEY  # enter / yes / keep
 B = FUNCTION_KEY  # back / no / cancel
@@ -622,6 +629,87 @@ def test_a_line_is_built_only_when_it_is_stale(state):
     state._line = lambda index: (built.append(index), real(index))[1]
     turn(state, 1, FakeMachine())
     assert len(built) <= len(state._screen), "rebuilt the screen more than once"
+
+
+# A name too long for the row slides, but only after the player stops moving.
+# The menu decides how far; these check the wiring, which is where the bugs
+# are: whether the right screen line is marked, and whether the pacing that
+# protects the audio buffer still holds while something is animating.
+
+LONG_NAME = "cymbals_crucible-center_1.wav"  # 29 characters, from the shipped kit
+
+
+def show_long_name(state):
+    state.menu = Menu(
+        Item("Root", children=[Item(LONG_NAME, command="x")]), rows=MENU_ROWS
+    )
+    state._stale = (1 << len(state._screen)) - 1
+    run(state, passes=6)
+    return state
+
+
+def test_a_long_name_slides_after_the_player_stops(state):
+    show_long_name(state)
+    assert state._screen.line(1)[1:-1].strip() == LONG_NAME[:19]
+
+    circuitpython_stubs.ticks.value += SCROLL_DWELL_MS + SCROLL_STEP_MS
+    run(state, passes=6)
+    assert state._screen.line(1)[1:-1].strip() == LONG_NAME[1:20]
+
+
+def test_a_long_name_does_not_move_before_the_dwell(state):
+    """Every turn of the knob would otherwise set a row going."""
+    show_long_name(state)
+    circuitpython_stubs.ticks.value += SCROLL_DWELL_MS // 2
+    run(state, passes=6)
+    assert state._screen.line(1)[1:-1].strip() == LONG_NAME[:19]
+
+
+def test_reopening_the_screen_shows_the_start_of_a_long_name(state):
+    """The states are built once and kept, so the menu outlives the visit.
+
+    Leaving the screen mid-slide and coming back to the same row would
+    otherwise match the anchor and carry on from a phase measured whenever the
+    player last looked - opening on the middle of a name.
+    """
+    show_long_name(state)
+    circuitpython_stubs.ticks.value += SCROLL_DWELL_MS + SCROLL_STEP_MS * 5
+    run(state, passes=6)
+    assert state._screen.line(1)[1:-1].strip() == LONG_NAME[5:24]
+
+    # Away for whole cycles, and then far enough into the next one that a
+    # slide still running would be well inside the name. Landing back in the
+    # dwell by chance would let this pass without proving anything.
+    cycle = SCROLL_DWELL_MS + SCROLL_STEP_MS * (len(LONG_NAME) - 19) + SCROLL_TAIL_MS
+    circuitpython_stubs.ticks.value += cycle * 3 + SCROLL_STEP_MS * 3
+    state.enter(FakeMachine())
+    assert state._screen.line(1)[1:-1].strip() == LONG_NAME[:19]
+
+
+def test_a_hidden_row_is_not_marked_for_redrawing(state):
+    """A message covers the menu; the row behind it must not ask to be rebuilt."""
+    show_long_name(state)
+    state._show("saved")
+    state._stale = 0
+    circuitpython_stubs.ticks.value += SCROLL_DWELL_MS + SCROLL_STEP_MS * 4
+    state._mark_scrolled()
+    assert state._stale == 0
+
+
+def test_sliding_still_builds_one_line_per_pass(state):
+    """The pacing that protects the audio buffer is not suspended for this."""
+    show_long_name(state)
+    circuitpython_stubs.ticks.value += SCROLL_DWELL_MS
+    built = []
+    real = state._line
+    state._line = lambda index: (built.append(index), real(index))[1]
+    machine = FakeMachine()
+    for _ in range(40):
+        circuitpython_stubs.ticks.value += SCROLL_STEP_MS
+        before = len(built)
+        state.update(machine)
+        assert len(built) - before <= 1, "built more than one line in a pass"
+    assert built, "nothing was rebuilt while the name was sliding"
 
 
 def test_a_settled_screen_builds_nothing_at_all(state):

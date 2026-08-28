@@ -143,6 +143,13 @@ class SettingsState(State):
         # them can be pushed to the panel in that pass anyway.
         self._stale = 0b111
         self._next_line = 0
+        # How far the selected label has slid, so the row is only rebuilt on
+        # the passes where the text it would draw actually differs, and the
+        # clock that was read for this pass. One reading, shared: marking the
+        # row and building it must agree about the time, or the shift recorded
+        # is not the shift drawn.
+        self._scroll_shift = 0
+        self._now = None
         self._last_select = 0
         self._last_volume = 0
         self._last_turn = None
@@ -174,6 +181,12 @@ class SettingsState(State):
         self._last_turn = None
         self._stale = 0b111
         self._next_line = 0
+        self._scroll_shift = 0
+        self._now = ticks_ms()
+        # This state is built once and kept, so the menu still remembers a
+        # slide from the last time the screen was open. Opening it again has
+        # to show the start of a name, not the middle of one.
+        self.menu.reset_scroll()
         self._screen.attach()
         # All three at once: a screen appearing a line at a time looks
         # broken, and entering a state is the one moment the stall is free.
@@ -183,11 +196,13 @@ class SettingsState(State):
         State.enter(self, machine)
 
     def update(self, machine):
+        self._now = ticks_ms()
         self._read_encoders()
         if self._read_keys(machine):
             # The state changed. The next state owns the display now.
             return
         self._expire_message()
+        self._mark_scrolled()
         self._build_one_line()
         # Paced, one line per pass. This is what keeps a spun knob from
         # tearing the audio; see screen.py.
@@ -737,7 +752,47 @@ class SettingsState(State):
             return self._message[:WIDTH] if index == 1 else ""
         if index == 0:
             return self._heading()
-        return self.menu.row(index - 1, WIDTH)
+        return self.menu.row(index - 1, WIDTH, self._now)
+
+    @property
+    def _overlay(self):
+        """Whether anything is covering the menu.
+
+        One definition, because more than one place asks. _line dispatches on
+        which overlay is up, since it has to draw that one; this only needs to
+        know that the menu is not on screen, and a row nobody can see must not
+        be marked for redrawing.
+        """
+        return (
+            self._entry is not None
+            or self._editor is not None
+            or self._confirm is not None
+            or self._message is not None
+        )
+
+    def _mark_scrolled(self):
+        """Dirty the selected row when its label has slid another character.
+
+        Only the row under the cursor ever moves, and only while its name is
+        too long for the width, so this asks the menu for the shift and marks
+        one line - about five times a second while something is sliding, and
+        never at all otherwise. Cheaper than dirtying the row every pass and
+        letting the screen work out that the text is unchanged, because
+        building a row is the expensive half.
+
+        Uses the pass's own clock reading rather than taking its own, so the
+        shift recorded here is exactly the one _line will draw.
+        """
+        if self._overlay:
+            return
+        shift = self.menu.scroll_shift(self._now, WIDTH)
+        if shift == self._scroll_shift:
+            return
+        self._scroll_shift = shift
+        # Line 0 is the heading, so the menu's first row is line 1.
+        line = self.menu.cursor - self.menu.offset + 1
+        if 0 < line < len(self._screen):
+            self._stale |= 1 << line
 
     def _lines(self):
         """Every line at once. For entering the screen, and for tests."""

@@ -25,6 +25,7 @@ virtualenv.
 """
 
 import argparse
+import math
 import os
 import struct
 import sys
@@ -66,19 +67,100 @@ def to_mono(values, channels):
     return mono
 
 
+# How far the resampling filter reaches, either side of the output sample being
+# computed - in output samples when decimating, and in source samples when
+# interpolating, where the kernel has to stay wide rather than narrow with the
+# ratio.
+#
+# Wider is a steeper cut and proportionally more arithmetic. Measured at 16 for
+# 44100 -> 16000, by converting tones from above the new 8 kHz Nyquist and
+# reading back the frequency each one folds to:
+#
+#     9 kHz  -> 7 kHz     -43.6 dB
+#    10 kHz  -> 6 kHz     -80.4 dB
+#    12 kHz  -> 4 kHz     -90.3 dB   (ffmpeg's swresample: -91.5 dB)
+#    15 kHz  -> 1 kHz     -97.6 dB
+#    20 kHz  -> 4 kHz    -109.4 dB
+#
+# So the cut is not a brick wall: the first kilohertz above Nyquist survives
+# about 44 dB down and everything past it is gone. That is the ordinary
+# tradeoff for a filter this length, and 44 dB of a band the speaker barely
+# reproduces is not worth doubling the arithmetic for.
+#
+# Cost is roughly half of real time - a 2.06 s cymbal took 0.96 s - so the
+# 98-sample set here, 150 seconds of audio, is a bit over a minute.
+FILTER_HALF_WIDTH = 16
+
+
+def _sinc(x):
+    if x == 0.0:
+        return 1.0
+    x *= math.pi
+    return math.sin(x) / x
+
+
+def _blackman(offset, reach):
+    """Blackman window over [-reach, reach], zero outside.
+
+    The caller's tap range already keeps offset inside the window, so this
+    bound is float safety rather than logic: reach is not a whole number when
+    decimating, and a tap can round onto the edge exactly.
+    """
+    if abs(offset) >= reach:
+        return 0.0
+    angle = math.pi * offset / reach
+    return 0.42 + 0.5 * math.cos(angle) + 0.08 * math.cos(2.0 * angle)
+
+
 def resample(values, source_rate, target_rate):
-    """Linearly interpolate to the target rate."""
+    """Band-limited resample to the target rate.
+
+    Interpolating between neighbouring samples is not enough when the rate goes
+    down. 44100 -> 16000 throws away nearly two thirds of the samples, and
+    everything above the new 8 kHz Nyquist does not disappear: it folds back
+    into the audible band. Measured on a 12 kHz tone, plain linear
+    interpolation returned it as a 4 kHz tone only 6.5 dB below the original,
+    so cymbals and open hats - which are mostly content above 8 kHz - came out
+    as a wash of frequencies that were never in the source.
+
+    The kernel is a windowed sinc, cut at whichever of the two Nyquists is
+    lower, so it low-passes on the way down and interpolates on the way up.
+    Evaluating it only where an output sample lands makes the filtering and the
+    rate change one pass, and costs time proportional to the output length
+    rather than the input's.
+    """
     if source_rate == target_rate or not values:
         return values
     ratio = source_rate / target_rate
     count = int(len(values) / ratio)
+    if count <= 0:
+        return []
+
+    # Both expressed in source samples: the cutoff as a fraction of the source
+    # rate, the reach widened when decimating because one output sample then
+    # has to gather that many more input ones.
+    cutoff = 0.5 / ratio if ratio > 1.0 else 0.5
+    reach = FILTER_HALF_WIDTH * max(1.0, ratio)
+    last = len(values) - 1
+
     out = []
     for index in range(count):
-        position = index * ratio
-        left = int(position)
-        right = min(left + 1, len(values) - 1)
-        weight = position - left
-        out.append(int(values[left] * (1.0 - weight) + values[right] * weight))
+        centre = index * ratio
+        first = max(0, int(math.ceil(centre - reach)))
+        stop = min(last, int(math.floor(centre + reach)))
+        total = 0.0
+        weights = 0.0
+        for tap in range(first, stop + 1):
+            offset = tap - centre
+            weight = _blackman(offset, reach) * _sinc(2.0 * cutoff * offset)
+            total += values[tap] * weight
+            weights += weight
+        # Normalising by the weights actually used keeps the level right at the
+        # very start and end, where the kernel runs off the end of the sample.
+        # The sum cannot reach zero in practice - the tap nearest the centre is
+        # always within half a sample of it, where the kernel is at its peak -
+        # but a rate pair nobody has tried should not divide by zero.
+        out.append(int(round(total / weights)) if weights else 0)
     return out
 
 

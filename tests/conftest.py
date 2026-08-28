@@ -20,7 +20,14 @@ PRODUCTION_DIR = os.environ.get(
     "DCZIA_PRODUCTION_DIR", os.path.join(REPO_ROOT, "Software", "Production")
 )
 
+# Host-side utilities. Not firmware, but tested alongside it, and imported
+# flatly for the same reason Software/Production is.
+TOOLS_DIR = os.path.join(REPO_ROOT, "Tools")
+
 circuitpython_stubs.install()
+
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
 
 # The firmware imports its own modules flatly (`from setup import display`), so
 # Software/Production has to be on the path as if it were the filesystem root.

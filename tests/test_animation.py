@@ -21,6 +21,7 @@ from engine.animation import (
     INDICATORS,
     PATH,
     PLAY_PIXEL,
+    SCANNER_RED,
     LOWER,
     NAMES,
     OFF,
@@ -528,10 +529,34 @@ def test_the_toaster_crosses_the_panel_and_comes_back():
     assert brightest_column(TICKS_PER_BAR // 2) == 0
 
 
-def test_the_toaster_has_a_smear_rather_than_a_hard_edge():
-    """A single lit column reads as a fault; the eye needs a falloff."""
-    lit = [color for color in toaster(TICKS_PER_BAR // 16) if color != OFF]
-    assert len(lit) > len(COLUMNS[0]), lit
+def test_the_toaster_is_one_column_wide():
+    """Four columns is too few to draw a soft edge on. The first version fell
+    off over more than a column each side and lit three of the four."""
+    for tick in range(TICKS_PER_BAR):
+        colors = toaster(tick)
+        full = [
+            index
+            for index, column in enumerate(COLUMNS)
+            if all(colors[pixel] == SCANNER_RED for pixel in column)
+        ]
+        assert len(full) <= 1, (tick, full)
+
+
+def test_the_toaster_leaves_a_trail_behind_it():
+    """Which is what says which way it is going."""
+    lit = 0
+    for tick in range(TICKS_PER_BAR):
+        lit = max(lit, len([c for c in toaster(tick) if c != OFF]))
+    assert lit > len(COLUMNS[0]), "no trail at all"
+
+
+def test_the_trail_is_dimmer_than_the_eye():
+    for tick in range(TICKS_PER_BAR):
+        levels = sorted({sum(c) for c in toaster(tick) if c != OFF})
+        if len(levels) > 1:
+            assert levels[0] < levels[-1] / 2, levels
+            return
+    raise AssertionError("the eye never had a trail")
 
 
 def test_the_toaster_crosses_the_buttons_too():

@@ -94,6 +94,10 @@ OFF = (0, 0, 0)
 
 # Colours the named animations are about, rather than derived from a hue.
 SCANNER_RED = (255, 0, 0)
+
+# How brightly the column the eye has just left still glows. Enough to say
+# which way it is going, far enough down not to widen the eye.
+SCANNER_TRAIL = 0.22
 FULL_RED = (255, 0, 0)
 MAGENTA = (255, 0, 255)
 
@@ -291,26 +295,34 @@ def heartbeat(tick, brightness=1.0):
 def toaster(tick, brightness=1.0):
     """A red eye sweeping the panel and back. A Cylon, essentially.
 
-    Travels in real space across the columns rather than along the strip's
-    wiring, so it reads as one eye crossing the face - and because the
-    columns include the buttons, it crosses the whole face rather than only
-    the grid. Two round trips a bar, which at any usable tempo is about the
-    speed the thing on the television moved at.
+    One column is the eye and the column it has just left carries a dim
+    trail, which is the whole of it. The first version fell off smoothly
+    over more than a column each side, and on a panel four columns wide that
+    lit three of them at once - which is not an eye, it is a red panel. Four
+    positions is too few to draw a soft edge on: the narrowest thing that
+    still reads as moving is one column lit and one fading.
+
+    Travels the columns rather than the strip's wiring, so it crosses the
+    face in real space, buttons included. Two round trips a bar, which at any
+    usable tempo is about the speed the thing on the television moved at.
     """
     phase = (bar_phase(tick) * 4.0) % 2.0
-    if phase > 1.0:
+    forward = phase <= 1.0
+    if not forward:
         phase = 2.0 - phase
     position = phase * (len(COLUMNS) - 1)
+    eye = int(position + 0.5)
+    behind = eye - 1 if forward else eye + 1
     colors = _blank()
     for index, column in enumerate(COLUMNS):
-        # Falls off over more than one column, which is what gives the eye
-        # its smear. A hard edge looks like a fault rather than a scanner.
-        distance = abs(index - position) / 1.6
-        if distance >= 1.0:
+        if index == eye:
+            level = 1.0
+        elif index == behind:
+            level = SCANNER_TRAIL
+        else:
             continue
-        level = (1.0 - distance) ** 2 * brightness
         for pixel in column:
-            colors[pixel] = dim(SCANNER_RED, level)
+            colors[pixel] = dim(SCANNER_RED, level * brightness)
     return colors
 
 

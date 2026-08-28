@@ -371,3 +371,121 @@ def test_every_legend_line_fits_the_display():
             controls.press(key)
             for line in controls.legend():
                 assert len(line) <= 21, line
+
+
+# --- is anything being held, asked on every pass ---------------------------
+#
+# The main loop asks this twice a pass to decide whether the legend is on
+# screen, so what it allocates matters as much as what it returns. See
+# Controls.any_held_long for the measured numbers these exist to protect.
+
+
+def test_nothing_held_is_not_a_hold():
+    assert Controls().any_held_long(HOLD_MS * 10) is False
+
+
+def test_a_modifier_not_yet_past_the_threshold_is_not_a_hold():
+    controls = Controls()
+    controls.press(FUNCTION, now=0)
+
+    assert controls.any_held_long(HOLD_MS - 1) is False
+
+
+def test_a_held_function_is_a_hold():
+    controls = Controls()
+    controls.press(FUNCTION, now=0)
+
+    assert controls.any_held_long(HOLD_MS) is True
+
+
+def test_a_held_play_is_a_hold():
+    controls = Controls()
+    controls.press(PLAY, now=0)
+
+    assert controls.any_held_long(HOLD_MS) is True
+
+
+def test_a_held_pad_is_a_hold():
+    controls = Controls()
+    controls.press(2, now=0)
+
+    assert controls.any_held_long(HOLD_MS) is True
+
+
+def test_a_released_modifier_is_not_a_hold():
+    """The legend must come down when the finger comes off."""
+    controls = Controls()
+    controls.press(FUNCTION, now=0)
+    controls.release(FUNCTION, now=HOLD_MS)
+
+    assert controls.any_held_long(HOLD_MS * 2) is False
+
+
+def test_it_agrees_with_asking_each_key_in_turn():
+    """The behaviour it replaced, kept honest across every combination."""
+    combinations = (
+        (),
+        (FUNCTION,),
+        (PLAY,),
+        (2,),
+        (2, 5),
+        (FUNCTION, 2),
+        (PLAY, 3),
+        # Both modifiers at once is reachable - it is the record chord - and
+        # any_held_long short-circuits on FUNCTION before it looks at PLAY.
+        (FUNCTION, PLAY),
+    )
+    for keys in combinations:
+        for elapsed in (0, HOLD_MS - 1, HOLD_MS, HOLD_MS * 3):
+            controls = Controls()
+            for key in keys:
+                controls.press(key, now=0)
+            expected = any(
+                controls.held_long(key, elapsed)
+                for key in (FUNCTION, PLAY) + tuple(controls.held_pads)
+            )
+
+            assert controls.any_held_long(elapsed) is expected, (keys, elapsed)
+
+
+def test_it_does_not_go_through_the_allocating_property(monkeypatch):
+    """What actually pins the fix, since equivalence alone would not.
+
+    The test above computes what it expects using the very spelling this
+    replaced, so restoring that spelling would leave every test in this file
+    green. held_pads builds a sorted list each time it is read; reading it
+    twice a pass is the bug, whatever the answer comes out as.
+    """
+    controls = Controls()
+    controls.press(2, now=0)
+
+    def explode(self):
+        raise AssertionError("any_held_long read held_pads")
+
+    monkeypatch.setattr(Controls, "held_pads", property(explode))
+
+    assert controls.any_held_long(HOLD_MS) is True
+
+
+def test_a_pad_held_long_is_found_past_one_that_is_not():
+    """Two pads, different ages: the scan must not stop at the first False.
+
+    Every other case here presses its keys together, so the loop only ever
+    sees pads that agree with each other.
+    """
+    controls = Controls()
+    controls.press(2, now=0)
+    controls.press(5, now=HOLD_MS)
+
+    assert controls.held_long(5, HOLD_MS + 1) is False
+    assert controls.held_long(2, HOLD_MS + 1) is True
+    assert controls.any_held_long(HOLD_MS + 1) is True
+
+
+def test_without_a_clock_nothing_is_held_long():
+    """`now` is optional everywhere in this module - see its docstring."""
+    controls = Controls()
+    controls.press(FUNCTION, now=0)
+    controls.press(2, now=0)
+
+    assert controls.any_held_long() is False

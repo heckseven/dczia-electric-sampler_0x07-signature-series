@@ -149,6 +149,32 @@ class Controls:
             return False
         return self.is_hold(key_number, now)
 
+    def any_held_long(self, now=None):
+        """Whether anything held has been down long enough to be a hold.
+
+        Asked twice on every pass of the main loop, so it must not allocate.
+        The obvious spelling - iterating `(FUNCTION, PLAY) + tuple(held_pads)`
+        - built a sorted list, a tuple and a concatenation per call, measured
+        at 96 bytes a pass and about sixty per cent of everything the loop
+        allocated. That is what was driving the collector, and a collection
+        is 26 ms against a 32 ms audio buffer.
+
+        The empty case is checked before iterating because it is the usual
+        one, and even an iterator over an empty set is an object.
+
+        `now` is optional here as everywhere else in this module: without a
+        clock nothing can have been held long, which is what held_long already
+        answers.
+        """
+        if self.held_long(FUNCTION, now) or self.held_long(PLAY, now):
+            return True
+        if not self._pads_held:
+            return False
+        for key in self._pads_held:
+            if self.held_long(key, now):
+                return True
+        return False
+
     @property
     def held_pads(self):
         return sorted(self._pads_held)

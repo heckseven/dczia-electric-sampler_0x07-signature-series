@@ -579,8 +579,6 @@ class SamplerState(State):
 
     def _legend(self):
         """The held modifier's own gestures, or None if nothing is held long."""
-        now = ticks_ms()
-        for key in (FUNCTION, PLAY) + tuple(self.controls.held_pads):
-            if self.controls.held_long(key, now):
-                return self.controls.legend()
-        return None
+        if not self.controls.any_held_long(ticks_ms()):
+            return None
+        return self.controls.legend()

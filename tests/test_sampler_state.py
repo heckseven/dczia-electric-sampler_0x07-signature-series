@@ -857,3 +857,36 @@ def test_letting_go_puts_the_sampler_text_back(state):
     run(state)
     lines = [state._screen.line(i) for i in range(len(state._screen))]
     assert not any("Vol" in line for line in lines), lines
+
+
+def test_a_sequenced_hit_lights_its_pad(state):
+    """A pattern playing draws itself across the pads, not just manual hits."""
+    engine = sequencer_module.engine
+    engine.mode = LIVE
+    state.controls.set_mode(LIVE)
+    engine.song.clear_all()
+    engine.song.set_step(3, 0, 110)
+    engine.toggle_play()
+    for _ in range(400):
+        engine.tick()
+        state.update(FakeMachine())
+        if state._last_pixels and state._last_pixels[3] == view.TRACK_FLASH:
+            break
+    assert state._last_pixels[3] == view.TRACK_FLASH, "the sequenced hit never showed"
+
+
+def test_a_hit_is_reported_once(state):
+    """Read and cleared together, so it does not stick on."""
+    engine = sequencer_module.engine
+    engine.trigger(2, 100)
+    assert engine.take_hits() & (1 << 2)
+    assert engine.take_hits() == 0
+
+
+def test_a_manual_pad_still_lights_its_own(state):
+    engine = sequencer_module.engine
+    engine.mode = LIVE
+    state.controls.set_mode(LIVE)
+    press(4)
+    run(state)
+    assert state._last_pixels[4] == view.TRACK_FLASH

@@ -52,19 +52,30 @@ TRACK_PICK = (255, 255, 255)
 PRESENT = STEP_ON
 
 # LIVE view
-TRACK_LOADED = (0, 40, 40)  # a pad with a sample behind it
+#
+# The same two tiers as everywhere else, in magenta: bright is the track the
+# encoders are on, dim is a track with a sample behind it, dark is empty. A
+# hit is white, which is the one colour nothing else on this panel uses for
+# more than an instant - so a pattern playing draws itself across the pads
+# as it goes.
+TRACK_LOADED = (28, 0, 28)  # a pad with a sample behind it
 TRACK_EMPTY = OFF
-TRACK_FLASH = (255, 120, 0)  # struck just now
-TRACK_SELECTED = (0, 120, 120)  # the track the encoders are editing
+TRACK_FLASH = (255, 255, 255)  # sounding right now, struck or sequenced
+TRACK_SELECTED = (255, 0, 255)  # the track the encoders are editing
 TRACK_MUTED = (40, 0, 0)
 
-# Indicators, on the two pixels at the Play and Function buttons
-STOPPED = OFF
+# Indicators, on the two pixels at the Play and Function buttons.
+#
+# Play says what the transport is doing: magenta stopped, green running, red
+# recording or waiting to. Function says which view is showing, in the same
+# two colours the pads use for it - magenta for LIVE, white for SEQ - so the
+# button and the panel under it agree.
+STOPPED = (255, 0, 255)
 PLAYING = (0, 120, 0)
 RECORDING = (255, 0, 0)
-ARMED = (120, 0, 0)  # blinks: waiting for the first pad hit
-MODE_LIVE = (0, 0, 60)
-MODE_SEQ = (0, 60, 0)
+ARMED = (255, 0, 0)  # blinks: armed, but the sequencer has not started
+MODE_LIVE = (255, 0, 255)
+MODE_SEQ = (255, 255, 255)
 CLOCK_EXTERNAL = (60, 0, 60)
 CLOCK_FLYWHEEL = (30, 0, 30)  # blinks: external latched, no pulses arriving
 
@@ -190,9 +201,14 @@ def pads(
 
 
 def play_indicator(transport, blink=False):
-    """The pixel at the Play button: what the transport is doing."""
+    """The pixel at the Play button: what the transport is doing.
+
+    Red covers both recording and waiting to record, because in both the
+    next thing you play is being kept. The two are still told apart by the
+    blink: armed pulses because it is waiting on you, recording sits solid
+    because it is not.
+    """
     if transport.armed:
-        # Blinking says "waiting for you", which a solid colour cannot.
         return ARMED if blink else OFF
     if transport.recording:
         return RECORDING

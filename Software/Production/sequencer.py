@@ -332,6 +332,11 @@ class Sequencer:
         self._last_sound = 0
         # Counted rather than raised: see trigger().
         self.audio_errors = 0
+        # Which tracks have sounded since anyone last looked, as a bitmask.
+        # A bitmask rather than a set because this is written on every hit
+        # and read on every pass of the display: an int costs no allocation
+        # where a set costs one per hit, and there are only eight tracks.
+        self._hits = 0
         self.last_audio_error = None
 
         self._samples = [None] * TRACK_COUNT
@@ -607,6 +612,18 @@ class Sequencer:
 
     # --- voices -----------------------------------------------------------
 
+    def take_hits(self):
+        """Which tracks have sounded since this was last called.
+
+        Read and cleared together, so a hit is shown once however many
+        passes go by before the display next looks. Covers pads struck by
+        hand and steps fired by the sequencer alike, because both arrive
+        through trigger and the panel should not care which.
+        """
+        hits = self._hits
+        self._hits = 0
+        return hits
+
     def _level_for(self, track, velocity):
         """One voice's level: master, the track's own trim, then the hit.
 
@@ -704,6 +721,7 @@ class Sequencer:
             # drum hit rather than in silence, where it would be obvious.
             self.start_stream()
             voice.play(sample)
+            self._hits |= 1 << track
         except OSError as error:
             self.audio_errors += 1
             self.last_audio_error = error

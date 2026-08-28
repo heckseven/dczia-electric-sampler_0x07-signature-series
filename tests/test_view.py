@@ -423,3 +423,63 @@ def test_without_a_time_an_external_clock_still_reads_as_external():
     clock.start(0)
     clock.external_pulse(1000)
     assert function_indicator(LIVE, clock, blink=True) == CLOCK_EXTERNAL
+
+
+# --- what the LIVE pads say ------------------------------------------------
+
+
+def test_a_loaded_track_is_dim_magenta(song):
+    row = live_pads(song, LOADED_ALL)
+    assert row[0] == TRACK_LOADED
+    assert sum(TRACK_LOADED) < sum(TRACK_SELECTED), "dim must be dimmer than bright"
+
+
+def test_the_selected_track_is_the_bright_one(song):
+    assert live_pads(song, LOADED_ALL, selected=3)[3] == TRACK_SELECTED
+
+
+def test_a_sounding_pad_is_white(song):
+    """The one colour nothing else holds for more than an instant."""
+    assert live_pads(song, LOADED_ALL, flashing={2})[2] == TRACK_FLASH
+    assert TRACK_FLASH == (255, 255, 255)
+
+
+def test_a_hit_outshines_the_cursor(song):
+    row = live_pads(song, LOADED_ALL, selected=2, flashing={2})
+    assert row[2] == TRACK_FLASH
+
+
+# --- the two indicators ---------------------------------------------------
+
+
+def test_a_stopped_transport_is_magenta():
+    assert play_indicator(Transport()) == STOPPED
+    assert STOPPED == (255, 0, 255)
+
+
+def test_a_running_transport_is_green():
+    t = Transport()
+    t.toggle_play()
+    assert play_indicator(t) == PLAYING
+
+
+def test_recording_is_red():
+    t = Transport()
+    t.toggle_play()
+    t.toggle_record()
+    assert play_indicator(t) == RECORDING
+    assert RECORDING == (255, 0, 0)
+
+
+def test_armed_is_red_too_but_blinks():
+    """Both mean the next thing you play is kept; the blink says which."""
+    t = Transport()
+    t.toggle_record()
+    assert play_indicator(t, blink=True) == ARMED
+    assert ARMED == (255, 0, 0)
+    assert play_indicator(t, blink=False) == OFF
+
+
+def test_the_function_light_matches_the_view():
+    assert function_indicator(LIVE) == MODE_LIVE == (255, 0, 255)
+    assert function_indicator(SEQ) == MODE_SEQ == (255, 255, 255)

@@ -72,10 +72,12 @@ REDRAW_EVERY = 400
 # enough that the numbers it covers are not hidden for long.
 MESSAGE_MS = 1200
 
-# How long the badge sits untouched before the lights take over. Long enough
-# that thinking about a pattern does not trigger it, short enough that a
-# badge left on a table becomes an ornament rather than a status readout.
-IDLE_MS = 15000
+# How long the badge sits untouched before the lights take over. Fifteen
+# seconds was too eager - thinking about a pattern, or reading the screen,
+# is easily longer than that, and having the panel change under you while
+# you are still using it is worse than never animating at all. A minute is
+# long enough to mean the badge really has been put down.
+IDLE_MS = 60000
 
 # Smallest gap between animation frames while idle. The same reasoning as
 # the Flashy screen's: finer than the fastest thing the animations do, and
@@ -167,6 +169,7 @@ class SamplerState(State):
         if leaving:
             return
         self._handle_encoders()
+        self._collect_hits()
         self._expire_flashes()
         self._expire_message()
         self._update_idle()
@@ -398,6 +401,21 @@ class SamplerState(State):
             self._edited.add(slot)
 
     # --- rendering --------------------------------------------------------
+
+    def _collect_hits(self):
+        """Light a pad for every track that has sounded since the last pass.
+
+        The sequencer reports its own hits the same way a struck pad does,
+        so a pattern playing draws itself across the panel without the
+        display having to know anything about steps.
+        """
+        hits = sequencer.take_hits()
+        if not hits:
+            return
+        for track in range(TRACK_COUNT):
+            if hits & (1 << track):
+                self._flash[track] = FLASH_PASSES
+        self._pixels_dirty = True
 
     def _expire_flashes(self):
         if not self._flash:

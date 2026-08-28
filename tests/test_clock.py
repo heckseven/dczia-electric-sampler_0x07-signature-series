@@ -391,16 +391,49 @@ def test_a_24_ppqn_pulse_is_worth_exactly_one_tick():
 
 
 def test_24_ppqn_pulses_do_not_also_free_run():
-    """The pulses are the clock; generating more here would race them."""
+    """The pulses are the clock: one tick each, no more and none lost.
+
+    update() is what the sequencer fires steps on, so both halves matter. Too
+    many and the badge runs ahead of the master; too few and a step never
+    sounds - which shows up as a pattern that looks like it is playing and
+    makes no noise at all.
+    """
     clock = Clock(bpm=120)
     clock.start(0)
     now = 0
+    fired = 0
     for _ in range(24):
         now += 20
         clock.external_pulse(now, ppqn=24)
-        # A poll between pulses must not manufacture a tick of its own.
-        assert clock.update(now + 10) == 0
+        fired += clock.update(now + 10)
+        # A second poll before the next pulse must add nothing.
+        assert clock.update(now + 15) == 0, "it manufactured a tick of its own"
     assert clock.tick == 24, "a quarter note of clocks is a quarter note of ticks"
+    assert fired == 24, "a tick never came back out of update"
+
+
+def test_every_pulse_driven_tick_is_handed_to_the_caller():
+    """A tick that does not come out of update is a step that never sounds."""
+    clock = Clock(bpm=120)
+    clock.start(0)
+    now = 0
+    fired = 0
+    for _ in range(96):
+        now += 20
+        clock.external_pulse(now, ppqn=24)
+        fired += clock.update(now)
+    assert fired == clock.tick == 96
+
+
+def test_pulses_arriving_between_polls_are_not_lost():
+    """Several clocks can land in one 2 ms poll; each is still a step."""
+    clock = Clock(bpm=120)
+    clock.start(0)
+    now = 0
+    for _ in range(4):  # a burst, all before the next update
+        now += 20
+        clock.external_pulse(now, ppqn=24)
+    assert clock.update(now) == 4
 
 
 def test_a_24_ppqn_master_sets_the_tempo():

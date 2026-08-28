@@ -1669,3 +1669,60 @@ def test_a_burst_is_still_bounded(monkeypatch, seq):
     monkeypatch.setattr(sequencer_module, "midi_serial", port)
     seq.poll_midi_in(now=1000)
     assert port.taken == sequencer_module.MAX_MIDI_PER_POLL
+
+
+def test_an_externally_clocked_pattern_actually_sounds(monkeypatch, seq, kit):
+    """The whole point of following a clock is that the steps play.
+
+    Reported from a real rig: the master started the badge, the Play light
+    came on, the playhead moved, and nothing was audible. The pulse-driven
+    ticks were being counted against clock.tick without ever being returned
+    from clock.update - and update's return is what the sequencer fires steps
+    on, so no step ever triggered.
+    """
+    import sequencer as sequencer_module
+    from adafruit_midi.timing_clock import TimingClock
+
+    seq.load_kit(kit)
+    # Several steps across the first two beats. Not step 0 alone: the first
+    # pulse after a reset advances the tick to 1, so position 0 comes round
+    # again only on the next bar - true of the internal clock as well, and
+    # not what this test is about.
+    for step in (1, 2, 4, 6):
+        seq.song.set_step(0, step, 100)
+    seq.transport.start()
+    seq.clock.start(0)
+
+    hits = []
+    real = seq.trigger
+    monkeypatch.setattr(
+        seq,
+        "trigger",
+        lambda track, velocity: (hits.append(track), real(track, velocity))[1],
+    )
+
+    now = 0
+    for _ in range(sequencer_module.MIDI_CLOCK_PPQN * 2):
+        now += 20
+        # One `now` for both, exactly as Sequencer.tick does it.
+        seq._handle_midi(TimingClock(), now=now)
+        for _ in range(seq.clock.update(now)):
+            seq._on_tick(now)
+    assert hits, "a whole bar of clocks fired no steps at all"
+
+
+def test_the_step_that_sounds_under_a_master_is_the_right_one(seq, kit):
+    from adafruit_midi.timing_clock import TimingClock
+
+    seq.load_kit(kit)
+    seq.song.set_step(0, 4, 100)
+    seq.transport.start()
+    seq.clock.start(0)
+    seq.clock.reset()
+    fired = 0
+    now = 0
+    for _ in range(24):
+        now += 20
+        seq._handle_midi(TimingClock(), now=now)
+        fired += seq.clock.update(now)
+    assert fired == 24, "clocks went in and ticks did not come out"

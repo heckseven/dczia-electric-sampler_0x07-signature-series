@@ -114,6 +114,10 @@ class Clock:
         # between pulses - see external_pulse.
         self._pulse_epoch = None
         self._pulse_count = 0
+        # Ticks advanced by a pulse and not yet handed to the caller. They
+        # have to come out of update() like every other tick, because that
+        # return value is what the sequencer fires steps on.
+        self._pending_ticks = 0
         # True when one pulse means exactly one tick, which is the 24 PPQN
         # case. Then the pulses are the clock and nothing is free-run
         # between them - see update().
@@ -157,6 +161,10 @@ class Clock:
         # between pulses - see external_pulse.
         self._pulse_epoch = None
         self._pulse_count = 0
+        # Ticks advanced by a pulse and not yet handed to the caller. They
+        # have to come out of update() like every other tick, because that
+        # return value is what the sequencer fires steps on.
+        self._pending_ticks = 0
         # True when one pulse means exactly one tick, which is the 24 PPQN
         # case. Then the pulses are the clock and nothing is free-run
         # between them - see update().
@@ -166,6 +174,7 @@ class Clock:
     def reset(self):
         self.tick = 0
         self._accum = 0.0
+        self._pending_ticks = 0
 
     # --- the poll ---------------------------------------------------------
 
@@ -175,11 +184,12 @@ class Clock:
             self._last_update = now
             return 0
 
-        elapsed = ticks_diff(now, self._last_update)
-        self._last_update = now
-        if elapsed <= 0:
-            return 0
-
+        # Handled before anything to do with elapsed time, and deliberately.
+        # The caller passes one `now` to the MIDI poll and to this in the same
+        # pass, so the pulse that just arrived set _last_update to exactly
+        # this value - and an elapsed-time check would see zero and return
+        # early, dropping the tick before it was ever handed over. That is a
+        # pattern whose playhead moves and which makes no sound.
         if self._pulse_driven and not self.is_flywheeling(now):
             # A 24 PPQN master sends one clock per tick, so the clocks are the
             # tick and generating more here would race them. Which way it
@@ -190,6 +200,14 @@ class Clock:
             # master. Free-running resumes the moment the clocks stop, which
             # is what flywheeling is.
             self._accum = 0.0
+            self._last_update = now
+            fired = self._pending_ticks
+            self._pending_ticks = 0
+            return fired
+
+        elapsed = ticks_diff(now, self._last_update)
+        self._last_update = now
+        if elapsed <= 0:
             return 0
 
         self._accum += elapsed
@@ -277,6 +295,8 @@ class Clock:
             # One pulse, one tick. Nothing to snap to and nothing generating
             # ticks in between, so this is the whole of the clock.
             self.tick += 1
+            if self._pending_ticks < MAX_CATCHUP_TICKS:
+                self._pending_ticks += 1
         else:
             # Snap to the nearest pulse boundary. Drift between pulses is
             # small because the clock free-runs at the measured tempo, so

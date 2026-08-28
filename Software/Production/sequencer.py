@@ -820,15 +820,22 @@ class Sequencer:
         # free memory was seen dipping to a couple of hundred bytes while a
         # pattern played. Nothing was connected to either port.
         #
-        # The serial port can be asked whether anything is waiting, for free,
-        # so it is drained until it is empty rather than a message per pass.
-        for _ in range(MAX_MIDI_PER_POLL):
-            if not midi_uart.in_waiting:
-                break
-            if not self._handle_midi(midi_serial.receive(), now):
-                # A partial message: the rest of its bytes have not arrived
-                # yet, and asking again now only spins.
-                break
+        # in_waiting is the cheap probe for "is there anything at all", and
+        # it is only asked once. It cannot be the loop condition, because it
+        # describes the UART's buffer and not the parser's: receive() slurps
+        # every available byte in one go, so a burst carrying two messages
+        # leaves in_waiting at zero with the second still held inside
+        # adafruit_midi. Gating on it there drops that second message until
+        # more bytes happen to arrive, which is late enough to look like the
+        # badge answering the previous press - measured, a Stop and a Start in
+        # one burst left the transport stopped when it should have been
+        # playing, and the pair the other way round left it playing.
+        if midi_uart.in_waiting:
+            for _ in range(MAX_MIDI_PER_POLL):
+                if not self._handle_midi(midi_serial.receive(), now):
+                    # Nothing more decoded: either empty, or the rest of a
+                    # message has not arrived yet and asking again only spins.
+                    break
 
         # USB has no equivalent - PortIn offers only read and readinto - so it
         # is polled on its own slower timer instead, and drained when it does

@@ -1586,3 +1586,86 @@ def test_an_empty_port_costs_one_call(monkeypatch, seq):
     seq._last_usb_midi_poll = -1000
     seq.poll_midi_in(now=5000)
     assert port.calls == 1
+
+
+# --- draining the parser, not the port -------------------------------------
+#
+# in_waiting describes the UART's buffer, not adafruit_midi's. receive() reads
+# every available byte in one go, so a burst carrying two messages leaves
+# in_waiting at zero with the second still held inside the library. Gating the
+# drain loop on it therefore drops that message until more bytes happen to
+# arrive - which on a badge following a clock is late enough to look like it
+# answering the previous press. Reported from a real rig as "I hit play and
+# the sequencer stops"; reproduced as a Stop and a Start in one burst leaving
+# the transport stopped when it should have been playing.
+
+
+class BurstPort:
+    """A port holding several already-decoded messages, like a parser does.
+
+    in_waiting goes to zero as soon as the first is taken, which is what the
+    real library does once it has slurped the bytes.
+    """
+
+    def __init__(self, messages):
+        self.messages = list(messages)
+        self.taken = 0
+
+    @property
+    def in_waiting(self):
+        return len(self.messages) if self.taken == 0 else 0
+
+    def receive(self):
+        self.taken += 1
+        if self.messages:
+            return self.messages.pop(0)
+        return None
+
+
+def test_both_messages_in_a_burst_are_acted_on(monkeypatch, seq):
+    """A Stop and a Start together must end playing, not stopped."""
+    import sequencer as sequencer_module
+    from adafruit_midi.start import Start
+    from adafruit_midi.stop import Stop
+
+    port = BurstPort([Stop(), Start()])
+    monkeypatch.setattr(sequencer_module, "midi_uart", port)
+    monkeypatch.setattr(sequencer_module, "midi_serial", port)
+    seq.transport.stop()
+    seq.poll_midi_in(now=1000)
+    assert seq.transport.playing is True, "the second message in the burst was lost"
+
+
+def test_a_start_then_stop_burst_ends_stopped(monkeypatch, seq):
+    import sequencer as sequencer_module
+    from adafruit_midi.start import Start
+    from adafruit_midi.stop import Stop
+
+    port = BurstPort([Start(), Stop()])
+    monkeypatch.setattr(sequencer_module, "midi_uart", port)
+    monkeypatch.setattr(sequencer_module, "midi_serial", port)
+    seq.transport.stop()
+    seq.poll_midi_in(now=1000)
+    assert seq.transport.playing is False, "the second message in the burst was lost"
+
+
+def test_a_silent_port_is_asked_once(monkeypatch, seq):
+    """in_waiting stays the cheap probe; it just cannot be the loop condition."""
+    import sequencer as sequencer_module
+
+    port = BurstPort([])
+    monkeypatch.setattr(sequencer_module, "midi_uart", port)
+    monkeypatch.setattr(sequencer_module, "midi_serial", port)
+    seq.poll_midi_in(now=1000)
+    assert port.taken == 0, "an empty port was read anyway"
+
+
+def test_a_burst_is_still_bounded(monkeypatch, seq):
+    import sequencer as sequencer_module
+    from adafruit_midi.timing_clock import TimingClock
+
+    port = BurstPort([TimingClock() for _ in range(50)])
+    monkeypatch.setattr(sequencer_module, "midi_uart", port)
+    monkeypatch.setattr(sequencer_module, "midi_serial", port)
+    seq.poll_midi_in(now=1000)
+    assert port.taken == sequencer_module.MAX_MIDI_PER_POLL

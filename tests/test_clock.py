@@ -385,9 +385,23 @@ def test_sync_rate_can_be_changed_and_rejects_junk():
 def test_a_24_ppqn_pulse_is_worth_exactly_one_tick():
     clock = Clock(bpm=120)
     clock.start(0)
+    clock.external_pulse(1000, ppqn=24)  # the downbeat, where it already is
     before = clock.tick
-    clock.external_pulse(1000, ppqn=24)
+    clock.external_pulse(1020, ppqn=24)
     assert clock.tick == before + 1
+
+
+def test_the_first_clock_after_a_start_is_the_downbeat():
+    """Not the step after it. Whatever is written on beat one must sound.
+
+    Reported from the badge: four notes on the first bar, and the one on the
+    downbeat stayed silent until the pattern came round again.
+    """
+    clock = Clock(bpm=120)
+    clock.start(0)
+    clock.external_pulse(1000, ppqn=24)
+    assert clock.tick == 0, "the first clock moved off the downbeat"
+    assert clock.update(1000) == 1, "and it never sounded"
 
 
 def test_24_ppqn_pulses_do_not_also_free_run():
@@ -408,8 +422,10 @@ def test_24_ppqn_pulses_do_not_also_free_run():
         fired += clock.update(now + 10)
         # A second poll before the next pulse must add nothing.
         assert clock.update(now + 15) == 0, "it manufactured a tick of its own"
-    assert clock.tick == 24, "a quarter note of clocks is a quarter note of ticks"
     assert fired == 24, "a tick never came back out of update"
+    # 23 rather than 24: the first clock sounded the downbeat the playhead
+    # was already on rather than moving past it.
+    assert clock.tick == 23
 
 
 def test_every_pulse_driven_tick_is_handed_to_the_caller():
@@ -422,7 +438,8 @@ def test_every_pulse_driven_tick_is_handed_to_the_caller():
         now += 20
         clock.external_pulse(now, ppqn=24)
         fired += clock.update(now)
-    assert fired == clock.tick == 96
+    assert fired == 96, "a tick never came back out of update"
+    assert clock.tick == 95, "the first clock is the downbeat, not the step after"
 
 
 def test_pulses_arriving_between_polls_are_not_lost():
@@ -453,8 +470,9 @@ def test_the_jacks_rate_does_not_change_what_a_midi_clock_means():
     """The two can differ, and only one of them is a MIDI cable."""
     clock = Clock(bpm=120, sync_ppqn=2)
     clock.start(0)
+    clock.external_pulse(1000, ppqn=24)  # the downbeat
     before = clock.tick
-    clock.external_pulse(1000, ppqn=24)
+    clock.external_pulse(1020, ppqn=24)
     assert clock.tick == before + 1, "it used the jack's rate"
 
 

@@ -1527,11 +1527,12 @@ def test_the_badge_does_not_run_at_its_own_tempo_under_a_master(seq):
     seq.transport.start()
     seq.clock.start(0)
     now = 0
+    fired = 0
     for _ in range(96):  # four quarter notes of a 150 BPM master
         now += 16.67
         seq._handle_midi(TimingClock(), now=int(now))
-        seq.clock.update(int(now))
-    assert seq.clock.tick == 96, "one clock is one tick, whatever the knob says"
+        fired += seq.clock.update(int(now))
+    assert fired == 96, "one clock is one tick, whatever the knob says"
 
 
 def test_a_midi_clock_can_start_the_transport(seq):
@@ -1726,3 +1727,67 @@ def test_the_step_that_sounds_under_a_master_is_the_right_one(seq, kit):
         seq._handle_midi(TimingClock(), now=now)
         fired += seq.clock.update(now)
     assert fired == 24, "clocks went in and ticks did not come out"
+
+
+def test_the_note_on_the_downbeat_sounds_on_the_first_bar(seq, kit):
+    """Reported from the badge: four notes on the first bar, and the one on
+    beat one stayed silent until the pattern came round again.
+
+    clock.reset put the playhead at 0 and update incremented before
+    reporting, so the first tick the sequencer ever saw was 1 - and the step
+    at position 0 was simply never offered on the first lap.
+    """
+    seq.load_kit(kit)
+    seq.song.clear_all()
+    seq.song.set_length(16)
+    for step in (0, 4, 8, 12):
+        seq.song.set_step(0, step, 110)
+
+    hits = []
+    seq.trigger = lambda track, velocity: hits.append((track, velocity))
+    seq.toggle_play()
+
+    # One pass of the main loop, immediately, before any time has passed.
+    for _ in range(seq.clock.update(0)):
+        seq._on_tick(0)
+
+    assert hits, "the downbeat did not sound when the transport started"
+
+
+def test_the_downbeat_sounds_under_a_master_too(seq, kit):
+    from adafruit_midi.start import Start
+    from adafruit_midi.timing_clock import TimingClock
+
+    seq.load_kit(kit)
+    seq.song.clear_all()
+    seq.song.set_length(16)
+    seq.song.set_step(0, 0, 110)
+
+    hits = []
+    seq.trigger = lambda track, velocity: hits.append((track, velocity))
+    seq.transport.stop()
+    seq.clock.stop()
+    seq._handle_midi(Start(), now=0)
+    seq._handle_midi(TimingClock(), now=20)
+    for _ in range(seq.clock.update(20)):
+        seq._on_tick(20)
+
+    assert hits, "the first clock after Start did not sound the downbeat"
+
+
+def test_the_downbeat_is_not_sounded_twice(seq, kit):
+    """Firing where the playhead already is must not double the first hit."""
+    seq.load_kit(kit)
+    seq.song.clear_all()
+    seq.song.set_length(16)
+    seq.song.set_step(0, 0, 110)
+
+    hits = []
+    seq.trigger = lambda track, velocity: hits.append((track, velocity))
+    seq.toggle_play()
+    now = 0
+    for _ in range(6):  # a whole step's worth of polls
+        for _ in range(seq.clock.update(now)):
+            seq._on_tick(now)
+        now += 1
+    assert len(hits) == 1, "the downbeat sounded %d times" % len(hits)

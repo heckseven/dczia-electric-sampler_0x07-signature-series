@@ -118,6 +118,12 @@ class Clock:
         # have to come out of update() like every other tick, because that
         # return value is what the sequencer fires steps on.
         self._pending_ticks = 0
+        # Set when the tick the clock is sitting on has not been played yet.
+        # Starting puts the playhead at position zero, and position zero is a
+        # step like any other - without this the first tick handed over is 1
+        # and whatever is written on the downbeat is silent until the pattern
+        # comes round again.
+        self._fire_current = False
         # True when one pulse means exactly one tick, which is the 24 PPQN
         # case. Then the pulses are the clock and nothing is free-run
         # between them - see update().
@@ -146,6 +152,8 @@ class Clock:
         self.running = True
         self._last_update = now
         self._accum = 0.0
+        # Wherever the playhead is, it has not sounded yet.
+        self._fire_current = True
 
     def stop(self):
         """Stop, and release any external latch so the knob works again."""
@@ -165,6 +173,12 @@ class Clock:
         # have to come out of update() like every other tick, because that
         # return value is what the sequencer fires steps on.
         self._pending_ticks = 0
+        # Set when the tick the clock is sitting on has not been played yet.
+        # Starting puts the playhead at position zero, and position zero is a
+        # step like any other - without this the first tick handed over is 1
+        # and whatever is written on the downbeat is silent until the pattern
+        # comes round again.
+        self._fire_current = False
         # True when one pulse means exactly one tick, which is the 24 PPQN
         # case. Then the pulses are the clock and nothing is free-run
         # between them - see update().
@@ -175,6 +189,7 @@ class Clock:
         self.tick = 0
         self._accum = 0.0
         self._pending_ticks = 0
+        self._fire_current = True
 
     # --- the poll ---------------------------------------------------------
 
@@ -205,14 +220,27 @@ class Clock:
             self._pending_ticks = 0
             return fired
 
+        fired = 0
+        if self._fire_current:
+            # The tick already under the playhead, played before any time is
+            # counted against it. Nothing is added to self.tick here: this is
+            # that position sounding, not the next one arriving.
+            #
+            # Above the elapsed check deliberately, and for the same reason
+            # the pulse-driven branch is: start() sets _last_update to its
+            # own `now`, so the first poll afterwards can measure zero
+            # elapsed and return early - which would swallow the downbeat
+            # exactly as before.
+            self._fire_current = False
+            fired += 1
+
         elapsed = ticks_diff(now, self._last_update)
         self._last_update = now
         if elapsed <= 0:
-            return 0
+            return fired
 
-        self._accum += elapsed
         period = self.tick_period_ms
-        fired = 0
+        self._accum += elapsed
         while self._accum >= period and fired < MAX_CATCHUP_TICKS:
             self._accum -= period
             self.tick += 1
@@ -294,7 +322,15 @@ class Clock:
         if self._pulse_driven:
             # One pulse, one tick. Nothing to snap to and nothing generating
             # ticks in between, so this is the whole of the clock.
-            self.tick += 1
+            #
+            # The first pulse after a start is the downbeat rather than the
+            # step after it, which is what the MIDI standard means by Start
+            # followed by a clock - so it sounds where the playhead already
+            # is instead of moving it on.
+            if self._fire_current:
+                self._fire_current = False
+            else:
+                self.tick += 1
             if self._pending_ticks < MAX_CATCHUP_TICKS:
                 self._pending_ticks += 1
         else:

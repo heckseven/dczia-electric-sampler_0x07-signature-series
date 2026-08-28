@@ -173,11 +173,47 @@ except OSError:
     # below fails and the badge runs from flash.
     pass
 
+# One buffer for the throwaway read, made once rather than inside wake. The
+# loop below can run three times, and this is the most fragmented the heap ever
+# gets - see StartupState.WARM - so three abandoned 512-byte buffers would land
+# exactly where VfsFat wants contiguous room of its own.
+_wake_buffer = bytearray(512)
+
+
+def wake(card, buf=_wake_buffer):
+    """Spend the first read, and ignore how it goes.
+
+    Some cards fail the read immediately after initialisation and are perfectly
+    well afterwards. Measured on a 64 GB SDXC card, five fresh inits in a row:
+
+        reads of block 0:  EIO ok ok ok ok ok
+
+    every time. Without this the first read is the one storage.mount makes, so
+    the mount raises, the card is deinitialised, and the next baudrate meets
+    the same wall - three times over, ending in "No SD Card Found!" for a card
+    that reads fine from its second block onwards.
+
+    One 512-byte read costs nothing on a card that does not need it. Exactly
+    one: a card that is absent or dying fails this read too, and hiding more
+    than the single expected failure would only move the report to the mount
+    below, which is where it belongs anyway.
+
+    The same pair of exceptions the loop below catches, and for the same
+    reason - the failure this hides is the one the mount would have raised,
+    and it is not always an OSError.
+    """
+    try:
+        card.readblocks(0, buf)
+    except (OSError, RuntimeError):
+        pass
+
+
 for _baudrate in SD_BAUDRATES:
     try:
         # sdcardio takes the chip-select Pin itself and drives it, unlike
         # adafruit_sdcard which expected a DigitalInOut wrapped around it.
         sdcard = sdcardio.SDCard(spi, board.GP13, baudrate=_baudrate)
+        wake(sdcard)
         vfs = storage.VfsFat(sdcard)
         storage.mount(vfs, "/sd")
         sd_baudrate = _baudrate

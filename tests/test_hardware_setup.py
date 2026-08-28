@@ -11,11 +11,13 @@ import board
 import circuitpython_stubs
 import setup
 
-PRODUCTION = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "Software",
-    "Production",
-)
+# The same directory the stubs put on the path, so the tests that read the
+# firmware's source read the tree actually under test. Computing it from
+# __file__ instead means DCZIA_PRODUCTION_DIR silently does not apply, and a
+# source-order check then passes against this checkout no matter what the
+# other one says - which is exactly the pointless green these tests exist to
+# avoid.
+from conftest import PRODUCTION_DIR as PRODUCTION
 
 
 def test_display_i2c_runs_faster_than_the_default():
@@ -116,6 +118,108 @@ def test_the_sd_clock_is_negotiated_fastest_first():
     assert rates == sorted(rates, reverse=True), "must actually descend"
     assert rates[-1] <= 8_000_000, "slowest fallback must be conservative"
     assert len(set(rates)) == len(rates), "no duplicate rates"
+
+
+class FirstReadFails:
+    """A card like the 64 GB one: the read after init fails, the rest are fine."""
+
+    def __init__(self, failures=1):
+        self.failures = failures
+        self.reads = 0
+
+    def readblocks(self, block, buf):
+        self.reads += 1
+        if self.reads <= self.failures:
+            raise OSError(5)
+
+
+def test_the_first_read_after_init_is_spent_deliberately():
+    """Measured on a 64 GB SDXC card, five fresh inits in a row:
+
+        reads of block 0:  EIO ok ok ok ok ok
+
+    storage.mount makes the first read, so without this the mount is what
+    fails, at every baudrate in turn, and a working card reports as no card.
+    """
+    card = FirstReadFails()
+
+    setup.wake(card)
+
+    assert card.reads == 1, "it must actually read, not just intend to"
+
+
+def test_a_failed_first_read_is_not_raised():
+    """The whole point: the failure is expected and must not reach the caller."""
+    setup.wake(FirstReadFails())
+
+
+def test_a_runtime_error_is_swallowed_too():
+    """The loop below catches both, because the failure is not always an OSError."""
+
+    class Rude:
+        reads = 0
+
+        def readblocks(self, block, buf):
+            type(self).reads += 1
+            raise RuntimeError("card is sulking")
+
+    setup.wake(Rude())
+
+
+def test_the_read_buffer_is_not_allocated_per_call():
+    """Startup is where the heap is most fragmented; three of these would land
+    exactly where VfsFat wants contiguous room."""
+    seen = []
+
+    class Recorder:
+        def readblocks(self, block, buf):
+            seen.append(id(buf))
+
+    setup.wake(Recorder())
+    setup.wake(Recorder())
+
+    assert seen[0] == seen[1], "a fresh buffer was allocated for each call"
+    assert len(setup._wake_buffer) == 512
+
+
+def test_a_card_that_reads_fine_is_not_disturbed():
+    """One 512-byte read, once, on a card that never needed it."""
+    card = FirstReadFails(failures=0)
+
+    setup.wake(card)
+
+    assert card.reads == 1
+
+
+def test_wake_does_not_retry_past_a_card_that_keeps_failing():
+    """It spends one read, not as many as it takes.
+
+    A dead card fails this read too. Hiding more than the single expected
+    failure would only postpone the report to storage.mount below, which is
+    where it belongs - the loop there records the error and moves on.
+    """
+    card = FirstReadFails(failures=99)
+
+    setup.wake(card)
+
+    assert card.reads == 1, "it must not retry its way past a dead card"
+
+
+def test_the_first_read_is_spent_before_the_filesystem_is_built():
+    """Pinned by source order, because the stub cannot reach the loop.
+
+    circuitpython_stubs.SDCard always raises on construction, so nothing under
+    test ever runs the body of the baudrate loop - deleting the wake() call
+    would otherwise pass every test here while breaking the card on hardware.
+    """
+    source = open(os.path.join(PRODUCTION, "setup.py")).read()
+
+    assert "wake(sdcard)" in source, "the first read is never spent"
+    assert (
+        source.index("sdcardio.SDCard(")
+        < source.index("wake(sdcard)")
+        < source.index("storage.VfsFat(")
+    ), "wake must run between opening the card and mounting it"
 
 
 def test_a_card_that_will_not_mount_is_not_fatal():

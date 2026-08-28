@@ -87,7 +87,19 @@ BITS = 16
 # fine for the one long sound in a kit and bad only if every track is long.
 # Loaded at startup so the badge makes a sound out of the box. Bare names, so
 # they resolve wherever the samples actually live - card first, then flash.
-DEFAULT_KIT = ("Kick.wav", "Snare.wav", "Tom.wav")
+#
+# These four are from the Kosmo drums set, converted to the mixer's format
+# (16 kHz, mono, 16-bit signed) because the mixer sums voices rather than
+# resampling them and rejects any sample whose rate differs. Only the kick and
+# snare fit MAX_RAM_SAMPLE; the open hat and cymbal are long enough to stream,
+# which is the case the budget above is written for - a couple of long sounds
+# in a kit, not eight.
+DEFAULT_KIT = (
+    "kick_crater.wav",
+    "snare_kraken-head_1.wav",
+    "hh_hats-open_1.wav",
+    "cymbals_crucible-edge_1.wav",
+)
 
 RAM_BUDGET = 48 * 1024
 MAX_RAM_SAMPLE = 24 * 1024

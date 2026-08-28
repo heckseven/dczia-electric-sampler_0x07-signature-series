@@ -45,6 +45,9 @@ from engine.animation import (
     sixteenth,
     sparkle,
     sweep,
+    toaster,
+    seven,
+    bird,
     wheel,
 )
 from engine.clock import PPQN
@@ -490,3 +493,108 @@ def test_the_first_step_moves_nothing():
     """There is no elapsed time to account for yet."""
     base = Timebase()
     assert base.step(12345, 120) == 0
+
+
+# --- Toaster ---------------------------------------------------------------
+
+
+def test_the_toaster_is_red():
+    for tick in range(TICKS_PER_BAR):
+        for red, green, blue in toaster(tick):
+            assert green == 0 and blue == 0, (red, green, blue)
+
+
+def test_the_toaster_crosses_the_panel_and_comes_back():
+    def brightest_column(tick):
+        colors = toaster(tick)
+        totals = [sum(sum(colors[pixel]) for pixel in column) for column in COLUMNS]
+        return totals.index(max(totals))
+
+    # Two round trips a bar: out by the quarter mark, back by the half.
+    assert brightest_column(0) == 0
+    assert brightest_column(TICKS_PER_BAR // 4) == len(COLUMNS) - 1
+    assert brightest_column(TICKS_PER_BAR // 2) == 0
+
+
+def test_the_toaster_has_a_smear_rather_than_a_hard_edge():
+    """A single lit column reads as a fault; the eye needs a falloff."""
+    lit = [color for color in toaster(TICKS_PER_BAR // 16) if color != OFF]
+    assert len(lit) > len(COLUMNS[0]), lit
+
+
+def test_the_toaster_crosses_the_buttons_too():
+    seen = set()
+    for tick in range(TICKS_PER_BAR):
+        seen.update(_lit(toaster(tick)))
+    for pixel in INDICATORS:
+        assert pixel in seen
+
+
+# --- Seven -----------------------------------------------------------------
+
+
+def test_seven_is_full_red_on_the_beat():
+    assert seven(0) == [(255, 0, 0)] * PIXEL_COUNT
+
+
+def test_seven_strikes_every_beat():
+    for beat in range(BEATS_PER_BAR):
+        assert sum(seven(TICKS_PER_BEAT * beat)[0]) > 0
+
+
+def test_seven_is_a_strobe_rather_than_a_swell():
+    """Flat top then a fast decay, so it hits rather than breathes."""
+    top = sum(seven(0)[0])
+    still_on = sum(seven(1)[0])
+    later = sum(seven(TICKS_PER_BEAT // 3)[0])
+    assert still_on == top, "it started decaying immediately"
+    assert later < top / 4, "it is fading like a swell"
+
+
+def test_seven_lights_every_pixel_at_once():
+    assert len(set(seven(0))) == 1
+
+
+def test_seven_never_shows_anything_but_red():
+    for tick in range(TICKS_PER_BAR):
+        for _red, green, blue in seven(tick):
+            assert green == 0 and blue == 0
+
+
+# --- Bird ------------------------------------------------------------------
+
+
+def test_bird_is_magenta():
+    for tick in range(TICKS_PER_BAR):
+        for red, green, blue in bird(tick):
+            assert green == 0
+            assert red == blue or (red, green, blue) == OFF, (red, green, blue)
+
+
+def test_bird_lights_several_pixels_at_once():
+    """It should glitter rather than blink one pixel at a time."""
+    assert len(_lit(bird(0))) > 1
+
+
+def test_bird_glitters_at_mixed_levels():
+    levels = {sum(color) for color in bird(0) if color != OFF}
+    assert len(levels) > 1, "every sparkle is the same brightness"
+
+
+def test_bird_repeats_with_the_bar():
+    assert bird(TICKS_PER_SIXTEENTH * 3) == bird(
+        TICKS_PER_SIXTEENTH * 3 + TICKS_PER_BAR
+    )
+
+
+def test_bird_changes_every_sixteenth():
+    assert bird(0) != bird(TICKS_PER_SIXTEENTH)
+
+
+# --- the three of them in the list ----------------------------------------
+
+
+def test_the_new_animations_are_selectable():
+    for name in ("Toaster", "Seven", "Bird"):
+        assert name in NAMES
+        assert by_name(name) is not pulse, name

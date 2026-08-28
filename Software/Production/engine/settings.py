@@ -33,6 +33,9 @@ SONG_RENAME = "song.rename"
 SONG_LOAD = "song.load"  # value: the song's name
 SONG_DELETE = "song.delete"  # value: the song's name
 
+# Named for where it used to live, under Track. It is a top level row now:
+# the animations have nothing to do with a track, and it is the one thing
+# on the badge you go to in order to look at it rather than play it.
 TRACK_FLASHY = "track.flashy"
 TRACK_DIVISION = "track.division"
 LENGTH_GLOBAL = "length.global"
@@ -174,7 +177,6 @@ def build(catalog=None):
             Item(
                 "Track",
                 children=[
-                    Item("Flashy", command=TRACK_FLASHY),
                     Item("Division", command=TRACK_DIVISION),
                     Item(
                         "Length",
@@ -217,6 +219,7 @@ def build(catalog=None):
                     ),
                 ],
             ),
+            Item("Flashy", command=TRACK_FLASHY),
             Item(
                 "Tools",
                 children=[

@@ -86,6 +86,15 @@ SIXTEENTHS_PER_BAR = TICKS_PER_BAR // TICKS_PER_SIXTEENTH
 
 OFF = (0, 0, 0)
 
+# Colours the named animations are about, rather than derived from a hue.
+SCANNER_RED = (255, 0, 0)
+FULL_RED = (255, 0, 0)
+MAGENTA = (255, 0, 255)
+
+# How many pixels Bird lights at once. Enough of the ten to glitter, few
+# enough that it is still points of light rather than a wash.
+BIRD_SPARKLES = 4
+
 
 # --- time -----------------------------------------------------------------
 
@@ -266,6 +275,65 @@ def heartbeat(tick, brightness=1.0):
     return [color] * PIXEL_COUNT
 
 
+def toaster(tick, brightness=1.0):
+    """A red eye sweeping the panel and back. A Cylon, essentially.
+
+    Travels in real space across the columns rather than along the strip's
+    wiring, so it reads as one eye crossing the face - and because the
+    columns include the buttons, it crosses the whole face rather than only
+    the grid. Two round trips a bar, which at any usable tempo is about the
+    speed the thing on the television moved at.
+    """
+    phase = (bar_phase(tick) * 4.0) % 2.0
+    if phase > 1.0:
+        phase = 2.0 - phase
+    position = phase * (len(COLUMNS) - 1)
+    colors = _blank()
+    for index, column in enumerate(COLUMNS):
+        # Falls off over more than one column, which is what gives the eye
+        # its smear. A hard edge looks like a fault rather than a scanner.
+        distance = abs(index - position) / 1.6
+        if distance >= 1.0:
+            continue
+        level = (1.0 - distance) ** 2 * brightness
+        for pixel in column:
+            colors[pixel] = dim(SCANNER_RED, level)
+    return colors
+
+
+def seven(tick, brightness=1.0):
+    """The whole panel, full red, struck on every beat.
+
+    Harder than Pulse: a short flat top and a fast decay rather than a slow
+    fade, so it reads as a strobe on the beat instead of a swell. Nothing
+    moves, which is the point - it is the beat and nothing else.
+    """
+    phase = beat_phase(tick)
+    if phase < 0.08:
+        level = 1.0
+    else:
+        level = max(0.0, 1.0 - (phase - 0.08) / 0.32) ** 3
+    return [dim(FULL_RED, level * brightness)] * PIXEL_COUNT
+
+
+def bird(tick, brightness=1.0):
+    """Magenta sparkle, denser and softer than Sparkle.
+
+    Same beat-hashed randomness, so a looping bar gets a repeating shimmer
+    rather than a fizz - but several pixels at once and at mixed levels, so
+    it glitters rather than blinks.
+    """
+    colors = _blank()
+    seed = sixteenth(tick) % SIXTEENTHS_PER_BAR
+    for index in range(BIRD_SPARKLES):
+        value = (seed * 2654435761 + index * 2246822519) & 0xFFFFFFFF
+        pixel = (value >> 8) % PIXEL_COUNT
+        # A level from the same hash, so the same bar glitters the same way.
+        level = 0.35 + ((value >> 20) & 0xFF) / 392.0
+        colors[pixel] = dim(MAGENTA, level * brightness)
+    return colors
+
+
 def off(tick, brightness=1.0):
     """Nothing at all, for playing in the dark."""
     return _blank()
@@ -281,6 +349,9 @@ ANIMATIONS = (
     ("Rainbow", rainbow),
     ("Sparkle", sparkle),
     ("Heartbeat", heartbeat),
+    ("Toaster", toaster),
+    ("Seven", seven),
+    ("Bird", bird),
     ("Off", off),
 )
 

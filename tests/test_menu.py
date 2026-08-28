@@ -193,9 +193,11 @@ def test_an_empty_branch_does_not_crash(small):
 # --- the real tree --------------------------------------------------------
 
 
-def test_the_top_level_is_the_four_sections(menu):
+def test_the_top_level_is_the_five_sections(menu):
+    """Flashy sits above Tools: the animations belong to no track, and it is
+    the one row you go to in order to look at the badge rather than play it."""
     labels = [item.label for item in menu.items]
-    assert labels == ["Song", "Track", "Samples", "Tools"]
+    assert labels == ["Song", "Track", "Samples", "Flashy", "Tools"]
 
 
 def test_every_leaf_carries_a_command():
@@ -395,9 +397,10 @@ def test_empty_rows_are_blank_not_missing(small):
 
 
 def test_the_position_tells_you_where_you_are(menu):
-    assert menu.position == (1, 4)
+    total = len(menu.items)
+    assert menu.position == (1, total)
     menu.move(2)
-    assert menu.position == (3, 4)
+    assert menu.position == (3, total)
 
 
 # --- depth ----------------------------------------------------------------

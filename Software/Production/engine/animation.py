@@ -42,33 +42,39 @@ PADS = (5, 4, 3, 2, 6, 7, 8, 9)
 UPPER = PADS[:4]
 LOWER = PADS[4:]
 
-# The two button pixels. They are a row of their own, sitting above the pads
-# and aligned with the left edge of them - so the panel is three rows, the
-# top one only two wide:
+# The two button pixels. They are a row of their own, above the pads and
+# aligned with the left edge of them - so the panel is three rows and the
+# top one is two wide:
 #
-#     [Fn][Play]
-#     [p1][p2][p3][p4]
-#     [p5][p6][p7][p8]
+#     [Play][Fn]
+#     [ p1 ][p2][p3][p4]
+#     [ p5 ][p6][p7][p8]
 #
-# That shape is why COLUMNS is ragged: the two left-hand columns are three
-# pixels tall and the two right-hand ones are two.
+# Play is the LEFT one. This was the wrong way round at first, and the
+# coordinates settle it: on the main board SW9 (Play) sits at x=123.71 and
+# SW10 (Function) at x=142.76, which are the same two x positions as pads 1
+# and 2 on the rows below. The pixel numbers run the other way - the measured
+# mapping puts pixel 0 at Function and pixel 1 at Play - so the leftmost
+# position on the panel is pixel 1, not pixel 0. Do not infer either fact
+# from the other.
 FUNCTION_PIXEL = 0
 PLAY_PIXEL = 1
-INDICATORS = (FUNCTION_PIXEL, PLAY_PIXEL)
+INDICATORS = (PLAY_PIXEL, FUNCTION_PIXEL)  # left to right
 BUTTONS = INDICATORS
 
 # Left to right across the panel. The first two columns have a button on top
 # of them; the other two are pads only. What a sweep travels along.
 COLUMNS = (
-    (FUNCTION_PIXEL, UPPER[0], LOWER[0]),
-    (PLAY_PIXEL, UPPER[1], LOWER[1]),
+    (PLAY_PIXEL, UPPER[0], LOWER[0]),
+    (FUNCTION_PIXEL, UPPER[1], LOWER[1]),
     (UPPER[2], LOWER[2]),
     (UPPER[3], LOWER[3]),
 )
 
-# What anything that travels goes round: every pixel, in strip order, which
-# is already a serpentine over the panel - along the buttons, back along the
-# top pad row, forward along the bottom one.
+# What anything that travels goes round: a serpentine over the panel, left
+# to right along the buttons, back along the top pad row, forward along the
+# bottom one. Not simply strip order, because the two button pixels are
+# numbered right to left against the panel.
 #
 # Ten does not divide the sixteen sixteenths of a bar, so anything stepping
 # on the sixteenth would come back to the top only every five bars. Travelling
@@ -76,7 +82,7 @@ COLUMNS = (
 # than counted in sixteenths: one lap per bar, whatever the path length. The
 # steps no longer land on the beat grid, which is the price of the buttons
 # joining in, and the lap staying locked to the bar is worth more.
-PATH = tuple(range(PIXEL_COUNT))
+PATH = (PLAY_PIXEL, FUNCTION_PIXEL) + tuple(reversed(UPPER)) + LOWER
 
 TICKS_PER_BEAT = PPQN
 BEATS_PER_BAR = 4
@@ -91,9 +97,16 @@ SCANNER_RED = (255, 0, 0)
 FULL_RED = (255, 0, 0)
 MAGENTA = (255, 0, 255)
 
-# How many pixels Bird lights at once. Enough of the ten to glitter, few
-# enough that it is still points of light rather than a wash.
-BIRD_SPARKLES = 4
+# Bird: a magenta glow with sparkles that flare out of it and fall back.
+#
+# The glow is what it looks like at rest, the sparkles are what happens on
+# top. A sparkle takes BIRD_FALL sixteenths to come back down, so at any
+# moment several are part way through and the panel shimmers rather than
+# blinking. Two struck per sixteenth against ten pixels is enough for that
+# without the whole panel sitting at full.
+BIRD_GLOW = 0.18
+BIRD_SPARKLES = 2
+BIRD_FALL = 3  # sixteenths for a sparkle to return to the glow
 
 
 # --- time -----------------------------------------------------------------
@@ -317,21 +330,36 @@ def seven(tick, brightness=1.0):
 
 
 def bird(tick, brightness=1.0):
-    """Magenta sparkle, denser and softer than Sparkle.
+    """A magenta glow with sparkles flaring out of it and falling back.
 
-    Same beat-hashed randomness, so a looping bar gets a repeating shimmer
-    rather than a fizz - but several pixels at once and at mixed levels, so
-    it glitters rather than blinks.
+    Every pixel sits at BIRD_GLOW. A couple are struck to full on each
+    sixteenth and fade back down to the glow over the next few, so at any
+    moment several are part way home and the panel shimmers instead of
+    blinking. Nothing ever goes dark.
+
+    The choice of pixel is hashed from the position in the bar, as Sparkle
+    is, so a looping pattern shimmers the same way each time round rather
+    than fizzing differently on every pass.
     """
-    colors = _blank()
-    seed = sixteenth(tick) % SIXTEENTHS_PER_BAR
-    for index in range(BIRD_SPARKLES):
-        value = (seed * 2654435761 + index * 2246822519) & 0xFFFFFFFF
-        pixel = (value >> 8) % PIXEL_COUNT
-        # A level from the same hash, so the same bar glitters the same way.
-        level = 0.35 + ((value >> 20) & 0xFF) / 392.0
-        colors[pixel] = dim(MAGENTA, level * brightness)
-    return colors
+    levels = [BIRD_GLOW] * PIXEL_COUNT
+    now = sixteenth(tick)
+    span = float(BIRD_FALL * TICKS_PER_SIXTEENTH)
+    for back in range(BIRD_FALL):
+        struck = now - back
+        age = tick - struck * TICKS_PER_SIXTEENTH
+        if age < 0:
+            continue
+        fall = 1.0 - age / span
+        if fall <= 0.0:
+            continue
+        level = BIRD_GLOW + (1.0 - BIRD_GLOW) * fall
+        seed = struck % SIXTEENTHS_PER_BAR
+        for index in range(BIRD_SPARKLES):
+            value = (seed * 2654435761 + index * 2246822519) & 0xFFFFFFFF
+            pixel = (value >> 8) % PIXEL_COUNT
+            if level > levels[pixel]:
+                levels[pixel] = level
+    return [dim(MAGENTA, level * brightness) for level in levels]
 
 
 def off(tick, brightness=1.0):

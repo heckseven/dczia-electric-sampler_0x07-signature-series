@@ -13,6 +13,7 @@ Several tests below exist purely to pin that down.
 import pytest
 
 from engine.animation import (
+    BIRD_FALL,
     ANIMATIONS,
     BEATS_PER_BAR,
     COLUMNS,
@@ -72,9 +73,20 @@ def test_the_pad_pixels_agree_with_the_measured_key_mapping():
 def test_the_button_pixels_agree_with_the_measured_key_mapping():
     from utils import neoindex
 
-    play, function = INDICATORS[1], INDICATORS[0]
-    assert play == neoindex(8), "Play"
-    assert function == neoindex(9), "Function"
+    assert PLAY_PIXEL == neoindex(8), "Play"
+    assert FUNCTION_PIXEL == neoindex(9), "Function"
+
+
+def test_the_buttons_are_listed_left_to_right():
+    """Play is the left one.
+
+    Settled from the board rather than guessed: SW9 (Play) sits at x=123.71
+    and SW10 (Function) at x=142.76, the same two x positions as pads 1 and
+    2 below them. The pixel numbers run the other way, so the leftmost
+    position on the panel is pixel 1.
+    """
+    assert INDICATORS == (PLAY_PIXEL, FUNCTION_PIXEL)
+    assert PATH[0] == PLAY_PIXEL, "a chase should start at the left"
 
 
 def test_every_pixel_is_accounted_for_exactly_once():
@@ -89,8 +101,8 @@ def test_the_rows_are_the_two_halves_of_the_grid():
 def test_a_column_runs_down_the_panel():
     """Four columns. The left two carry a button above the pads as well."""
     assert len(COLUMNS) == 4
-    assert COLUMNS[0] == (FUNCTION_PIXEL, UPPER[0], LOWER[0])
-    assert COLUMNS[1] == (PLAY_PIXEL, UPPER[1], LOWER[1])
+    assert COLUMNS[0] == (PLAY_PIXEL, UPPER[0], LOWER[0])
+    assert COLUMNS[1] == (FUNCTION_PIXEL, UPPER[1], LOWER[1])
     for index in (2, 3):
         assert COLUMNS[index] == (UPPER[index], LOWER[index])
 
@@ -571,14 +583,35 @@ def test_bird_is_magenta():
             assert red == blue or (red, green, blue) == OFF, (red, green, blue)
 
 
-def test_bird_lights_several_pixels_at_once():
-    """It should glitter rather than blink one pixel at a time."""
-    assert len(_lit(bird(0))) > 1
+def test_bird_never_goes_dark():
+    """A glow underneath, with sparkles on top of it."""
+    for tick in range(TICKS_PER_BAR):
+        assert OFF not in bird(tick), tick
 
 
-def test_bird_glitters_at_mixed_levels():
-    levels = {sum(color) for color in bird(0) if color != OFF}
-    assert len(levels) > 1, "every sparkle is the same brightness"
+def test_bird_sparkles_are_brighter_than_the_glow():
+    row = bird(0)
+    levels = sorted({sum(color) for color in row})
+    assert len(levels) > 1, "nothing is standing out from the glow"
+    assert levels[0] < levels[-1]
+
+
+def test_a_bird_sparkle_falls_back_to_the_glow():
+    """Struck to full, then home over the next few sixteenths."""
+    row = bird(0)
+    brightest = max(range(PIXEL_COUNT), key=lambda i: sum(row[i]))
+    peak = sum(row[brightest])
+    later = sum(bird(TICKS_PER_SIXTEENTH * BIRD_FALL)[brightest])
+    assert later < peak, "the sparkle never came down"
+
+
+def test_most_of_bird_is_the_glow_at_any_moment():
+    """Two struck a sixteenth against ten pixels, so it shimmers rather
+    than sitting at full."""
+    row = bird(0)
+    quietest = min(sum(color) for color in row)
+    at_rest = [color for color in row if sum(color) == quietest]
+    assert len(at_rest) >= PIXEL_COUNT // 2, len(at_rest)
 
 
 def test_bird_repeats_with_the_bar():

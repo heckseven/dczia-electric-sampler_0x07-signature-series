@@ -19,12 +19,13 @@ that logic to the mixer, the MIDI ports, the LEDs and the sync jacks.
 import audiobusio
 import audiomixer
 import board
+import gc
 from adafruit_midi.midi_continue import Continue
 from adafruit_midi.note_on import NoteOn
 from adafruit_midi.start import Start
 from adafruit_midi.stop import Stop
 from adafruit_midi.timing_clock import TimingClock
-from audiocore import RawSample, WaveFile
+from audiocore import RawSample
 from supervisor import ticks_ms
 
 from engine import wav
@@ -75,41 +76,103 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 BITS = 16
 
-# Samples are loaded into RAM rather than streamed wherever they fit, because
-# storage cannot reliably feed the mixer. Measured on this board: audio needs
-# 43.1 KB/s per playing voice, flash sustains 391 KB/s and the SD card only
-# 169 KB/s in the small reads streaming produces. Three voices from a card is
-# already marginal and eight tracks would need 345 KB/s, which starves the I2S
-# buffer and sounds like harsh digital distortion.
-#
-# The budget is deliberately conservative against the ~86 KB free measured with
-# the engine loaded. A sample too big for it still plays, by streaming, which is
-# fine for the one long sound in a kit and bad only if every track is long.
 # Loaded at startup so the badge makes a sound out of the box. Bare names, so
 # they resolve wherever the samples actually live - card first, then flash.
 #
 # These four are from the Kosmo drums set, converted to the mixer's format
 # (16 kHz, mono, 16-bit signed) because the mixer sums voices rather than
-# resampling them and rejects any sample whose rate differs. Only the kick and
-# snare fit MAX_RAM_SAMPLE; the open hat and cymbal are long enough to stream,
-# which is the case the budget above is written for - a couple of long sounds
-# in a kit, not eight.
+# resampling them and rejects any sample whose rate differs.
+#
+# A closed and an open hat rather than a crash: shared four ways the budget
+# is a quarter of a second a track, and a cymbal is the one sound that says
+# nothing at all in a quarter of a second. A hat pair is the opposite - it is
+# most of what a beat needs and both halves are already that short.
+#
+# The four were trimmed to 0.25 s with
+# `Tools/convert_samples.py --max-seconds 0.25`, so the four together spend
+# 31,940 of RAM_BUDGET's 32,768 bytes and every track sounds. Trimmed offline
+# rather than at load, because the fade is then chosen once and by ear; the
+# runtime does the same thing to anything the player picks, as a safety net.
+# Retune by ear if the balance is wrong - the arithmetic is just seconds
+# times 32,000 bytes.
 DEFAULT_KIT = (
-    "kick_crater.wav",
-    "snare_kraken-head_1.wav",
-    "hh_hats-open_1.wav",
-    "cymbals_crucible-edge_1.wav",
+    "kick_crater.wav",  # Track 1
+    "snare_kraken-head_1.wav",  # Track 2
+    "hh_hats-closed_1.wav",  # Track 3
+    "hh_hats-open_1.wav",  # Track 4
 )
 
-RAM_BUDGET = 48 * 1024
+# Samples are held in RAM. Nothing streams from storage, ever.
+#
+# Streaming was tried and removed. CircuitPython refills a playing WaveFile
+# from a background callback, and `busio` SPI spins RUN_BACKGROUND_TASKS
+# inside its own transfer loop - so any main-thread card access while a stream
+# is live re-enters FatFS underneath itself. The card error is then latched
+# into the file handle for good, `audiomixer` has no branch for a failed
+# refill and quietly sets the voice's sample to NULL, and the track is dead
+# with nothing raised. Measured on the badge: a streamed track died on its
+# second hit every time, where the same pattern from RAM survived 40 of 40.
+# See docs/streaming-bug-rootcause.md.
+#
+# Holding the audio takes storage out of the audio path completely, which is
+# the only configuration that never failed. The cost is length, and it is paid
+# by trimming: a sample longer than its share is loaded head first and faded
+# out rather than streamed or refused.
+#
+# Both numbers were measured against the ~86 KB free with the engine loaded,
+# and both are deliberately conservative. The binding constraint is not total
+# free memory but the largest contiguous block - 11840 bytes of 25264 free,
+# measured after a kit was loaded - so re-measure on hardware before raising
+# either.
+# Measured on the badge, at the moment that decides it: StartupState prints
+# free memory once the whole UI is warmed. With a 48 KB budget that line read
+#
+#     free after warm: 17120, kit 49152
+#
+# and 17 KB is not enough to open the sample browser - 98 paths and then 99
+# menu rows at 165 bytes each need something like 25 KB at peak. The listing
+# failed for want of memory, was remembered as "there are no samples", and the
+# browser showed nothing but "(none)" for the rest of the session.
+#
+# So the budget is what is left over after the rest of the badge has what it
+# needs, not the other way round. 32 KB leaves about 33 KB free, which covers
+# the browser with room to spare.
+#
+# The cost is length: shared across a four-track kit this is 0.256 s a track.
+# Streaming from internal flash is what buys that back without spending RAM -
+# see docs/streaming-bug-rootcause.md, option B - and it is the right next
+# move if sample length matters more than the simplicity of holding
+# everything in memory.
+RAM_BUDGET = 32 * 1024
 MAX_RAM_SAMPLE = 24 * 1024
 
-# Read buffer for tracks that are too big for RAM and must stream. CircuitPython
-# caps WaveFile's buffer at 1024 bytes - larger raises "buffer length must be
-# 8-1024" - and the cap costs real throughput: the card sustains 679 KB/s in
-# 4 KB reads but only 333 KB/s in 1 KB ones. 1024 is therefore simply the most
-# the runtime allows, and streaming capacity is set by that, not by the card.
-STREAM_BUFFER = 1024
+# The least a sample is worth loading. Below this there is not enough of a
+# sound left to recognise, so the track is left silent and says why rather
+# than firing a click on every step.
+MIN_RAM_SAMPLE = 2 * 1024
+
+# Bytes per frame at the mixer's format: mono, 16-bit. Reads and trims are
+# rounded to whole frames, because half a frame makes memoryview.cast("h")
+# raise and puts the rest of the sample an octave sideways.
+FRAME_BYTES = 2
+
+# How much of a sample a preview holds. Deliberately less than a track's
+# share: an audition is allocated on top of an already loaded kit, when the
+# heap is at its most fragmented, and long enough to recognise a sound is all
+# a preview has to be.
+AUDITION_BYTES = 12 * 1024
+
+# How long the fade on a trimmed tail runs for, in frames.
+#
+# A sample cut mid-waveform ends on a full-scale step, and a step is a click -
+# the same discontinuity that made a single-voice retrigger audible on the
+# badge. Fading the last few milliseconds costs a sound nobody can hear and
+# removes one everybody can. Eight milliseconds.
+#
+# Tools/convert_samples.py --max-seconds does the same thing offline, which is
+# where a shipped kit should be trimmed - by ear, once. This is the safety net
+# for whatever the player picks at runtime.
+FADE_FRAMES = SAMPLE_RATE * 8 // 1000
 
 # Two voices per track plus two spare. Mono per track is the default, but
 # voices are nearly free - 24 of them measured at about 1.1KB against 141KB
@@ -160,6 +223,16 @@ DEFAULT_VOLUME = 0.25
 MIN_VOLUME = 0.0
 MAX_VOLUME = 1.0
 
+# How long the volume knob has to sit still before where it was left is
+# written to the card.
+#
+# Not per detent: a hand crossing the range produces dozens, and each would be
+# a file write. Not immediately either - the write is tens of milliseconds
+# against a 32 ms audio buffer, so it waits for a moment when nothing is
+# sounding as well. Between them that is one write per adjustment, landing in
+# a silence rather than under a drum hit.
+VOLUME_SAVE_MS = 1500
+
 # How often the MIDI ports are drained. Reading them costs about 430 us a pass
 # on this board, mostly USB, against a main loop that is otherwise around
 # 200 us - so polling every iteration triples the loop period and thins the
@@ -202,6 +275,15 @@ def list_samples(lister=None, dirs=None, limit=MAX_SAMPLES):
     same name in flash. A directory that does not exist is simply skipped -
     a badge with no card is not an error, and neither is a card holding more
     than `limit` samples: the list stops there rather than the badge doing.
+
+    A MemoryError is deliberately not caught. Turning "I could not read the
+    listing" into "there are no samples" is a lie the caller cannot tell from
+    the truth, and SettingsState.Catalog remembers what this returns for the
+    rest of the session - so one tight moment during boot used to leave the
+    browser showing nothing but "(none)" until the badge was power cycled.
+    Reported from the badge as "I went to add a sample to track 5 and it just
+    says none". Raising instead lets the caller decline to remember it, and
+    lets the screen say what actually happened.
     """
     # Read here rather than taken as a default argument: a default is bound
     # when the function is defined, so SAMPLE_DIRS could never afterwards be
@@ -216,11 +298,9 @@ def list_samples(lister=None, dirs=None, limit=MAX_SAMPLES):
     for directory in dirs:
         try:
             names = lister(directory)
-        except (OSError, MemoryError):
-            # MemoryError as well: a directory with tens of thousands of
-            # entries is turned into a list of strings before anything can
-            # look at its length, and that is not an error the caller of a
-            # sample browser should have to handle.
+        except OSError:
+            # A directory that is not there. A badge with no card is not an
+            # error, so the next store gets its turn.
             continue
         for name in sorted(names):
             if not name.endswith(".wav") or name.startswith("."):
@@ -280,6 +360,70 @@ def resolve_sample(name, lister=None, dirs=None):
     return candidates[0] if candidates else None
 
 
+def _fade_tail(view, frames=FADE_FRAMES):
+    """Ramp the end of a trimmed sample down to silence, in place.
+
+    Integer arithmetic on purpose. This runs for every trimmed sample the
+    browser loads, on a board with no floating point unit, where the few
+    hundred frames it touches would otherwise cost more than the read did.
+    """
+    total = len(view)
+    if frames > total:
+        frames = total
+    if frames < 2:
+        return
+    start = total - frames
+    for index in range(frames):
+        # The last frame is scaled by zero, so the sample ends in silence
+        # rather than merely quietly.
+        view[start + index] = view[start + index] * (frames - index - 1) // frames
+
+
+def _read_audio(handle, wanted, floor=MIN_RAM_SAMPLE):
+    """Read `wanted` bytes into a fresh buffer, or None.
+
+    Whether the bytes are affordable is the budget's question; whether they
+    can actually be allocated is a different one. What runs out first on this
+    board is not free memory but the largest contiguous block - 11840 bytes of
+    25264 free, measured after a kit was loaded. So a sample the budget allows
+    can still fail to allocate once the badge has been running, which is
+    exactly when the sample browser gets used.
+
+    Rather than report the track silent, collect once and then ask for less,
+    halving down to `floor`. A shorter sound is a much better answer than no
+    sound, and the caller fades whatever it gets.
+    """
+    if floor > wanted:
+        # A file smaller than the floor is simply a short sound. The floor
+        # exists to stop the halving below returning something too brief to
+        # recognise, not to set a minimum length.
+        floor = wanted
+    collected = False
+    while wanted >= floor:
+        try:
+            buffer = bytearray(wanted)
+        except MemoryError:
+            if not collected:
+                # One collection, not one per attempt: the whole point of
+                # giving ground is to stop asking for what is not there.
+                gc.collect()
+                collected = True
+                continue
+            wanted //= 2
+            wanted -= wanted % FRAME_BYTES
+            continue
+        try:
+            read = handle.readinto(buffer)
+        except OSError:
+            return None
+        if read is None or read < wanted:
+            # A file shorter than its own header claims. Refuse it rather than
+            # play the uninitialised tail of the buffer, which is noise.
+            return None
+        return buffer
+    return None
+
+
 class Sequencer:
     def __init__(self):
         self.song = Song()
@@ -319,8 +463,10 @@ class Sequencer:
         # next hit. Turning the volume down has to be immediate: on
         # headphones the next hit is too late to matter.
         self._voice_velocity = [0] * MIXER_VOICES
-        # When the volume knob last moved, so its speed can be read back.
+        # When the volume knob last moved, so its speed can be read back -
+        # and whether where it was left still has to reach the card.
         self._last_volume_turn = None
+        self._volume_unsaved = False
 
         # Whether pulses arriving on the sync jack should start a stopped
         # transport, or only set tempo and phase for a transport the player
@@ -366,16 +512,22 @@ class Sequencer:
         # than at the view. Holding both costs two slots in a list.
         self._audio = [None] * TRACK_COUNT
         self._views = [None] * TRACK_COUNT
-        # The read buffer a streamed track's WaveFile reads through.
-        self._stream_buffers = [None] * TRACK_COUNT
-        # An auditioned sample is owned by nothing else; it and its buffer
-        # have to live here until the next audition replaces them.
+        # An auditioned sample is owned by nothing else; it, its bytes and the
+        # view over them have to live here until the next audition replaces
+        # them, for the same reason the tracks hold all three.
         self._audition_sample = None
         self._audition_buffer = None
-        self._files = [None] * TRACK_COUNT
-        self._streamed = [False] * TRACK_COUNT
+        self._audition_view = None
+        # How many bytes of audio each track actually holds, which is what the
+        # budget is spent in - not the size of the file it came from.
         self._sizes = [0] * TRACK_COUNT
+        # Which tracks hold less than their file, so the badge can say so
+        # rather than leaving a player hunting for the tail of their crash.
+        self._truncated = [False] * TRACK_COUNT
         self._ram_used = 0
+        # How many tracks of a kit have still to load, or 0 when no kit is
+        # loading. Read by _allowance to share the budget out.
+        self._loading_kit = 0
         self._next_voice = [0] * TRACK_COUNT
         self.midi_out = [False] * TRACK_COUNT  # per track, opt in
 
@@ -397,6 +549,10 @@ class Sequencer:
         card shadows flash by name, and falling through to a playable copy is
         better than reporting a track silent when a usable sample is present.
         """
+        # Cleared first, so what is left here describes this load and no
+        # earlier one. SettingsState reads it to tell "no room" from "will not
+        # play", and a leftover from another track answered for both.
+        self.last_error = None
         self._release_track(track)
         if not path:
             return False
@@ -410,112 +566,223 @@ class Sequencer:
             handle = open(path, "rb")
         except OSError:
             return False
-
         try:
-            rate, channels, bits, offset, size = wav.read_format(handle)
-        except (OSError, wav.WavError, MemoryError):
-            # MemoryError is caught deliberately. It is neither OSError nor
-            # WavError, so without this a corrupt header escapes to the main
-            # loop, and the default kit loads at import - which would fail the
-            # badge on every boot rather than merely silencing one track.
-            handle.close()
-            return False
-
-        if not wav.matches(rate, channels, bits, SAMPLE_RATE, CHANNELS, BITS):
-            # The mixer has one fixed format; anything else plays at the wrong
-            # pitch or not at all. Refuse it rather than make a mess of it.
-            handle.close()
-            self.last_error = "%s is %s, need %s" % (
-                path,
-                wav.describe(rate, channels, bits),
-                wav.describe(SAMPLE_RATE, CHANNELS, BITS),
-            )
-            return False
-
-        sample, audio, view = self._load_to_ram(handle, offset, size)
-        if sample is not None:
-            handle.close()
-            self._samples[track] = sample
-            self._audio[track] = audio
-            self._views[track] = view
-            self._streamed[track] = False
-            self._sizes[track] = size
-        else:
             try:
-                handle.seek(0)
-                buffer = bytearray(STREAM_BUFFER)
-                self._samples[track] = WaveFile(handle, buffer)
-                self._stream_buffers[track] = buffer
-            except (OSError, ValueError, MemoryError):
-                # MemoryError as well: read_format only checks the chunk
-                # headers it needs, so a file it accepts can still upset
-                # CircuitPython's own WAV parser here. This runs for every
-                # kit sample too big for RAM, and the kit loads at import,
-                # so an escape from this handler fails the badge at boot.
-                handle.close()
+                rate, channels, bits, offset, size = wav.read_format(handle)
+            except (OSError, wav.WavError, MemoryError):
+                # MemoryError is caught deliberately. It is neither OSError nor
+                # WavError, so without this a corrupt header escapes to the main
+                # loop, and the default kit loads at import - which would fail the
+                # badge on every boot rather than merely silencing one track.
                 return False
-            self._files[track] = handle
-            self._streamed[track] = True
+
+            if not wav.matches(rate, channels, bits, SAMPLE_RATE, CHANNELS, BITS):
+                # The mixer has one fixed format; anything else plays at the wrong
+                # pitch or not at all. Refuse it rather than make a mess of it.
+                self.last_error = "%s is %s, need %s" % (
+                    path,
+                    wav.describe(rate, channels, bits),
+                    wav.describe(SAMPLE_RATE, CHANNELS, BITS),
+                )
+                return False
+
+            if not self._load_to_ram(track, path, handle, offset, size):
+                return False
+        finally:
+            # Closed on every path out, including the successful one. Nothing
+            # here outlives the load: the audio is copied into memory the track
+            # owns, so no handle is kept and storage is never touched again
+            # while the sample plays. That is the whole point of the RAM path.
+            handle.close()
 
         self.song.set_sample(track, path)
         return True
 
-    def _load_to_ram(self, handle, offset, size):
-        """Read the audio into memory.
+    def _allowance(self):
+        """How many bytes the next sample may take.
 
-        Returns (sample, buffer), or (None, None) to fall back to streaming.
-        The buffer is returned rather than dropped because the caller has to
-        keep it: see the comment on the RawSample below.
+        While a whole kit is loading, what is left of the budget is divided by
+        the tracks that have still to load, so an early sample cannot starve a
+        late one. Measured against the shipped kit read off the card - 131 KB
+        of samples against a 48 KB budget - first come, first served loaded
+        three tracks and left the cymbal silent. Sharing gives 0.38, 0.25,
+        0.45 and 0.45 seconds instead: every pad sounds, which is the whole
+        point of trimming rather than refusing.
+
+        Unspent share is not lost. The room is recomputed from what has
+        actually been used, so a short sample leaves its remainder to the
+        tracks after it.
+
+        Outside a kit load - the browser assigning one sample - there is
+        nothing to share with, and the track may take whatever is free.
         """
-        if size > MAX_RAM_SAMPLE or self._ram_used + size > RAM_BUDGET:
-            return None, None, None
+        room = RAM_BUDGET - self._ram_used
+        cap = MAX_RAM_SAMPLE
+        if self._loading_kit > 1:
+            share = room // self._loading_kit
+            if share < cap:
+                cap = share
+        return room if room < cap else cap
+
+    def _load_to_ram(self, track, path, handle, offset, size):
+        """Read the audio into memory, trimming it if it will not all fit.
+
+        A sample longer than its share is loaded head first and faded out. The
+        alternative used to be streaming it, which is what this rework
+        removed; the alternative before that was refusing it, which turned a
+        long sound into a silent track. A shortened crash is the best of the
+        three and the only one that always plays.
+
+        Everything that can fail does so before any track state is touched, so
+        a failed load leaves the track exactly as the release left it.
+        """
+        allowance = self._allowance()
+        if size <= allowance:
+            # It fits. A sample shorter than MIN_RAM_SAMPLE is not a problem -
+            # a rim or a click is meant to be brief, and the floor below is
+            # about how much room is worth trimming into, not how long a sound
+            # is allowed to be.
+            wanted = size
+        else:
+            if allowance < MIN_RAM_SAMPLE:
+                self.last_error = "%s: no room left in the sample budget" % path
+                return False
+            wanted = allowance
+        wanted -= wanted % FRAME_BYTES
+        if wanted < FRAME_BYTES:
+            return False
         try:
             handle.seek(offset)
-            data = handle.read(size)
-        except (OSError, MemoryError):
-            return None, None, None
-        if len(data) < size:
-            return None, None, None
+        except OSError:
+            return False
+        audio = _read_audio(handle, wanted)
+        if audio is None:
+            return False
         try:
             # RawSample infers bit depth from the buffer's element size: raw
             # bytes mean 8-bit, which the mixer rejects at play() with "the
             # sample's bits_per_sample does not match". Casting to 16-bit
-            # signed says what the audio actually is. A memoryview rather than
-            # array.array('h', data) so the audio is not copied - a second
-            # copy of every sample would double peak memory during loading.
+            # signed says what the audio actually is. The view is also what
+            # makes the fade possible - a bytearray read through a cast view
+            # is writable, where the bytes returned by read() would not be.
+            #
             # The memoryview is named and kept, not built inline. It is what
             # the sample was actually handed, and holding only the bytes
             # underneath it relies on an assumption about which of the two
             # CircuitPython keeps a pointer into. Holding the view holds both.
-            view = memoryview(data).cast("h")
+            view = memoryview(audio).cast("h")
+        except (ValueError, TypeError):
+            # TypeError as well: cast("h") rejects a buffer whose length is not
+            # a multiple of two, and like MemoryError it is not caught by the
+            # handlers above, so it would reach the main loop.
+            return False
+        trimmed = len(audio) < size
+        if trimmed:
+            _fade_tail(view)
+        try:
             sample = RawSample(
                 view,
                 channel_count=CHANNELS,
                 sample_rate=SAMPLE_RATE,
             )
         except (ValueError, MemoryError, TypeError):
-            # TypeError as well: cast("h") rejects a buffer whose length is not
-            # a multiple of two, and like MemoryError it is not caught by the
-            # handlers above, so it would reach the main loop.
-            return None, None, None
-        self._ram_used += size
-        # Both go back to the caller deliberately. The sample refers to
-        # this memory and the I2S DMA reads it for as long as the sample can
-        # play, but nothing here is a reference the garbage collector can
-        # see: once the last name for `data` goes out of scope the bytes are
-        # collectable, and playing a sample whose buffer has been reused is a
-        # read of memory that is now something else. That is a hard fault,
-        # not an exception - the badge drops to safe mode with no traceback,
-        # which is what it did.
-        return sample, data, view
+            return False
+        self._samples[track] = sample
+        # Both the bytes and the view go into the track deliberately. The
+        # sample refers to this memory and the I2S DMA reads it for as long as
+        # the sample can play, but nothing here is a reference the garbage
+        # collector can see: once the last name for the buffer goes out of
+        # scope the bytes are collectable, and playing a sample whose buffer
+        # has been reused is a read of memory that is now something else. That
+        # is a hard fault, not an exception - the badge drops to safe mode with
+        # no traceback, which is what it did.
+        self._audio[track] = audio
+        self._views[track] = view
+        self._sizes[track] = len(audio)
+        self._truncated[track] = trimmed
+        self._ram_used += len(audio)
+        return True
 
-    def is_streamed(self, track):
-        """True when a track plays from storage rather than RAM."""
-        return self._streamed[track]
+    def was_truncated(self, track):
+        """True when this track holds less audio than its file had.
+
+        Worth surfacing rather than hiding: the sound is the head of the file
+        with a fade on it, not the file, and a player wondering where the tail
+        of their crash went deserves to be told.
+        """
+        return self._truncated[track]
 
     @property
     def ram_used(self):
         return self._ram_used
+
+    def restore(self):
+        """Come up as the badge was left, or as a new badge if it was not.
+
+        Three things in order, each allowed to fail on its own: the song last
+        saved or loaded, then the samples last assigned over the top of it,
+        and the shipped kit and demo pattern if there was no song to find.
+
+        Nothing here may raise. This runs at import, so an escape is a badge
+        that will not start - and the things it reads are on a card that can
+        be taken out, written by another machine, or simply not there.
+
+        The samples are applied after the song because they are the more
+        recent statement: a song remembers the kit it was saved with, and a
+        player who has swapped a sample since then meant the swap.
+        """
+        import prefs
+        import songfile
+
+        # The knob first: it costs one read and decides how loud the first
+        # thing the badge does is.
+        saved = prefs.volume_position()
+        if saved != prefs.NO_VOLUME:
+            self.set_volume_position(saved)
+
+        song = None
+        name = prefs.last_song()
+        if name:
+            try:
+                song = songfile.load(name)
+                song.name = name
+            except Exception:
+                # Deliberately everything. A song file is untrusted input off
+                # a card, songfile raises StoreError, the card raises OSError,
+                # and a corrupt one can raise things neither of them names.
+                song = None
+        if song is not None:
+            try:
+                self.load_song(song)
+            except Exception:
+                # Same reasoning as the load above, and the same "nothing here
+                # may raise": a song is a dictionary off a card, and every
+                # field it puts back into the engine is one more thing that
+                # has to be exactly the shape the engine expects. Falling back
+                # to the demo is a badge that plays; letting this out is a
+                # badge that does not start.
+                song = None
+        if song is None:
+            self.load_kit(DEFAULT_KIT)
+            self.load_demo_pattern()
+
+        kit = prefs.last_kit()
+        # `is not None`, not truthiness: a list of eight Nones is a player who
+        # silenced every track and meant it, and coming back making noise
+        # would be ignoring them. prefs.last_kit returns None - not an empty
+        # list - when nothing has been remembered at all.
+        if kit is not None:
+            try:
+                self.load_kit(kit)
+                for track in range(TRACK_COUNT):
+                    self.song.set_sample(
+                        track, kit[track] if track < len(kit) else None
+                    )
+            except Exception:
+                # Same reasoning: a remembered path is whatever was on the
+                # card last time, and the badge has to boot either way.
+                pass
+        return song is not None
 
     def load_demo_pattern(self):
         """A plain beat, so Play does something on a badge straight out of a box.
@@ -539,12 +806,67 @@ class Sequencer:
             song.set_step(2, step, 70)
         return song
 
+    def assign_sample(self, track, path):
+        """Point one track at a sample, making room for it if there is none.
+
+        A kit spends the whole budget between the tracks that have samples,
+        so adding a sample to a track that had none finds nothing left over -
+        and refusing reads as "this sample is broken" when it is only "the
+        others have taken it all". Reloading the whole kit shares the budget
+        out again over one more track, and everything gets a little shorter.
+
+        The cost is a re-read of every sample in the kit, which is most of a
+        second off a card. It is paid only when the sample does not simply
+        fit, and only when the player has just asked for it - by which point
+        they are already waiting for something to happen.
+
+        Clearing a track needs none of this: letting go only ever frees room.
+        """
+        self.song.set_sample(track, path)
+        if not path:
+            self.load_track(track, None)
+            return True
+        if self.load_track(track, path):
+            return True
+        # No room. Everything reloads, this track included, so the budget is
+        # divided by the tracks that now want it rather than by the ones that
+        # wanted it before.
+        self.load_kit(self.song.kit)
+        return self.has_sample(track)
+
     def load_kit(self, paths):
-        loaded = 0
+        """Point every track at its sample, sharing the budget between them.
+
+        The count is taken first so _allowance knows how many tracks are still
+        to come; it is decremented per track rather than per success, because
+        a track that fails to load has still had its turn and its share should
+        go back to the others.
+        """
+        wanted = [
+            paths[track] if track < len(paths) else None for track in range(TRACK_COUNT)
+        ]
+        # Everything is released before anything is loaded. Releasing each
+        # track only as its turn came left the budget still held by the tracks
+        # behind it, so the share worked out from what was free was a fraction
+        # of a fraction, and the first track could not fit its own sample.
+        # load_track releases each one anyway; doing it up front is what makes
+        # the arithmetic below describe the whole kit rather than the tail of
+        # it.
         for track in range(TRACK_COUNT):
-            path = paths[track] if track < len(paths) else None
-            if self.load_track(track, path):
-                loaded += 1
+            self._release_track(track)
+        self._loading_kit = sum(1 for path in wanted if path)
+        loaded = 0
+        try:
+            for track in range(TRACK_COUNT):
+                if self.load_track(track, wanted[track]):
+                    loaded += 1
+                if wanted[track] and self._loading_kit:
+                    self._loading_kit -= 1
+        finally:
+            # Cleared however this ends: a raise here would otherwise leave
+            # every later single-track load capped at a share of a kit that is
+            # no longer loading.
+            self._loading_kit = 0
         return loaded
 
     def load_song(self, song):
@@ -597,24 +919,16 @@ class Sequencer:
     def _release_track(self, track):
         # Before anything is dropped: whatever is playing reads through it.
         self.silence_track(track)
-        if self._samples[track] is not None and not self._streamed[track]:
+        if self._samples[track] is not None:
             # Reclaim the budget this track's audio was holding.
             self._ram_used = max(0, self._ram_used - self._sample_bytes(track))
         self._sizes[track] = 0
-        self._streamed[track] = False
+        self._truncated[track] = False
         self._samples[track] = None
         # Released only after the sample, so a buffer never outlives its
         # owner in the other direction either.
         self._audio[track] = None
         self._views[track] = None
-        self._stream_buffers[track] = None
-        handle = self._files[track]
-        self._files[track] = None
-        if handle is not None:
-            try:
-                handle.close()
-            except OSError:
-                pass
 
     def _sample_bytes(self, track):
         return self._sizes[track]
@@ -670,6 +984,36 @@ class Sequencer:
         voice = base + self._next_voice[track]
         self._next_voice[track] ^= 1
         return voice
+
+    def _save_volume(self, now):
+        """Write the volume down, once the knob is still and the badge quiet.
+
+        Two conditions, and both matter. Still, because a knob being turned
+        produces a detent per pass and each write is a file. Quiet, because a
+        card write is tens of milliseconds against a 32 ms buffer, and a tick
+        in the middle of a pattern is a poor price for remembering something
+        nobody is waiting on.
+
+        A badge switched off mid-pattern without ever stopping it forgets the
+        change. That is the trade: the alternative is hearing every one.
+        """
+        if not self._volume_unsaved:
+            return
+        if self._last_volume_turn is None:
+            return
+        if ticks_diff(now, self._last_volume_turn) < VOLUME_SAVE_MS:
+            return
+        if self.transport.playing or self._anything_sounding():
+            return
+        import prefs
+
+        self._volume_unsaved = False
+        try:
+            prefs.set_volume_position(self.volume_position)
+        except Exception:
+            # Best effort, exactly as the rest of prefs is: a badge with no
+            # card forgets between power-ups and must not stop over it.
+            pass
 
     def start_stream(self):
         """Begin streaming if it is not already running."""
@@ -758,30 +1102,89 @@ class Sequencer:
         return True
 
     def audition(self, path):
-        """Preview a sample without disturbing any track."""
+        """Preview a sample without disturbing any track.
+
+        Held in RAM like everything a track plays, and for the same reason:
+        the browser is used while a pattern is running, and reading the card
+        underneath a playing voice is the fault this rework removed.
+        """
         try:
             handle = open(path, "rb")
         except OSError:
             return False
-        buffer = bytearray(STREAM_BUFFER)
         try:
-            sample = WaveFile(handle, buffer)
-        except (OSError, ValueError, MemoryError):
-            # Close it here: a browser paging through a card full of bad files
-            # would otherwise leak a descriptor for every one of them.
+            try:
+                rate, channels, bits, offset, size = wav.read_format(handle)
+            except (OSError, wav.WavError, MemoryError):
+                return False
+            if not wav.matches(rate, channels, bits, SAMPLE_RATE, CHANNELS, BITS):
+                self.last_error = "%s is %s, need %s" % (
+                    path,
+                    wav.describe(rate, channels, bits),
+                    wav.describe(SAMPLE_RATE, CHANNELS, BITS),
+                )
+                return False
+            wanted = size if size < AUDITION_BYTES else AUDITION_BYTES
+            wanted -= wanted % FRAME_BYTES
+            if wanted < FRAME_BYTES:
+                return False
+            try:
+                handle.seek(offset)
+            except OSError:
+                return False
+            # The previous preview is let go before the next is allocated, so
+            # two are never held at once on the most fragmented heap the badge
+            # has. Stopped first: a mixer voice holds a raw pointer into the
+            # buffer it is playing, not a reference the collector can see.
+            self._stop_audition()
+            audio = _read_audio(handle, wanted, FRAME_BYTES)
+            if audio is None:
+                return False
+        finally:
+            # A browser paging through a card full of unreadable files would
+            # otherwise leak a descriptor for every one of them.
             handle.close()
+
+        try:
+            view = memoryview(audio).cast("h")
+        except (ValueError, TypeError):
+            return False
+        if len(audio) < size:
+            _fade_tail(view)
+        try:
+            sample = RawSample(
+                view,
+                channel_count=CHANNELS,
+                sample_rate=SAMPLE_RATE,
+            )
+        except (ValueError, MemoryError, TypeError):
             return False
         self.start_stream()
         voice = self.mixer.voice[AUDITION_VOICE]
         # Half a full-velocity hit, so a preview sits under the pattern.
         voice.level = self.volume * 0.5
         self._voice_velocity[AUDITION_VOICE] = MAX_VELOCITY // 2
-        # Held before playing, not after: the sample and the buffer it reads
-        # through must outlive this function, and nothing else owns them.
+        # Held before playing, not after: the sample, its bytes and the view
+        # over them must outlive this function, and nothing else owns them.
         self._audition_sample = sample
-        self._audition_buffer = buffer
+        self._audition_buffer = audio
+        self._audition_view = view
         voice.play(sample)
         return True
+
+    def _stop_audition(self):
+        """Silence the preview voice and let go of what it was playing."""
+        voice = self.mixer.voice[AUDITION_VOICE]
+        try:
+            if voice.playing:
+                voice.stop()
+        except OSError:
+            # The audio path is allowed to fail; see trigger().
+            pass
+        self._voice_velocity[AUDITION_VOICE] = 0
+        self._audition_sample = None
+        self._audition_buffer = None
+        self._audition_view = None
 
     def _send_midi(self, track, velocity):
         note = 36 + track  # General MIDI drum range, kick upward
@@ -856,6 +1259,7 @@ class Sequencer:
         for _ in range(fired):
             self._on_tick(now)
         self._update_stream(now)
+        self._save_volume(now)
 
     def _on_tick(self, now):
         tick = self.clock.tick
@@ -1074,6 +1478,8 @@ class Sequencer:
             if elapsed < 0:
                 elapsed = None
         self._last_volume_turn = now
+        # Worth writing down once the hand comes off the knob; see _save_volume.
+        self._volume_unsaved = True
         return self.set_volume_position(
             self.volume_position + accelerated(steps, elapsed)
         )
@@ -1098,5 +1504,4 @@ class Sequencer:
 # The singleton. Importing this module allocates the audio path once, for the
 # lifetime of the program. Nothing streams until something is played.
 engine = Sequencer()
-engine.load_kit(DEFAULT_KIT)
-engine.load_demo_pattern()
+engine.restore()

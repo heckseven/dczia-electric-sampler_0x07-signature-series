@@ -94,7 +94,10 @@ def test_every_animation_on_the_menu_can_be_selected():
     for index in range(len(animation.NAMES)):
         setup.select_enc.position += 1
         state.update(machine)
-        assert state._animation is animation.by_name(state.menu.selected.label)
+        assert (
+            state._animation.__name__
+            == animation.by_name(state.menu.selected.label).__name__
+        )
 
 
 def test_flashy_returns_to_the_settings_tree_on_keypress():
@@ -114,6 +117,96 @@ def test_leaving_flashy_turns_the_strip_off():
     state.update(machine)
     state.exit(machine)
     assert setup.neopixels[0] == (0, 0, 0)
+
+
+# --- remembering the animation --------------------------------------------
+#
+# The panel is the first thing anyone looks at, and a badge that comes back
+# from a power cycle doing something its owner did not choose reads as having
+# been reset.
+
+
+@pytest.fixture
+def card(tmp_path, monkeypatch):
+    import prefs
+
+    monkeypatch.setattr(prefs.store, "directory", str(tmp_path))
+    return prefs
+
+
+def test_flashy_starts_on_the_saved_animation(card):
+    from engine import animation
+
+    card.set_animation("Sweep")
+    state = FlashyState()
+    assert state._animation.__name__ == animation.by_name("Sweep").__name__
+    assert state.menu.selected.label == "Sweep"
+
+
+def test_a_fresh_badge_starts_on_the_first_animation(card):
+    from engine import animation
+
+    state = FlashyState()
+    assert state._animation.__name__ == animation.by_name(animation.NAMES[0]).__name__
+
+
+def test_an_animation_that_no_longer_exists_falls_back(card):
+    """A card written by another firmware, or a list that has since changed."""
+    from engine import animation
+
+    card.set_animation("Kaleidoscope")
+    state = FlashyState()
+    assert state._animation.__name__ == animation.by_name(animation.NAMES[0]).__name__
+
+
+def test_leaving_flashy_saves_the_animation(card):
+    machine = FakeMachine()
+    state = FlashyState()
+    state.enter(machine)
+    setup.select_enc.position += 1
+    state.update(machine)
+    chosen = state.menu.selected.label
+    state.exit(machine)
+    assert card.animation_name() == chosen
+
+
+def test_the_animation_is_not_written_on_every_detent(card):
+    """A spun encoder would otherwise put a card write inside the frame loop."""
+    machine = FakeMachine()
+    state = FlashyState()
+    state.enter(machine)
+    writes = []
+    real = card.set_animation
+    import prefs
+
+    prefs.set_animation = lambda name: writes.append(name) or real(name)
+    try:
+        for _ in range(5):
+            setup.select_enc.position += 1
+            state.update(machine)
+        assert writes == [], "wrote while the knob was still turning"
+        state.exit(machine)
+        assert len(writes) == 1
+    finally:
+        prefs.set_animation = real
+
+
+def test_leaving_without_changing_anything_writes_nothing(card):
+    machine = FakeMachine()
+    card.set_animation("Sweep")
+    state = FlashyState()
+    state.enter(machine)
+    writes = []
+    real = card.set_animation
+    import prefs
+
+    prefs.set_animation = lambda name: writes.append(name) or real(name)
+    try:
+        state.update(machine)
+        state.exit(machine)
+        assert writes == []
+    finally:
+        prefs.set_animation = real
 
 
 # --- StartupState ---------------------------------------------------------

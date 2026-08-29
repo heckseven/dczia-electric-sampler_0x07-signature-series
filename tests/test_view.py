@@ -10,6 +10,7 @@ from engine.clock import Clock
 from engine.song import MAX_VELOCITY, STEPS_PER_PAGE, TRACK_COUNT, Song
 from engine.transport import Transport
 from engine.view import (
+    centred,
     ARMED,
     CLOCK_EXTERNAL,
     CLOCK_FLYWHEEL,
@@ -483,3 +484,32 @@ def test_armed_is_red_too_but_blinks():
 def test_the_function_light_matches_the_view():
     assert function_indicator(LIVE) == MODE_LIVE == (255, 0, 255)
     assert function_indicator(SEQ) == MODE_SEQ == (255, 255, 255)
+
+
+# --- centring a line ------------------------------------------------------
+#
+# The screensaver and the Flashy heading show the player's own words, which is
+# the badge being read rather than operated. Left-aligning them pushes them to
+# one side of a display that has nothing else on it.
+
+
+def test_a_short_line_is_padded_on_the_left():
+    assert centred("HI", 6) == "  HI"
+
+
+def test_an_odd_gap_leans_left():
+    """Two spaces left and three right would need a right pad to prove."""
+    assert centred("HI", 7) == "  HI"
+
+
+def test_a_line_that_exactly_fits_is_untouched():
+    assert centred("ABCDEF", 6) == "ABCDEF"
+
+
+def test_a_line_too_long_to_centre_is_returned_as_is():
+    """screen.set_line does the truncating; this must not do it twice."""
+    assert centred("ABCDEFGH", 6) == "ABCDEFGH"
+
+
+def test_an_empty_line_stays_empty_enough_to_draw_nothing():
+    assert centred("", 6).strip() == ""

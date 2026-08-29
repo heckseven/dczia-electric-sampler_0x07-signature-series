@@ -23,7 +23,7 @@ from supervisor import ticks_ms
 
 import prefs
 import screen as screen_module
-from engine import animation
+from engine import animation, view
 from engine.clock import ticks_diff
 from engine.menu import Item, Menu
 from sequencer import engine as sequencer
@@ -61,12 +61,35 @@ class FlashyState(State):
             rows=MENU_ROWS,
         )
         self._screen = screen_module.shared(display)
-        self._animation = animation.by_name(animation.NAMES[0])
+        # Start on whatever the badge was left showing rather than on the top
+        # of the list. The panel is the first thing anyone looks at, and a
+        # badge that comes back from a power cycle doing something its owner
+        # did not choose reads as having been reset.
+        #
+        # by_name falls back for a name it does not know, which covers an
+        # empty preference, a card written by an older firmware, and a list
+        # that has since had that animation removed.
+        self._saved = prefs.animation_name()
+        self._animation = animation.by_name(self._saved)
+        self._select(self._saved)
         self._timebase = animation.Timebase()
         self._last_select = 0
         self._last_frame = None
         self._last_colors = None
         self._stale = True
+
+    def _select(self, label):
+        """Put the cursor on a named row, if the list still has it.
+
+        The cursor starts at the top, so moving by the index is the same as
+        selecting it - and move() clamps, so a name that is no longer in the
+        list simply leaves the cursor where it was.
+        """
+        for index, name in enumerate(animation.NAMES):
+            if name == label:
+                self.menu.move(index)
+                return True
+        return False
 
     # --- the state machine ------------------------------------------------
 
@@ -86,7 +109,25 @@ class FlashyState(State):
     def exit(self, machine):
         neopixels.fill(animation.OFF)
         neopixels.show()
+        self._remember()
         State.exit(self, machine)
+
+    def _remember(self):
+        """Save the choice, on the way out rather than as the knob turns.
+
+        A detent is one row, and a hand spinning the encoder produces dozens
+        of them. Writing the card on each would put a file write inside the
+        loop that is also drawing the animation. Leaving is the moment the
+        choice is actually made, and it happens once.
+
+        A failed write is not reported: the badge has no card, or the card is
+        full, and neither is worth interrupting an animation to say.
+        """
+        selected = self.menu.selected
+        if selected is None or selected.label == self._saved:
+            return
+        if prefs.set_animation(selected.label):
+            self._saved = selected.label
 
     def update(self, machine):
         position = select_enc.position
@@ -149,12 +190,20 @@ class FlashyState(State):
         # The player's own words head the screen if they set any. This is the
         # animation screen, so it is the other place the badge is being
         # looked at rather than used - see prefs.text.
-        heading = prefs.text() or "Flashy"
+        words = prefs.text()
+        heading = words or "Flashy"
         if total > MENU_ROWS and len(heading) + 4 <= WIDTH:
             count = " %d/%d" % (position, total)
-            heading = "%-*s%s" % (
-                WIDTH - len(count),
-                heading[: WIDTH - len(count)],
-                count,
-            )
+            room = WIDTH - len(count)
+            heading = heading[:room]
+            # The player's own words are centred in what the counter leaves;
+            # the fallback title stays where a title belongs. See
+            # engine.view.centred for why str.center is not used.
+            if words:
+                heading = "%-*s" % (room, view.centred(heading, room))
+            else:
+                heading = "%-*s" % (room, heading)
+            heading += count
+        elif words:
+            heading = view.centred(heading[:WIDTH], WIDTH)
         return [heading[:WIDTH]] + self.menu.rendered(WIDTH)[:MENU_ROWS]

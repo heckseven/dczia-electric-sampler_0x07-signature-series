@@ -116,12 +116,21 @@ def _tracks(command):
     ]
 
 
-def _leaves(pairs, command, extra=None):
-    """Rows for a listing, bounded, with a row saying what was left out."""
+def _leaves(pairs, command, extra=None, value_of=None):
+    """Rows for a listing, bounded, with a row saying what was left out.
+
+    `value_of` turns a listing's value into the row's, so a caller that needs
+    a different shape does not have to build a second list of the whole
+    listing first. That intermediate cost 6 KB on a 98-sample card, at the
+    exact moment the rows themselves were being allocated.
+    """
     rows = list(extra) if extra else []
     room = MAX_ROWS - len(rows)
-    for label, value in pairs[:room]:
-        rows.append(Item(label, command=command, value=value))
+    for index in range(min(room, len(pairs))):
+        label, value = pairs[index]
+        rows.append(
+            Item(label, command=command, value=value_of(value) if value_of else value)
+        )
     hidden = len(pairs) - room
     if hidden > 0:
         rows.append(
@@ -144,10 +153,60 @@ def _sample_rows(catalog, track):
 
     def build():
         clear = [Item(CLEAR_LABEL, command=SAMPLE_CLEAR, value=track)]
-        pairs = [(label, (track, path)) for label, path in catalog.samples()]
-        return _leaves(pairs, SAMPLE_TRACK, extra=clear)
+        # The catalog's own list is walked directly. Building a second list of
+        # (label, (track, path)) first held two copies of a 98-sample listing
+        # at once - 6 KB - on the pass that was already allocating 99 rows.
+        return _leaves(
+            catalog.samples(),
+            SAMPLE_TRACK,
+            extra=clear,
+            value_of=lambda path: (track, path),
+        )
 
     return build
+
+
+# Which commands carry a track index as their value, so the screen can light
+# the pad a row is about. Kept beside the commands rather than in the screen:
+# adding a track-specific row and forgetting to light its pad is the sort of
+# mistake that is invisible until somebody edits the wrong track.
+_TRACK_VALUE = (LENGTH_TRACK, SAMPLE_CLEAR)
+
+
+def track_of(item):
+    """The track a row concerns, or None if it is not about one track.
+
+    Three shapes carry a track: a row whose value is the index, a sample row
+    whose value is (index, path), and the branch that stands for one track's
+    sample list.
+    """
+    if item is None:
+        return None
+    value = item.value
+    if item.command == SAMPLE_TRACK:
+        # (track, path). Guarded because the value comes back through a
+        # command handler and a wrong shape should light nothing, not raise.
+        if isinstance(value, tuple) and value and isinstance(value[0], int):
+            return value[0]
+        return None
+    if item.command in _TRACK_VALUE and isinstance(value, int):
+        return value
+    if item.kind == "samples" and isinstance(value, int):
+        return value
+    return None
+
+
+def focused_track(menu):
+    """Which track the settings screen is currently about, or None.
+
+    The row first, then the branch it sits in - so the eight sample rows of
+    Track 5 all answer 5, and so does the "Track 5" row itself before it is
+    opened.
+    """
+    track = track_of(menu.selected)
+    if track is None:
+        track = track_of(menu.node)
+    return track
 
 
 def build(catalog=None):
@@ -213,6 +272,7 @@ def build(catalog=None):
                                 "Track %d" % (track + 1),
                                 builder=_sample_rows(catalog, track),
                                 kind="samples",
+                                value=track,
                             )
                             for track in range(TRACK_COUNT)
                         ],

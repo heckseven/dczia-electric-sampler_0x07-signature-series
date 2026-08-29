@@ -126,6 +126,10 @@ class Menu:
         # the row you came from rather than to the top of the list.
         self._path = [root]
         self._cursor = [0]
+        # Why the last branch opened with no rows, when it was not simply
+        # empty. Read by the screen, so a list nobody can explain gets said
+        # out loud rather than left looking broken.
+        self.last_error = None
         # What the slide is measured from, and what it was measured for.
         # Compared rather than reset by each of move/enter/back/refresh, so a
         # list that rebuilds underneath the cursor restarts the slide too -
@@ -214,9 +218,17 @@ class Menu:
         deeper" from "asked for something to happen".
         """
         item = self.selected
+        # Cleared for every enter, not only the ones that build a list. Left
+        # set, a single failed sample listing made the next unrelated row the
+        # player chose - Save, or a brightness editor - report "Out of memory"
+        # on its way to succeeding.
+        self.last_error = None
         if item is None:
             return None
         if item.is_branch:
+            # Before building: let go of every other card-backed list, so only
+            # the one being looked at is ever held. See _forget_other_branches.
+            self._forget_other_branches(item)
             try:
                 item.build()
             except MemoryError:
@@ -224,19 +236,77 @@ class Menu:
                 # opens empty rather than taking the badge down; the row
                 # limit in engine/settings.py is what normally prevents
                 # this, and this is the backstop for when it does not.
-                item.children = []
-                item.built = True
+                #
+                # Left unbuilt rather than marked built with no rows. Marking
+                # it made the empty list permanent - the row never tried again
+                # however much memory was freed afterwards - and a list nobody
+                # can explain is worse than a slow one.
+                item.invalidate()
+                self.last_error = "out of memory"
             self._path.append(item)
             self._cursor.append(0)
             return None
         return item
 
+    def _in_path(self, node):
+        for entry in self._path:
+            if entry is node:
+                return True
+        return False
+
+    def _forget_other_branches(self, keep):
+        """Drop every built card-backed list except the one being opened.
+
+        A deferred branch holds one Item per row, and a sample list is 98 of
+        them at 165 bytes - about 16 KB. All eight track rows build from the
+        same listing, and nothing used to let any of them go: walking Track 1
+        to Track 8 held eight separate copies and ran the heap out, so the
+        later ones opened empty. Measured free memory with the engine and the
+        whole UI loaded is 25,856 bytes, which is room for one such list and
+        not for two.
+
+        Only the list being looked at is worth keeping. Rebuilding one costs
+        allocation and no card read at all, because the catalog behind it is
+        cached - see SettingsState.Catalog.
+
+        Walks by identity rather than by label: two branches can carry the
+        same name, and the path is what says which one the player is in.
+        """
+        stack = [self.root]
+        while stack:
+            node = stack.pop()
+            if (
+                node.builder is not None
+                and node.built
+                and node is not keep
+                and not self._in_path(node)
+            ):
+                node.invalidate()
+                # Its rows have just gone; there is nothing below to walk.
+                continue
+            for child in node.children or ():
+                stack.append(child)
+
     def back(self):
-        """Go up a level. Returns False at the root, meaning close me."""
+        """Go up a level, letting go of the rows being left behind.
+
+        Returns False at the root, meaning close me.
+
+        The rows are dropped because holding them is not free and nothing
+        else drops them: a sample list is 99 Items, about 16 KB, and the
+        badge has around 21 KB after boot. Left standing, free memory sits
+        under main.py's collection floor and the loop collects on every pass
+        - 25 ms at a time against a 32 ms audio buffer - which is heard as
+        every sample being mangled, long after the menu was closed.
+
+        Rebuilding costs allocation and no card read, because the catalog
+        behind the listing is cached in SettingsState.
+        """
         if len(self._path) == 1:
             return False
-        self._path.pop()
+        leaving = self._path.pop()
         self._cursor.pop()
+        leaving.invalidate()
         return True
 
     def refresh(self):

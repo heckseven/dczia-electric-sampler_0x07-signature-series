@@ -31,7 +31,7 @@ import prefs
 import screen as screen_module
 import sequencer as sequencer_module
 import songfile
-from engine import settings
+from engine import settings, view
 from engine.clock import ticks_diff
 from engine.editor import Editor
 from engine.menu import Menu
@@ -40,6 +40,7 @@ from engine.song import DIVISIONS, MAX_STEPS, MIN_LENGTH, TRACK_COUNT
 from sequencer import engine as sequencer
 from setup import display, keys, neopixels, select_enc, volume_enc
 from State import State
+from utils import neoindex
 from store import StoreError
 
 # Key numbers, named here rather than imported from the sampler's controls:
@@ -104,20 +105,40 @@ class Catalog:
         return self._kits
 
     def samples(self):
+        """[(label, path)] - remembered only once it is a real answer.
+
+        An empty list is not cached. Nothing on the badge writes a .wav, so
+        this listing is never dropped once it is kept - which means a listing
+        that came back empty because the heap was tight at that moment would
+        have stayed empty for the rest of the session, and the browser would
+        show nothing but "(none)" with no way to ask again.
+
+        Flash always holds the shipped kit, so an empty answer here means the
+        read did not work rather than that there is nothing to play. Reading
+        again costs a directory listing; being permanently wrong costs the
+        feature.
+        """
         if self._samples is None:
-            self._samples = list(sequencer_module.list_samples())
+            found = list(sequencer_module.list_samples())
+            if not found:
+                return found
+            self._samples = found
         return self._samples
 
-    def forget(self, songs=False, kits=False):
+    def forget(self, songs=False, kits=False, samples=False):
         """Drop what the card said, so the next read asks it again.
 
-        Samples are never dropped: nothing on the badge writes a .wav, so
-        that list can only change by taking the card out.
+        Samples used to be exempt - nothing on the badge writes a .wav, so the
+        list can only change by taking the card out - but that was an argument
+        about staleness, not about cost. It is 12 KB, and holding it while a
+        pattern plays is what the sampler cannot afford; see SettingsState.exit.
         """
         if songs:
             self._songs = None
         if kits:
             self._kits = None
+        if samples:
+            self._samples = None
 
 
 class SettingsState(State):
@@ -179,6 +200,13 @@ class SettingsState(State):
         self._last_select = select_enc.position
         self._last_volume = volume_enc.position
         self._last_turn = None
+        # Force the pads to be drawn once on entry, whatever they were left
+        # showing by the screen before this one. Two fields rather than a
+        # tuple of them: this is compared on every pass, and building a tuple
+        # to compare was itself the allocation the comparison existed to
+        # avoid. -1 is not a track, so the first pass always redraws.
+        self._last_pad_track = -1
+        self._last_pad_loaded = -1
         self._stale = 0b111
         self._next_line = 0
         self._scroll_shift = 0
@@ -202,11 +230,75 @@ class SettingsState(State):
             # The state changed. The next state owns the display now.
             return
         self._expire_message()
+        self._render_pads()
         self._mark_scrolled()
         self._build_one_line()
         # Paced, one line per pass. This is what keeps a spun knob from
         # tearing the audio; see screen.py.
         self._screen.flush()
+
+    def exit(self, machine):
+        """Leave the panel dark.
+
+        The pads mean "which track this row is about" only while this screen
+        is up. Leaving one lit would read as the sampler's own state, which is
+        the same reason FlashyState clears the strip on the way out.
+        """
+        neopixels.fill(view.OFF)
+        neopixels.show()
+        self._last_pad_track = -1
+        self._last_pad_loaded = -1
+        # And let go of every card-backed list, rows and listing alike. The
+        # player is going back to the sampler, which needs the memory far more
+        # than a menu nobody is looking at: the rows are 16 KB and the sample
+        # listing behind them another 12, against 29 KB free without them.
+        # See Menu.back for what holding them sounds like.
+        for node in self._deferred():
+            node.invalidate()
+        self.catalog.forget(samples=True)
+        State.exit(self, machine)
+
+    # --- the pads ---------------------------------------------------------
+
+    def _render_pads(self):
+        """Light the pad of the track the current row is about.
+
+        A setting that belongs to one track says so in words, on a row of 21
+        columns, and the pads are already under the player's hand. Lighting
+        the one that is about to change means the same glance that reads the
+        row also checks the track - which is what stops a length or a sample
+        landing on the wrong one.
+
+        Dim on the tracks that have a sample, bright on the focused one, and
+        dark everywhere when the row is not about a track at all. That is
+        view.track_pads, the same picture Function-held draws on the sampler,
+        so the two screens agree about what a lit pad means.
+
+        The comparison is two integers, not the colour list, so the common
+        case - nothing moved - allocates nothing. This runs on every pass of a
+        loop that turns over thousands of times a second, and building a list
+        of ten tuples each time is exactly the churn that turns into audible
+        collections.
+        """
+        track = settings.focused_track(self.menu)
+        loaded = 0
+        for index in range(TRACK_COUNT):
+            if sequencer.has_sample(index):
+                loaded |= 1 << index
+        if track == self._last_pad_track and loaded == self._last_pad_loaded:
+            return
+        self._last_pad_track = track
+        self._last_pad_loaded = loaded
+        # fill first, so the two indicator pixels are cleared as well: they
+        # belong to the sampler and mean nothing here.
+        neopixels.fill(view.OFF)
+        if track is not None:
+            colors = view.track_pads(
+                track, [bool(loaded & (1 << i)) for i in range(TRACK_COUNT)]
+            )
+            for key_number in range(TRACK_COUNT):
+                neopixels[neoindex(key_number)] = colors[key_number]
+        neopixels.show()
 
     # --- input ------------------------------------------------------------
 
@@ -278,6 +370,10 @@ class SettingsState(State):
         self._all_stale()
         if forward:
             item = self.menu.enter()
+            if self.menu.last_error:
+                # A list that would not fit. Said out loud rather than left
+                # looking like an empty folder, which is what it did before.
+                self._show("Out of memory")
             if item is not None:
                 return self._open_item(item, machine)
             return False
@@ -568,6 +664,7 @@ class SettingsState(State):
             self._fail(error)
             return
         song.name = name
+        self._remember_song(name)
         self._forget_listings(songs=True)
         self._show("saved %s" % name)
 
@@ -582,6 +679,7 @@ class SettingsState(State):
             self._fail(error)
             return
         song.kit_name = name
+        self._remember_kit()
         self._forget_listings(kits=True)
         self._show("saved %s" % name)
 
@@ -600,6 +698,12 @@ class SettingsState(State):
             return
         if kind == "song":
             sequencer.song.name = new
+            # The old name is gone from the card and prefs still points at it.
+            # Left alone, the next boot looks for a song that no longer exists,
+            # quietly falls back to the demo, and the badge forgets what it was
+            # playing - but only ever after a rename, which is exactly the kind
+            # of bug nobody connects to the thing they did.
+            self._remember_song(new)
         else:
             sequencer.song.kit_name = new
         self._forget_listings(songs=kind == "song", kits=kind != "song")
@@ -613,6 +717,9 @@ class SettingsState(State):
             return
         song.name = name
         loaded = sequencer.load_song(song)
+        self._remember_song(name)
+        # The song brought its own kit, so that is now the setup in use.
+        self._remember_kit()
         # Out of the list of songs: it has been chosen, and staying in it
         # invites choosing another by accident.
         self.menu.back()
@@ -631,6 +738,7 @@ class SettingsState(State):
             song.set_kit_volume(track, volumes[track])
         song.kit_name = name
         loaded = sequencer.load_kit(paths)
+        self._remember_kit()
         self.menu.back()
         self._show("%s %d/%d" % (name, loaded, TRACK_COUNT))
 
@@ -648,19 +756,67 @@ class SettingsState(State):
 
     def _set_sample(self, track, path):
         song = sequencer.song
-        song.set_sample(track, path)
+        # Out of the listing first, exactly as _delete does, and for a harder
+        # reason: the rows of a 98-sample list are about 16 KB, which is most
+        # of what is free, and assigning may have to reload the whole kit to
+        # make room for this track. Measured on the badge with the list still
+        # open: 6,256 bytes free, and the reshare could not allocate. Leaving
+        # first gives it back about 22 KB and lands the player on the row for
+        # the track they just set, which is where they can hear it.
+        self.menu.back()
         if path is None:
-            sequencer.load_track(track, None)
+            sequencer.assign_sample(track, None)
+            self._remember_kit()
             self._show("T%d cleared" % (track + 1))
             return
-        if self._quietly(lambda: sequencer.load_track(track, path)):
+        # assign_sample, not load_track: a kit spends the whole sample budget,
+        # so a track that had nothing has nothing left to spend. It reshares
+        # rather than refusing - see sequencer.assign_sample.
+        if self._quietly(lambda: sequencer.assign_sample(track, path)):
             # Audible confirmation, which on a badge with eight identical
             # pads is worth more than the words.
             sequencer.trigger(track, 100)
+            self._remember_kit()
             self._show("T%d %s" % (track + 1, _short(path)))
         else:
             song.set_sample(track, None)
-            self._show("T%d failed" % (track + 1))
+            # The reason if there is one. "failed" alone sent the player
+            # looking for a bad file when the answer was that the badge had
+            # run out of room.
+            reason = sequencer.last_error
+            if reason and "budget" in reason:
+                self._show("T%d no room" % (track + 1))
+            else:
+                self._show("T%d failed" % (track + 1))
+
+    def _remember_song(self, name):
+        """Note which song the badge is on, so a power cycle comes back to it.
+
+        Best effort, and quiet about failing: a badge with no card forgets
+        between power-ups, which is the same deal the rest of prefs makes.
+        """
+        try:
+            self._quietly(lambda: prefs.set_last_song(name))
+        except Exception:
+            # Deliberately everything. This is a note to self on a card that
+            # may be absent, full, or slow, and it runs on the way out of a
+            # save the player has already been told succeeded. Failing it must
+            # not take the badge down.
+            pass
+
+    def _remember_kit(self):
+        """Note the samples in use, for the same reason.
+
+        Recorded whenever they change rather than only when a kit is saved:
+        the setup a player is actually using is usually the one they swapped
+        together, not one they gave a name to.
+        """
+        try:
+            self._quietly(lambda: prefs.set_last_kit(sequencer.song.kit))
+        except Exception:
+            # Same: see _remember_song. Building the list of paths allocates,
+            # and this runs at the moment the heap is most spoken for.
+            pass
 
     def _forget_listings(self, songs=False, kits=False):
         """Make the next open of Load or Delete read the card again.
@@ -820,7 +976,17 @@ _WARM_CARD = (
     lambda state: _set_brightness(prefs.brightness()),
     lambda state: state.catalog.songs(),
     lambda state: state.catalog.kits(),
-    lambda state: state.catalog.samples(),
+    # The samples are deliberately NOT warmed here. Measured on the badge, the
+    # listing of 98 of them is about 12 KB of names and paths - and warming it
+    # at boot meant holding that for the whole session, which left 17 KB free
+    # against main.py's 16 KB collection floor. The loop then collected on
+    # almost every pass, 25 ms at a time into a 32 ms audio buffer, and a
+    # pattern played its samples only sometimes.
+    #
+    # Read on the first sample list opened instead, and dropped again when the
+    # screen closes. That puts the stall where a player has just asked for
+    # something and takes it off the thing they are listening to. Songs and
+    # kits stay: a handful of short names is nothing like the same cost.
     lambda state: songfile.available(),
     lambda state: kitfile.available(),
 )

@@ -41,7 +41,12 @@ def read(path):
     with wave.open(str(path), "rb") as source:
         raw = source.readframes(source.getnframes())
         values = list(struct.unpack("<%dh" % (len(raw) // 2), raw))
-        return values, source.getframerate(), source.getnchannels(), source.getsampwidth()
+        return (
+            values,
+            source.getframerate(),
+            source.getnchannels(),
+            source.getsampwidth(),
+        )
 
 
 def converted(tmp_path, source, **kwargs):
@@ -175,3 +180,141 @@ def test_normalise_lifts_the_peak_without_clipping(tmp_path, freq):
 
     peak = max(max(values), -min(values))
     assert 32767 * 0.90 < peak <= 32767
+
+
+# --- trimming to fit the badge's RAM ---------------------------------------
+#
+# The firmware holds every sample in RAM and streams nothing, so length is a
+# memory budget. Trimming here rather than at load is what lets the fade be
+# chosen once, by ear, instead of by whichever track happened to load first.
+
+
+def test_max_seconds_cuts_the_sample(tmp_path):
+    source = tone(tmp_path / "long.wav", 440, rate=16000, seconds=2.0)
+    out = str(tmp_path / "short.wav")
+    convert_samples.convert(source, out, target_rate=16000, max_seconds=0.5)
+    with wave.open(out, "rb") as result:
+        assert result.getnframes() == 8000
+
+
+def test_a_cut_sample_ends_in_silence(tmp_path):
+    """A cut mid-waveform is a full-scale step, and a step is a click."""
+    source = tone(tmp_path / "loud.wav", 440, rate=16000, seconds=2.0)
+    out = str(tmp_path / "faded.wav")
+    convert_samples.convert(source, out, target_rate=16000, max_seconds=0.5)
+    with wave.open(out, "rb") as result:
+        count = result.getnframes()
+        values = struct.unpack("<%dh" % count, result.readframes(count))
+    assert values[-1] == 0
+    fade = int(16000 * convert_samples.FADE_MS / 1000.0)
+    # The body is untouched: the loudest frame before the fade is still full.
+    assert max(abs(v) for v in values[: count - fade]) > 19000
+    # And the fade really descends rather than just ending on a zero crossing.
+    tail = [abs(v) for v in values[count - fade :]]
+    assert max(tail[: fade // 4]) > max(tail[-fade // 4 :])
+
+
+def test_a_sample_shorter_than_the_limit_is_untouched(tmp_path):
+    source = tone(tmp_path / "brief.wav", 440, rate=16000, seconds=0.2)
+    out = str(tmp_path / "brief-out.wav")
+    convert_samples.convert(source, out, target_rate=16000, max_seconds=1.0)
+    with wave.open(out, "rb") as result:
+        count = result.getnframes()
+        values = struct.unpack("<%dh" % count, result.readframes(count))
+    assert count == 3200
+    assert values[-1] != 0, "an uncut sample must not be faded"
+
+
+def test_no_limit_leaves_the_length_alone(tmp_path):
+    source = tone(tmp_path / "full.wav", 440, rate=16000, seconds=1.0)
+    out = str(tmp_path / "full-out.wav")
+    convert_samples.convert(source, out, target_rate=16000)
+    with wave.open(out, "rb") as result:
+        assert result.getnframes() == 16000
+
+
+def test_the_cut_happens_before_normalising(tmp_path):
+    """Otherwise a peak in the discarded tail sets the gain for what is kept."""
+    rate = 16000
+    frames = [3000] * rate + [30000] * rate  # quiet half, then a loud tail
+    source = pcm(tmp_path / "tail.wav", frames, rate=rate)
+    out = str(tmp_path / "tail-out.wav")
+    convert_samples.convert(
+        source, out, target_rate=rate, do_normalise=True, max_seconds=1.0
+    )
+    with wave.open(out, "rb") as result:
+        count = result.getnframes()
+        values = struct.unpack("<%dh" % count, result.readframes(count))
+    assert max(values) > 30000, "the kept half was not lifted to full scale"
+
+
+# --- dead air on the end ---------------------------------------------------
+#
+# Every track shares 32 KB, so a tenth of a second of silence on the end of a
+# snare is a tenth of a second another track does not get.
+
+
+def test_trailing_silence_is_removed(tmp_path):
+    rate = 16000
+    frames = [12000] * rate + [0] * rate  # a second of sound, a second of air
+    source = pcm(tmp_path / "air.wav", frames, rate=rate)
+    out = str(tmp_path / "air-out.wav")
+    convert_samples.convert(source, out, target_rate=rate)
+    with wave.open(out, "rb") as result:
+        assert abs(result.getnframes() - rate) < 50, "the silence stayed"
+
+
+def test_quiet_is_not_the_same_as_silence(tmp_path):
+    """A decaying tail must survive; only what is under the floor goes."""
+    rate = 16000
+    floor = convert_samples.silence_floor()
+    frames = [12000] * 1000 + [floor * 4] * 1000
+    source = pcm(tmp_path / "tail.wav", frames, rate=rate)
+    out = str(tmp_path / "tail-out.wav")
+    convert_samples.convert(source, out, target_rate=rate)
+    with wave.open(out, "rb") as result:
+        assert result.getnframes() > 1900, "the quiet tail was eaten"
+
+
+def test_silence_in_the_middle_is_left_alone(tmp_path):
+    """Only an unbroken run reaching the last frame counts as the end."""
+    rate = 16000
+    frames = [12000] * 500 + [0] * 500 + [12000] * 500
+    source = pcm(tmp_path / "gap.wav", frames, rate=rate)
+    out = str(tmp_path / "gap-out.wav")
+    convert_samples.convert(source, out, target_rate=rate)
+    with wave.open(out, "rb") as result:
+        assert result.getnframes() >= 1400, "the gap in the middle was closed"
+
+
+def test_trimming_silence_can_be_turned_off(tmp_path):
+    rate = 16000
+    frames = [12000] * 1000 + [0] * 1000
+    source = pcm(tmp_path / "keep.wav", frames, rate=rate)
+    out = str(tmp_path / "keep-out.wav")
+    convert_samples.convert(source, out, target_rate=rate, trim=False)
+    with wave.open(out, "rb") as result:
+        assert result.getnframes() == 2000
+
+
+def test_an_entirely_silent_sample_does_not_become_negative(tmp_path):
+    source = pcm(tmp_path / "dead.wav", [0] * 1000, rate=16000)
+    out = str(tmp_path / "dead-out.wav")
+    convert_samples.convert(source, out, target_rate=16000)
+    with wave.open(out, "rb") as result:
+        assert result.getnframes() == 0
+
+
+def test_silence_is_trimmed_before_the_length_limit(tmp_path):
+    """Otherwise a limit is spent on air that was going to be dropped."""
+    rate = 16000
+    frames = [12000] * rate + [0] * rate
+    source = pcm(tmp_path / "both.wav", frames, rate=rate)
+    out = str(tmp_path / "both-out.wav")
+    convert_samples.convert(source, out, target_rate=rate, max_seconds=0.5)
+    with wave.open(out, "rb") as result:
+        count = result.getnframes()
+        values = struct.unpack("<%dh" % count, result.readframes(count))
+    assert count == 8000
+    # Half a second of actual sound, not a quarter of sound and a quarter of air.
+    assert max(abs(v) for v in values[:7000]) > 10000

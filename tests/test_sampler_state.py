@@ -791,6 +791,33 @@ def test_the_waking_press_still_does_its_job(state):
     ), "the pad that woke it did not sound"
 
 
+def test_the_players_words_are_centred_while_idle(state, tmp_path, monkeypatch):
+    """The badge is being read across a room here, not operated."""
+    import prefs
+
+    monkeypatch.setattr(prefs.store, "directory", str(tmp_path))
+    prefs.set_text("HECKSEVEN")
+    idle_out(state)
+    run(state)
+    columns = state._screen.columns
+    line = state._screen.line(1)
+    assert line.strip() == "HECKSEVEN"
+    lead = len(line) - len(line.lstrip(" "))
+    assert lead == (columns - len("HECKSEVEN")) // 2, repr(line)
+
+
+def test_the_words_are_not_centred_anywhere_but_idle(state, tmp_path, monkeypatch):
+    """The editor leaves text where the cursor is, which is where typing wants it."""
+    import prefs
+
+    monkeypatch.setattr(prefs.store, "directory", str(tmp_path))
+    prefs.set_text("HECKSEVEN")
+    run(state)
+    assert state._idle is False
+    lines = [state._screen.line(i) for i in range(len(state._screen))]
+    assert not any(line.strip() == "HECKSEVEN" for line in lines), lines
+
+
 def test_the_screen_keeps_the_samplers_text_while_idle(state):
     """Chosen over blanking, knowing it is the OLED burn-in case."""
     idle_out(state)
@@ -813,6 +840,44 @@ def test_a_badge_that_has_never_seen_flashy_still_has_an_animation(state):
 
     state._machine = None
     assert state._idle_animation() is animation.by_name(animation.NAMES[0])
+
+
+def test_a_badge_that_has_not_opened_flashy_uses_the_saved_animation(
+    state, tmp_path, monkeypatch
+):
+    """The badge boots into the sampler, so nothing has built Flashy yet.
+
+    Without this the screensaver came back on the first animation in the list
+    however the badge had been left, which is what made the choice look like
+    it had not been saved at all.
+    """
+    import prefs
+    from engine import animation
+
+    monkeypatch.setattr(prefs.store, "directory", str(tmp_path))
+    prefs.set_animation("Sweep")
+    state._machine = None
+    assert state._idle_animation() is animation.by_name("Sweep")
+
+
+def test_the_saved_animation_is_read_once_and_not_per_frame(
+    state, tmp_path, monkeypatch
+):
+    """_render_idle_pixels runs forty times a second and this reads the card."""
+    import prefs
+
+    monkeypatch.setattr(prefs.store, "directory", str(tmp_path))
+    prefs.set_animation("Sweep")
+    state._machine = None
+    reads = []
+    real = prefs.animation_name
+    monkeypatch.setattr(prefs, "animation_name", lambda: reads.append(1) or real())
+
+    idle_out(state)
+    run(state, passes=6)
+    circuitpython_stubs.ticks.value += 200
+    run(state, passes=6)
+    assert len(reads) <= 1, "the card was read %d times while idle" % len(reads)
 
 
 def test_the_idle_animation_is_whatever_flashy_was_left_on(state):
@@ -890,3 +955,162 @@ def test_a_manual_pad_still_lights_its_own(state):
     press(4)
     run(state)
     assert state._last_pixels[4] == view.TRACK_FLASH
+
+
+# --- the held knobs say what they just did ---------------------------------
+#
+# While a modifier is held the legend has the screen, and it says what each
+# knob is for rather than what it just did. Turning one is exactly the moment
+# the number is wanted, so that knob's line carries it and the other two keep
+# saying what they are for.
+
+
+def _lines(state):
+    return [state._screen.line(i) for i in range(len(state._screen))]
+
+
+def hold(state):
+    """Cross the hold threshold, which is what puts the legend up."""
+    circuitpython_stubs.ticks.value += controls_module.HOLD_MS
+    run(state)
+
+
+def _turn_select(state, steps=1):
+    setup.select_enc.position += steps
+    run(state)
+
+
+def _turn_volume(state, steps=1):
+    setup.volume_enc.position += steps
+    run(state)
+
+
+def test_holding_play_and_turning_select_shows_the_length(state):
+    press(PLAY)
+    run(state)
+    hold(state)
+    _turn_select(state, 2)
+    shown = _lines(state)
+    # A digit, not the word: the legend already says "Sel  length", so
+    # matching on "len" would pass against a screen that changed nothing.
+    length = sequencer_module.engine.song.length
+    assert any(line == "Sel  len %d" % length for line in shown), shown
+
+
+def test_holding_play_and_turning_volume_shows_the_quantise(state):
+    press(PLAY)
+    run(state)
+    hold(state)
+    _turn_volume(state, 1)
+    shown = _lines(state)
+    # The percentage, not the word: "Vol  quantize" is the legend's own text.
+    percent = int(round(sequencer_module.engine.strength * 100))
+    assert any(line == "Vol  quant %d%%" % percent for line in shown), shown
+
+
+def test_holding_function_and_turning_volume_shows_the_track_volume(state):
+    press(FUNCTION)
+    run(state)
+    hold(state)
+    _turn_volume(state, -1)
+    shown = _lines(state)
+    assert any(line.startswith("Vol") and "%" in line for line in shown), shown
+
+
+def test_the_other_legend_lines_still_say_what_they_are_for(state):
+    """Only the knob being turned gives up its line."""
+    press(FUNCTION)
+    run(state)
+    hold(state)
+    _turn_volume(state, -1)
+    shown = _lines(state)
+    assert any(line.startswith("pad") for line in shown), shown
+    assert any(line == "Sel  pitch" for line in shown), shown
+
+
+def test_the_value_goes_away_and_the_legend_comes_back(state):
+    press(FUNCTION)
+    run(state)
+    hold(state)
+    _turn_volume(state, -1)
+    circuitpython_stubs.ticks.value += sampler_module.MESSAGE_MS + 50
+    run(state)
+    shown = _lines(state)
+    assert any(line == "Vol  volume" for line in shown), shown
+
+
+def test_nothing_held_leaves_the_detail_line_alone(state):
+    """It already shows tempo, division, length and volume, all the time."""
+    setup.select_enc.position += 1
+    run(state)
+    shown = _lines(state)
+    assert not any("BPM" in line for line in shown), shown
+    assert any("L" in line and "V" in line for line in shown), shown
+
+
+def test_a_tap_does_not_flash_a_value_either(state):
+    """The legend appears at the hold threshold; so does the readout."""
+    press(FUNCTION)
+    run(state)
+    setup.volume_enc.position -= 1
+    run(state)
+    shown = _lines(state)
+    assert not any(line.startswith("Vol") for line in shown), shown
+
+
+# --- a modifier's pad press is spent, and must not also toggle -------------
+#
+# Reported from the badge: "when i switch tracks or switch which half bar i am
+# looking at, the note associated with that pad also gets toggled". The press
+# was consumed by the modifier and the release still fell through to the
+# toggle, so choosing a track wrote a note as a side effect.
+
+
+def test_choosing_a_track_does_not_toggle_that_pads_step(state):
+    engine = sequencer_module.engine
+    engine.mode = SEQ
+    state.controls.set_mode(SEQ)
+    press(FUNCTION)
+    run(state)
+    tap(state, 3)
+    assert engine.selected_track == 3, "the track did not change"
+    assert not engine.song.is_on(3, 3), "choosing a track wrote a note"
+
+
+def test_choosing_a_track_does_not_clear_a_step_already_there(state):
+    """The other half of it: the toggle turned an existing note off."""
+    engine = sequencer_module.engine
+    engine.mode = SEQ
+    state.controls.set_mode(SEQ)
+    engine.song.set_step(3, 3, 100)
+    press(FUNCTION)
+    run(state)
+    tap(state, 3)
+    assert engine.song.is_on(3, 3), "choosing a track cleared a note"
+
+
+def test_choosing_a_page_does_not_toggle_that_pads_step(state):
+    engine = sequencer_module.engine
+    engine.mode = SEQ
+    state.controls.set_mode(SEQ)
+    engine.song.set_length(16)
+    press(PLAY)
+    run(state)
+    tap(state, 1)
+    assert engine.page == 1, "the page did not change"
+    step = STEPS_PER_PAGE * 1 + 1
+    assert not engine.song.is_on(engine.selected_track, step), "wrote a note"
+
+
+def test_a_plain_pad_still_toggles_after_a_modifier_gesture(state):
+    """The suppression must not outlive the press it was for."""
+    engine = sequencer_module.engine
+    engine.mode = SEQ
+    state.controls.set_mode(SEQ)
+    press(FUNCTION)
+    run(state)
+    tap(state, 3)
+    release(FUNCTION)
+    run(state)
+    tap(state, 3)
+    assert engine.song.is_on(3, 3), "the next plain tap was swallowed"

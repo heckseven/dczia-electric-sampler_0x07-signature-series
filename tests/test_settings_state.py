@@ -412,16 +412,26 @@ def test_a_sample_can_be_assigned_to_a_track(state, card):
 
 
 def test_a_track_can_be_emptied_again(state, card):
+    # Setting a sample leaves the listing - the rows are 16 KB and assigning
+    # may need them back - so clearing means going into it again.
     go(state, "Samples", "Tracks", "Track 2", "s0.wav")
-    go(state, "(none)")
+    go(state, "Track 2", "(none)")
     assert sequencer_module.engine.song.kit[1] is None
     assert sequencer_module.engine.has_sample(1) is False
 
 
-def test_a_kit_survives_being_saved_and_loaded(state, card):
+def test_setting_a_sample_leaves_the_listing(state, card):
+    """The rows cost most of what is free; holding them starves the assign."""
     go(state, "Samples", "Tracks", "Track 2", "s0.wav")
-    press(B)  # out of the sample list
-    run(state)
+    rows = [item.label for item in state.menu.items]
+    assert "Track 2" in rows, rows
+    assert "s0.wav" not in rows, "still standing in the sample list"
+
+
+def test_a_kit_survives_being_saved_and_loaded(state, card):
+    # Setting the sample already left the listing, so one press gets out of
+    # Tracks and back to the Samples menu.
+    go(state, "Samples", "Tracks", "Track 2", "s0.wav")
     press(B)  # out of Tracks
     run(state)
     go(state, "Kit", "Save")
@@ -924,7 +934,7 @@ def test_every_track_is_silenced_not_just_the_playing_one(state, monkeypatch):
     assert sorted(set(silenced)) == list(range(TRACK_COUNT))
 
 
-def test_warming_reads_every_listing(state):
+def test_warming_reads_the_small_listings(state):
     state.catalog._songs = state.catalog._kits = state.catalog._samples = None
     state._warmed = 0
     steps = 0
@@ -933,7 +943,33 @@ def test_warming_reads_every_listing(state):
         assert steps < 100, "warming does not finish"
     assert state.catalog._songs is not None
     assert state.catalog._kits is not None
+
+
+def test_warming_leaves_the_sample_listing_alone(state):
+    """It is 12 KB, and holding it all session is what starved the sampler.
+
+    Songs and kits are a handful of short names; the samples are 98 names and
+    98 paths. Read on the first sample list opened instead, and dropped when
+    the screen closes.
+    """
+    state.catalog._songs = state.catalog._kits = state.catalog._samples = None
+    state._warmed = 0
+    while state.warm_step():
+        pass
+    assert state.catalog._samples is None
+
+
+def test_leaving_the_screen_drops_the_sample_listing(state):
+    state.catalog.samples()
     assert state.catalog._samples is not None
+    state.exit(FakeMachine())
+    assert state.catalog._samples is None
+
+
+def test_the_listing_comes_back_when_it_is_next_needed(state, card):
+    state.catalog.samples()
+    state.exit(FakeMachine())
+    assert state.catalog.samples() is not None
 
 
 def test_warming_does_one_slow_thing_per_call(state):
@@ -1090,3 +1126,90 @@ def test_renaming_the_screen_text_starts_from_what_is_there(state):
     prefs.set_text("OLD")
     go(state, "Tools", "Screen text")
     assert state._entry.text == "OLD", "it started from empty"
+
+
+# --- the pad says which track a row is about -------------------------------
+#
+# A setting that belongs to one track says so in words, on a row of 21
+# columns, while the pads are already under the player's hand. Lighting the
+# one about to change is what stops a length or a sample landing on the wrong
+# track.
+
+
+def _lit_pads():
+    """Which pads are lit, by pad number rather than by pixel."""
+    from utils import neoindex
+
+    return {
+        pad for pad in range(TRACK_COUNT) if setup.neopixels[neoindex(pad)] != (0, 0, 0)
+    }
+
+
+def _brightest_pad():
+    from engine import view
+    from utils import neoindex
+
+    for pad in range(TRACK_COUNT):
+        if setup.neopixels[neoindex(pad)] == view.TRACK_PICK:
+            return pad
+    return None
+
+
+def test_no_pad_is_lit_on_a_row_about_nothing(state):
+    run(state)
+    assert _brightest_pad() is None
+
+
+def test_the_focused_track_pad_lights_on_a_sample_row(state):
+    go(state, "Samples", "Tracks")
+    run(state)
+    assert _brightest_pad() == 0, "Track 1 should be lit"
+    turn(state, 4)
+    run(state)
+    assert _brightest_pad() == 4, "Track 5 should be lit"
+
+
+def test_the_pad_stays_lit_inside_the_sample_list(state):
+    go(state, "Samples", "Tracks")
+    turn(state, 4)
+    run(state)
+    press(A)
+    run(state)
+    assert _brightest_pad() == 4, "the track is still 5 inside its list"
+
+
+def test_a_length_row_lights_its_track(state):
+    go(state, "Track", "Length")
+    run(state)
+    turn(state, 3)  # past Global, onto Track 3
+    run(state)
+    assert state.menu.selected.label == "Track 3"
+    assert _brightest_pad() == 2
+
+
+def test_the_pads_go_dark_when_the_row_is_not_about_a_track(state):
+    go(state, "Samples", "Tracks")
+    run(state)
+    assert _brightest_pad() is not None
+    press(B)
+    run(state)
+    press(B)
+    run(state)
+    assert _brightest_pad() is None
+
+
+def test_leaving_the_screen_darkens_the_pads(state):
+    go(state, "Samples", "Tracks")
+    run(state)
+    assert _lit_pads()
+    state.exit(FakeMachine())
+    assert not _lit_pads()
+
+
+def test_the_pads_are_not_pushed_when_nothing_moved(state):
+    """This runs every pass; a redundant show() is a bit-banged write."""
+    go(state, "Samples", "Tracks")
+    run(state)
+    before = setup.neopixels.show_count
+    run(state, passes=20)
+    assert setup.neopixels.show_count == before

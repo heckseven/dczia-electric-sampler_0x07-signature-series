@@ -1,18 +1,15 @@
 """Reading WAV headers, so the sampler can decide how to play a file.
 
-The badge streams audio straight off storage unless told otherwise, and that
-is where playback quality is won or lost. Measured on the hardware:
+The badge holds every sample in RAM and streams nothing. Storage cannot be
+read underneath a playing voice on this runtime - the audio refill and the
+filesystem re-enter each other and the track dies silently, which is what
+docs/streaming-bug-rootcause.md is about - so the audio path never touches a
+card once a sample is loaded.
 
-    audio needs           43.1 KB/s per playing voice at 22050/mono/16
-    onboard flash gives  391 KB/s
-    SD card gives        169 KB/s in small reads, 412 KB/s in large ones
-
-Three voices streaming from a card is already close to the limit, and eight
-tracks would need 345 KB/s, which no small read pattern on SD sustains. The
-symptom is a starved I2S buffer, which sounds like harsh digital distortion
-rather than a dropout. Loading short samples into RAM instead takes storage
-out of the audio path entirely, and drum one-shots are small enough that this
-is usually possible.
+That makes length a memory budget rather than a bandwidth one. A sample too
+long for its share is loaded head first and faded out; see MAX_RAM_SAMPLE and
+RAM_BUDGET in sequencer.py, and Tools/convert_samples.py --max-seconds for
+trimming a kit properly, offline.
 
 Deciding needs the header: how big the audio is, and whether its format
 matches the mixer at all. This module does that and nothing else, so it is

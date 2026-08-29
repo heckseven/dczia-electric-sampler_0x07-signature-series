@@ -86,6 +86,25 @@ LIVE = "live"
 SEQ = "seq"
 
 
+def centred(text, columns):
+    """Pad on the left so a line sits in the middle of its row.
+
+    Only the left pad is added. The display uses a fixed-width font and
+    trailing spaces draw as nothing, so padding both sides would spend
+    characters to change nothing - and screen.set_line truncates to the row
+    width anyway, which a right pad would run into.
+
+    str.center would do this, and is deliberately not used: CircuitPython
+    only builds it when CIRCUITPY_FULL_BUILD is set, so it is always present
+    in tests on desktop Python and may not be on the badge. That is the worst
+    way to find out.
+    """
+    room = columns - len(text)
+    if room <= 0:
+        return text
+    return " " * (room // 2) + text
+
+
 def scale(color, velocity):
     """Dim a colour by a step's velocity, keeping it visible at the low end."""
     if velocity <= 0:

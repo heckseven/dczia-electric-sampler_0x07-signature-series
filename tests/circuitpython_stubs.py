@@ -18,6 +18,7 @@ detail matters for correctness it is reproduced faithfully:
 * Mixer exposes a fixed-length voice list, so indexing past voice_count raises.
 """
 
+import gc
 import sys
 import types
 
@@ -859,5 +860,14 @@ def install():
             submodule,
             sys.modules["adafruit_hid." + submodule],
         )
+
+    # CircuitPython's gc carries mem_free; CPython's does not. The firmware
+    # asks for it in two places that matter - main.py's collection floor and
+    # the free-memory line StartupState prints at handover - and guarding
+    # every call in the firmware to suit the tests would be the tail wagging
+    # the dog. A fixed number is enough: nothing under test decides anything
+    # from the value, only that asking works.
+    if not hasattr(gc, "mem_free"):
+        gc.mem_free = lambda: 64 * 1024
 
     return board

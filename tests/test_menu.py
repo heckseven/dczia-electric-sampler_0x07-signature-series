@@ -591,7 +591,16 @@ def test_a_deferred_branch_is_not_built_until_it_is_opened():
     assert [item.label for item in menu.items] == ["one", "two"]
 
 
-def test_a_deferred_branch_is_built_only_once():
+def test_a_deferred_branch_is_built_once_per_visit():
+    """Rows are rebuilt on reopening; the card read behind them is not repeated.
+
+    This used to assert the branch was built exactly once and kept for good.
+    That is what made a sample list - 99 Items, about 16 KB - outlive the
+    visit, and on a badge with 21 KB free after boot it left the main loop
+    collecting on every pass. Rebuilding is allocation only: the listing
+    itself is cached in SettingsState.Catalog, which is what the expensive
+    part actually was.
+    """
     calls = []
 
     def builder():
@@ -600,9 +609,22 @@ def test_a_deferred_branch_is_built_only_once():
 
     menu = Menu(Item("root", children=[Item("Load", builder=builder)]))
     menu.enter()
+    assert calls == [1]
     menu.back()
     menu.enter()
-    assert calls == [1], "reopening re-read the card"
+    assert calls == [1, 1], "the rows were not rebuilt after being let go"
+    assert [item.label for item in menu.items] == ["one"]
+
+
+def test_leaving_a_list_lets_its_rows_go():
+    """What the rows cost is the whole reason they are deferred."""
+    item = Item("Load", builder=lambda: [Item("one")], kind="samples")
+    menu = Menu(Item("root", children=[item]))
+    menu.enter()
+    assert item.built
+    menu.back()
+    assert not item.built, "the rows outlived the visit"
+    assert item.children is None
 
 
 def test_an_unbuilt_deferred_branch_still_looks_like_a_branch():
@@ -767,3 +789,158 @@ def test_the_row_that_empties_a_track_survives_a_cut_sample_list():
     menu.enter()  # Track 1
     assert menu.items[0].label == settings.CLEAR_LABEL
     assert len(menu.items) == settings.MAX_ROWS + 1
+
+
+# --- only one card-backed list is ever held --------------------------------
+#
+# A deferred branch holds one Item per row, and a sample list is 98 of them at
+# 165 bytes. Nothing used to let one go, so walking Track 1 to Track 8 held
+# eight copies against 25,856 bytes of free memory: the later ones opened
+# empty, because enter() turns a MemoryError into an empty list rather than a
+# dead badge. Reported from the badge as "I went to set a sample on track 5
+# and saw nothing listed".
+
+
+def _two_lists():
+    return Menu(
+        Item(
+            "root",
+            children=[
+                Item("One", builder=lambda: [Item("a")], kind="samples"),
+                Item("Two", builder=lambda: [Item("b")], kind="samples"),
+            ],
+        )
+    )
+
+
+def test_opening_one_list_forgets_another():
+    menu = _two_lists()
+    first, second = menu.root.children
+    menu.enter()
+    assert first.built
+    menu.back()
+    menu.move(1)
+    menu.enter()
+    assert second.built
+    assert not first.built, "the first list is still holding its rows"
+
+
+def test_the_list_being_looked_at_is_kept():
+    menu = _two_lists()
+    first = menu.root.children[0]
+    menu.enter()
+    assert first.built
+    assert menu.items and menu.items[0].label == "a"
+
+
+def test_a_branch_on_the_path_is_not_forgotten():
+    """A list opened inside another must not drop the one it is standing in."""
+    inner = Item("Inner", builder=lambda: [Item("deep")], kind="samples")
+    outer = Item("Outer", builder=lambda: [inner], kind="samples")
+    menu = Menu(Item("root", children=[outer]))
+    menu.enter()
+    menu.enter()
+    assert outer.built, "the branch the cursor is inside was dropped"
+    assert inner.built
+
+
+def test_a_list_that_will_not_fit_can_be_opened_again():
+    """Marking it built made the empty list permanent."""
+    attempts = []
+
+    def builder():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise MemoryError("no room")
+        return [Item("a")]
+
+    item = Item("Load", builder=builder, kind="samples")
+    menu = Menu(Item("root", children=[item]))
+    menu.enter()
+    assert not item.built, "a failed build must stay retryable"
+    assert menu.last_error == "out of memory"
+    menu.back()
+    menu.enter()
+    assert item.built
+    assert menu.last_error is None
+    assert menu.items[0].label == "a"
+
+
+# --- which track a row is about --------------------------------------------
+
+
+def _tree():
+    return settings.build(FakeCatalog())
+
+
+def test_a_sample_row_knows_its_track():
+    item = Item("kick.wav", command=settings.SAMPLE_TRACK, value=(4, "/sd/k.wav"))
+    assert settings.track_of(item) == 4
+
+
+def test_a_clear_row_knows_its_track():
+    item = Item("(none)", command=settings.SAMPLE_CLEAR, value=6)
+    assert settings.track_of(item) == 6
+
+
+def test_a_length_row_knows_its_track():
+    item = Item("Track 3", command=settings.LENGTH_TRACK, value=2)
+    assert settings.track_of(item) == 2
+
+
+def test_a_sample_branch_knows_its_track_before_it_is_opened():
+    item = Item("Track 5", builder=lambda: [], kind="samples", value=4)
+    assert settings.track_of(item) == 4
+
+
+def test_a_row_about_nothing_in_particular_has_no_track():
+    assert (
+        settings.track_of(Item("Brightness", command=settings.TOOL_BRIGHTNESS)) is None
+    )
+    assert settings.track_of(None) is None
+
+
+def test_a_sample_row_with_a_wrong_shaped_value_lights_nothing():
+    """The value comes back through a command handler; it must not raise."""
+    assert (
+        settings.track_of(Item("x", command=settings.SAMPLE_TRACK, value=None)) is None
+    )
+    assert settings.track_of(Item("x", command=settings.SAMPLE_TRACK, value=())) is None
+
+
+def test_the_focused_track_comes_from_the_branch_once_inside_it():
+    """Every sample row of Track 5 answers 5, and so does the row above it."""
+    menu = Menu(_tree())
+    while menu.selected.label != "Samples":
+        menu.move(1)
+    menu.enter()
+    while menu.selected.label != "Tracks":
+        menu.move(1)
+    menu.enter()
+    menu.move(4)
+    assert menu.selected.label == "Track 5"
+    assert settings.focused_track(menu) == 4
+    menu.enter()
+    assert settings.focused_track(menu) == 4, "inside the list it is still track 5"
+
+
+def test_the_focused_track_is_none_outside_a_track_setting():
+    menu = Menu(_tree())
+    assert settings.focused_track(menu) is None
+
+
+def test_an_unrelated_row_does_not_inherit_out_of_memory():
+    """Left set, one failed listing made the next successful row report it."""
+
+    def boom():
+        raise MemoryError("no room")
+
+    listing = Item("Load", builder=boom, kind="samples")
+    action = Item("Save", command="save")
+    menu = Menu(Item("root", children=[listing, action]))
+    menu.enter()
+    assert menu.last_error == "out of memory"
+    menu.back()
+    menu.move(1)
+    assert menu.enter() is action
+    assert menu.last_error is None, "a stale error followed an unrelated action"

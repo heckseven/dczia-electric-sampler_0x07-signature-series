@@ -151,6 +151,24 @@ class StartupState(State):
         # else - the badge is already showing a banner and no audio is
         # playing yet.
         gc.collect()
+        # Said once, over USB serial, because it is the number every memory
+        # decision on this badge is made against and there is no other way to
+        # see it. What is left here has to cover the settings tree building a
+        # sample list, which is one Item per row - so a badge whose sample
+        # browser has started coming up empty says why here first.
+        # Imported here rather than at the top: main.py has already loaded it
+        # by the time this runs, so it costs nothing, and StartupState stays
+        # importable without pulling the audio path in behind it.
+        from sequencer import engine
+
+        # The sample count used to be on this line. Measuring it meant asking
+        # the catalog for the listing, which read the card and then held the
+        # 12 KB it came back with for the whole session - exactly what
+        # SettingsState stopped doing, and the reason the sampler had no room
+        # left to play in. A diagnostic that costs more than what it reports
+        # is not worth having. When a listing fails now the menu says "Out of
+        # memory" and list_samples raises rather than answering "none".
+        print("free after warm: %d, kit %d" % (gc.mem_free(), engine.ram_used))
 
     def _warm_step(self, machine):
         """Do one slow thing. Called once per pass, so the banner keeps moving.

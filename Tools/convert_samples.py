@@ -164,6 +164,79 @@ def resample(values, source_rate, target_rate):
     return out
 
 
+# How long the fade at a cut tail runs for.
+#
+# A sample cut mid-waveform ends on a full-scale step, and a step is a click -
+# the same discontinuity that made retriggering a single voice audible on the
+# badge. Fading the last few milliseconds to zero costs a sound nobody can hear
+# and removes one that everybody can. Eight milliseconds is 128 frames at
+# 16 kHz: long enough to be inaudible as a fade, short enough that a drum hit
+# keeps its tail.
+FADE_MS = 8
+
+
+# What counts as silence, in dB below full scale.
+#
+# -60 dB is an amplitude of 33 in a 16-bit sample: below the noise floor of
+# anything this badge can reproduce through a speaker the size of a coin, and
+# well below the point where a decaying drum tail stops carrying information.
+# Measured against the shipped library, it finds the dead air a sampler leaves
+# on the end of a one-shot without eating any of the tail.
+SILENCE_DB = -60.0
+
+
+def silence_floor(db=SILENCE_DB):
+    """The amplitude at or below which a frame counts as silence."""
+    return max(1, int(32767 * (10 ** (db / 20.0))))
+
+
+def trim_silence(values, floor):
+    """Drop the run of near-silence at the end. Returns (values, was_cut).
+
+    Scanned backwards from the end, so a quiet passage in the middle of a
+    sound is never mistaken for the end of it - only an unbroken run of
+    silence reaching the last frame is removed.
+
+    This is the trim worth doing first: on a badge that shares 32 KB between
+    every track, a tenth of a second of dead air on the end of a snare is a
+    tenth of a second another track does not get.
+    """
+    end = len(values)
+    while end > 0 and abs(values[end - 1]) <= floor:
+        end -= 1
+    if end == len(values):
+        return values, False
+    return values[:end], True
+
+
+def truncate(values, rate, max_seconds):
+    """Cut to at most `max_seconds`. Returns (values, was_cut).
+
+    The cut happens after resampling, so the limit is in the output rate the
+    badge will actually play, not the source's.
+    """
+    if max_seconds is None:
+        return values, False
+    limit = int(max_seconds * rate)
+    if limit <= 0 or len(values) <= limit:
+        return values, False
+    return values[:limit], True
+
+
+def fade_out(values, rate, fade_ms=FADE_MS):
+    """Ramp the last `fade_ms` down to silence, in place."""
+    fade = int(rate * fade_ms / 1000.0)
+    if fade > len(values):
+        fade = len(values)
+    if fade < 2:
+        return values
+    start = len(values) - fade
+    for index in range(fade):
+        # Ends at exactly zero: the last frame is scaled by 0.
+        values[start + index] = int(values[start + index] * (fade - index - 1) / fade)
+    return values
+
+
 def clamp(values):
     return [max(-32768, min(32767, value)) for value in values]
 
@@ -186,12 +259,33 @@ def normalise(values, target=NORMALISE_PEAK):
     return [int(value * gain) for value in values]
 
 
-def convert(in_path, out_path, target_rate=DEFAULT_RATE, do_normalise=False):
+def convert(
+    in_path,
+    out_path,
+    target_rate=DEFAULT_RATE,
+    do_normalise=False,
+    max_seconds=None,
+    trim=True,
+    silence_db=SILENCE_DB,
+):
     values, rate, channels = read_frames(in_path)
     values = to_mono(values, channels)
     values = resample(values, rate, target_rate)
+    # Dead air goes first, so a length limit is spent on sound rather than on
+    # silence that was going to be thrown away anyway.
+    silence_cut = False
+    if trim:
+        values, silence_cut = trim_silence(values, silence_floor(silence_db))
+    # Cut before normalising, so the gain is chosen from the part that is kept
+    # rather than from a peak in the tail that is about to be thrown away.
+    values, was_cut = truncate(values, target_rate, max_seconds)
     if do_normalise:
         values = normalise(values)
+    # Faded last, so nothing scales the ramp back up afterwards. A silence
+    # trim gets one too: the cut is inaudible at the default threshold, but a
+    # caller who raises it is cutting real sound and would hear the step.
+    if was_cut or silence_cut:
+        values = fade_out(values, target_rate)
     values = clamp(values)
 
     with wave.open(out_path, "wb") as target:
@@ -200,7 +294,7 @@ def convert(in_path, out_path, target_rate=DEFAULT_RATE, do_normalise=False):
         target.setframerate(target_rate)
         target.writeframes(struct.pack("<%dh" % len(values), *values))
 
-    return rate, channels, len(values)
+    return rate, channels, len(values), was_cut, silence_cut
 
 
 def main():
@@ -225,6 +319,31 @@ def main():
         help="target sample rate (default %d, must match the firmware's mixer)"
         % DEFAULT_RATE,
     )
+    parser.add_argument(
+        "--no-trim-silence",
+        dest="trim_silence",
+        action="store_false",
+        help="keep the run of silence at the end of each sample",
+    )
+    parser.add_argument(
+        "--silence-db",
+        type=float,
+        default=SILENCE_DB,
+        help="what counts as silence, in dB below full scale (default %.0f)"
+        % SILENCE_DB,
+    )
+    parser.add_argument(
+        "-m",
+        "--max-seconds",
+        type=float,
+        default=None,
+        help=(
+            "trim each sample to at most this many seconds, fading the cut so "
+            "it does not click. The firmware holds samples in RAM rather than "
+            "streaming them, so length is a memory budget: see MAX_RAM_SAMPLE "
+            "and RAM_BUDGET in Software/Production/sequencer.py"
+        ),
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -234,8 +353,14 @@ def main():
         name = os.path.basename(in_path)
         out_path = os.path.join(args.output_dir, name)
         try:
-            rate, channels, frames = convert(
-                in_path, out_path, args.rate, args.normalise
+            rate, channels, frames, was_cut, silence_cut = convert(
+                in_path,
+                out_path,
+                args.rate,
+                args.normalise,
+                args.max_seconds,
+                args.trim_silence,
+                args.silence_db,
             )
         except (OSError, ValueError, wave.Error) as error:
             print("SKIP %s: %s" % (name, error), file=sys.stderr)
@@ -243,8 +368,17 @@ def main():
             continue
         layout = "mono" if channels == 1 else "%dch" % channels
         print(
-            "%-28s %5d Hz %-5s -> %d Hz mono, %d frames"
-            % (name, rate, layout, args.rate, frames)
+            "%-28s %5d Hz %-5s -> %d Hz mono, %d frames, %d bytes%s"
+            % (
+                name,
+                rate,
+                layout,
+                args.rate,
+                frames,
+                frames * TARGET_WIDTH,
+                (" (trimmed)" if was_cut else "")
+                + (" (silence)" if silence_cut else ""),
+            )
         )
 
     return 1 if failures else 0

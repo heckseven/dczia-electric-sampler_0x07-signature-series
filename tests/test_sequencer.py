@@ -89,11 +89,15 @@ def test_a_bad_sample_does_not_disturb_other_tracks(seq, kit):
     assert seq.has_sample(2) and seq.has_sample(4)
 
 
-def test_a_ram_loaded_track_holds_no_file_handle(seq, kit):
-    """Loading into RAM closes the file at once - nothing to leak."""
+def test_a_loaded_track_holds_no_file_handle(seq, kit):
+    """Loading closes the file at once, and storage is never touched again.
+
+    This is the property the whole RAM path exists for. A handle held open
+    across playback is a handle something can read from underneath a playing
+    voice, which is exactly how a streamed track used to die.
+    """
     seq.load_track(0, kit[0])
-    assert seq.is_streamed(0) is False
-    assert seq._files[0] is None
+    assert not hasattr(seq, "_files"), "no track may keep a file open"
 
 
 def test_triggering_a_silent_track_is_harmless(seq):
@@ -464,14 +468,17 @@ def test_an_unknown_name_resolves_to_nothing():
     assert sequencer_module.resolve_sample("nope.wav", lister) is None
 
 
-# --- RAM loading versus streaming -----------------------------------------
+# --- loading into RAM, and trimming what will not fit ---------------------
 
 
-def write_wav_sized(path, data_bytes, rate=None, channels=1, bits=16):
+def write_wav_sized(path, data_bytes, rate=None, channels=1, bits=16, value=0):
     if rate is None:
         rate = sequencer_module.SAMPLE_RATE
     frames = data_bytes // 2
-    data = struct.pack("<%dh" % frames, *([0] * frames))
+    # `value` fills every frame, so a test can tell which frames the loader
+    # touched: silence is indistinguishable from a fade that ran over
+    # everything.
+    data = struct.pack("<%dh" % frames, *([value] * frames))
     header = (
         b"RIFF"
         + struct.pack("<I", 36 + len(data))
@@ -493,22 +500,47 @@ def write_wav_sized(path, data_bytes, rate=None, channels=1, bits=16):
     return str(path)
 
 
-def test_a_short_sample_is_loaded_into_ram(seq, tmp_path):
+def test_a_short_sample_is_loaded_whole(seq, tmp_path):
     """Storage cannot feed the mixer reliably; RAM takes it out of the path."""
     path = write_wav_sized(tmp_path / "short.wav", 8 * 1024)
     assert seq.load_track(0, path) is True
     assert seq.has_sample(0)
-    assert seq.is_streamed(0) is False
+    assert seq.was_truncated(0) is False
     assert seq.ram_used == 8 * 1024
 
 
-def test_an_oversized_sample_falls_back_to_streaming(seq, tmp_path):
-    """One long sound in a kit should still play, just from storage."""
+def test_an_oversized_sample_is_trimmed_rather_than_refused(seq, tmp_path):
+    """A long sound still plays; it just stops sooner.
+
+    The alternative used to be streaming it, which died on the second hit.
+    Refusing it instead would turn a long sound into a silent track, which is
+    worse than a short one.
+    """
     path = write_wav_sized(tmp_path / "long.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
     assert seq.load_track(0, path) is True
     assert seq.has_sample(0)
-    assert seq.is_streamed(0) is True
-    assert seq.ram_used == 0
+    assert seq.was_truncated(0) is True
+    assert seq.ram_used == sequencer_module.MAX_RAM_SAMPLE
+
+
+def test_a_trimmed_sample_ends_in_silence(seq, tmp_path):
+    """A cut mid-waveform is a full-scale step, and a step clicks."""
+    size = sequencer_module.MAX_RAM_SAMPLE * 2
+    path = write_wav_sized(tmp_path / "loud.wav", size, value=20000)
+    assert seq.load_track(0, path) is True
+    view = seq._views[0]
+    assert view[-1] == 0, "the last frame must be silent"
+    assert view[-2] == 0 or abs(view[-2]) < abs(view[0]), "the tail must decay"
+    head = len(view) - sequencer_module.FADE_FRAMES - 1
+    assert view[head] == 20000, "only the tail may be touched"
+
+
+def test_a_sample_that_fits_is_not_faded(seq, tmp_path):
+    """The fade is for a cut, not for every sample."""
+    path = write_wav_sized(tmp_path / "fits.wav", 8 * 1024, value=20000)
+    assert seq.load_track(0, path) is True
+    assert seq.was_truncated(0) is False
+    assert seq._views[0][-1] == 20000
 
 
 def test_the_ram_budget_is_not_exceeded(seq, tmp_path):
@@ -519,12 +551,80 @@ def test_the_ram_budget_is_not_exceeded(seq, tmp_path):
     assert seq.ram_used <= sequencer_module.RAM_BUDGET
 
 
-def test_tracks_past_the_budget_stream_instead_of_failing(seq, tmp_path):
+def test_tracks_are_trimmed_into_the_budget_before_being_refused(seq, tmp_path):
+    """The budget degrades by shortening, and only then by going silent.
+
+    Nothing streams any more, so a kit larger than RAM_BUDGET cannot have
+    every track. What it can have is every track that fits, trimmed rather
+    than refused, and a reason recorded for the ones that do not.
+    """
     size = sequencer_module.MAX_RAM_SAMPLE
+    loaded = []
     for track in range(TRACK_COUNT):
         path = write_wav_sized(tmp_path / ("t%d.wav" % track), size)
-        assert seq.load_track(track, path) is True, "every track must still load"
-    assert any(seq.is_streamed(t) for t in range(TRACK_COUNT))
+        if seq.load_track(track, path):
+            loaded.append(track)
+    assert loaded, "the budget must fund at least one track"
+    assert len(loaded) < TRACK_COUNT, "this test is about running out"
+    assert seq.ram_used <= sequencer_module.RAM_BUDGET
+    assert "budget" in seq.last_error
+
+
+def test_a_kit_shares_the_budget_so_no_track_is_starved(seq, tmp_path):
+    """The shipped kit off the card is 131 KB against a 48 KB budget.
+
+    Loading it first come, first served spent the whole budget on the first
+    three tracks and left the cymbal silent - which is the failure holding
+    samples in RAM was supposed to remove, not reintroduce. Every track that
+    has a sample must end up with one.
+    """
+    sizes = (20812, 7984, 37064, 66034)  # kick, snare, open hat, cymbal
+    paths = [
+        write_wav_sized(tmp_path / ("k%d.wav" % track), size)
+        for track, size in enumerate(sizes)
+    ]
+    assert seq.load_kit(paths) == len(sizes)
+    for track in range(len(sizes)):
+        assert seq.has_sample(track), "track %d went silent" % track
+        assert seq.trigger(track, 100) is True
+    assert seq.ram_used <= sequencer_module.RAM_BUDGET
+
+
+def test_a_short_sample_leaves_its_remainder_to_the_others(seq, tmp_path):
+    """Sharing is recomputed from what was used, not from an equal split."""
+    sizes = (2048, 66034, 66034, 66034)
+    paths = [
+        write_wav_sized(tmp_path / ("s%d.wav" % track), size)
+        for track, size in enumerate(sizes)
+    ]
+    seq.load_kit(paths)
+    assert seq._sizes[0] == 2048, "the short one was trimmed for no reason"
+    # The three long ones split what the short one did not take, so each gets
+    # more than a flat quarter of the budget.
+    for track in (1, 2, 3):
+        assert seq._sizes[track] > sequencer_module.RAM_BUDGET // 4
+
+
+def test_one_track_assigned_alone_may_take_what_is_free(seq, tmp_path):
+    """Nothing to share with: the browser is replacing a single sample."""
+    path = write_wav_sized(tmp_path / "solo.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
+    assert seq.load_track(0, path) is True
+    assert seq._sizes[0] == sequencer_module.MAX_RAM_SAMPLE
+
+
+def test_a_track_past_the_budget_is_silent_not_broken(seq, tmp_path):
+    """Out of budget must leave the track empty, not half loaded."""
+    size = sequencer_module.MAX_RAM_SAMPLE
+    for track in range(TRACK_COUNT):
+        path = write_wav_sized(tmp_path / ("b%d.wav" % track), size)
+        seq.load_track(track, path)
+    silent = [t for t in range(TRACK_COUNT) if not seq.has_sample(t)]
+    assert silent, "this test is about running out"
+    for track in silent:
+        assert seq._samples[track] is None
+        assert seq._audio[track] is None
+        assert seq._sizes[track] == 0
+        assert seq.trigger(track, 100) is False
 
 
 def test_reloading_a_track_returns_its_ram(seq, tmp_path):
@@ -550,27 +650,6 @@ def test_a_stereo_sample_is_refused(seq, tmp_path):
     assert "2ch" in seq.last_error
 
 
-def test_reloading_a_streamed_track_closes_its_file(seq, tmp_path):
-    """Only streamed tracks hold a handle, and it must not leak on reload."""
-    big = write_wav_sized(tmp_path / "big.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
-    seq.load_track(0, big)
-    assert seq.is_streamed(0) is True
-    first = seq._files[0]
-    assert first is not None
-
-    seq.load_track(0, big)
-    assert first.closed, "the previous handle must be closed"
-
-
-def test_releasing_a_streamed_track_closes_its_file(seq, tmp_path):
-    big = write_wav_sized(tmp_path / "big2.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
-    seq.load_track(3, big)
-    handle = seq._files[3]
-    seq.load_track(3, None)
-    assert handle.closed
-    assert not seq.has_sample(3)
-
-
 def test_a_ram_loaded_sample_can_actually_be_played(seq, tmp_path):
     """RawSample infers bit depth from the buffer's element size.
 
@@ -580,7 +659,6 @@ def test_a_ram_loaded_sample_can_actually_be_played(seq, tmp_path):
     """
     path = write_wav_sized(tmp_path / "ram.wav", 8 * 1024)
     seq.load_track(0, path)
-    assert seq.is_streamed(0) is False
     assert seq.trigger(0, 100) is True
     assert track_is_sounding(seq, 0)
 
@@ -612,20 +690,6 @@ def test_sync_input_is_still_polled_every_pass(seq, monkeypatch):
     for _ in range(6):
         seq.tick()
     assert len(polls) == 6
-
-
-def test_streamed_tracks_use_the_largest_allowed_buffer(seq, tmp_path):
-    """CircuitPython caps WaveFile's buffer at 1024 bytes.
-
-    That cap is what limits streaming: the card sustains 679 KB/s in 4 KB
-    reads but only 333 KB/s in 1 KB ones. Asking for more raises ValueError,
-    so this pins the value at the maximum the runtime permits.
-    """
-    assert sequencer_module.STREAM_BUFFER == 1024
-    path = write_wav_sized(tmp_path / "big3.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
-    assert seq.load_track(0, path) is True
-    assert seq.is_streamed(0) is True
-    assert len(seq._samples[0].buffer) == sequencer_module.STREAM_BUFFER
 
 
 # --- falling through to a usable copy -------------------------------------
@@ -830,51 +894,54 @@ def test_loading_the_demo_pattern_does_not_start_the_stream(seq):
 # so the handlers have to cover more than engine.wav's own errors.
 
 
-def _forcing_streaming(monkeypatch):
-    """Push every sample down the streaming branch instead of the RAM one."""
-    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
+def _out_of_memory(monkeypatch, failures=None):
+    """Make bytearray() raise, the way a fragmented heap does.
+
+    `failures` limits how many allocations fail, so a test can starve one
+    track and let the rest through.
+    """
+    real = bytearray
+    calls = []
+
+    def stingy(*args, **kwargs):
+        calls.append(1)
+        if failures is None or len(calls) <= failures:
+            raise MemoryError("no room")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sequencer_module, "bytearray", stingy, raising=False)
+    return calls
 
 
-def test_a_sample_that_exhausts_ram_while_streaming_is_skipped(seq, kit, monkeypatch):
-    """MemoryError is neither OSError nor ValueError, so it needs naming."""
-    _forcing_streaming(monkeypatch)
+def test_a_sample_that_exhausts_ram_is_skipped(seq, kit, monkeypatch):
+    """MemoryError is neither OSError nor ValueError, so it needs naming.
 
-    def out_of_memory(file_obj, buffer=None):
-        raise MemoryError("no room")
-
-    monkeypatch.setattr(sequencer_module, "WaveFile", out_of_memory)
+    The kit loads at import, so an escape here fails the badge at boot rather
+    than silencing one track.
+    """
+    _out_of_memory(monkeypatch)
     assert seq.load_kit(kit) == 0
     assert not seq.has_sample(0)
 
 
 def test_a_bad_sample_does_not_take_the_whole_kit_down(seq, kit, monkeypatch):
     """One unreadable file must cost one track, not the badge."""
-    _forcing_streaming(monkeypatch)
-    real = sequencer_module.WaveFile
-    calls = []
-
-    def sometimes(file_obj, buffer=None):
-        calls.append(1)
-        if len(calls) == 1:
-            raise MemoryError("no room")
-        return real(file_obj, buffer)
-
-    monkeypatch.setattr(sequencer_module, "WaveFile", sometimes)
+    # Two failures: the first attempt and the one retry after collecting.
+    _out_of_memory(monkeypatch, failures=2)
     assert seq.load_kit(kit) == TRACK_COUNT - 1
     assert not seq.has_sample(0)
     assert seq.has_sample(1)
 
 
-def test_a_failed_stream_does_not_leak_the_file_handle(seq, kit, monkeypatch):
-    """Handles are the scarce resource; a load that fails must return one."""
-    _forcing_streaming(monkeypatch)
-
-    def out_of_memory(file_obj, buffer=None):
-        raise MemoryError("no room")
-
-    monkeypatch.setattr(sequencer_module, "WaveFile", out_of_memory)
+def test_a_failed_load_leaves_the_track_empty(seq, kit, monkeypatch):
+    """A half-loaded track would play a buffer nothing finished filling."""
+    _out_of_memory(monkeypatch)
     seq.load_kit(kit)
-    assert all(handle is None for handle in seq._files)
+    for track in range(TRACK_COUNT):
+        assert seq._samples[track] is None
+        assert seq._audio[track] is None
+        assert seq._views[track] is None
+    assert seq.ram_used == 0
 
 
 # --- the audio path failing underneath us ---------------------------------
@@ -986,7 +1053,6 @@ def test_the_next_hit_can_still_start_the_stream(seq, kit):
 def test_a_ram_sample_keeps_its_audio_alive(seq, kit):
     seq.load_kit(kit)
     for track in range(TRACK_COUNT):
-        assert not seq.is_streamed(track), "this test is about the RAM path"
         assert seq._audio[track] is not None, "track %d holds no buffer" % track
 
 
@@ -1017,6 +1083,9 @@ def test_releasing_a_track_lets_both_go(seq, kit):
     seq._release_track(0)
     assert seq._audio[0] is None
     assert seq._views[0] is None
+    # The budget is spent in loaded bytes, so the size has to go back too or
+    # the track's share stays booked against a sample that is no longer there.
+    assert seq._sizes[0] == 0
 
 
 def test_releasing_a_track_lets_its_audio_go(seq, kit):
@@ -1034,33 +1103,14 @@ def test_reloading_a_track_replaces_its_buffer(seq, kit):
     assert seq._audio[0] is not first
 
 
-def test_a_streamed_track_holds_no_buffer(seq, kit, monkeypatch):
-    """Only the RAM path has audio to keep; streaming reads as it goes."""
-    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
-    seq.load_kit(kit)
-    assert seq.is_streamed(0)
-    assert seq._audio[0] is None
-
-
-def test_a_streamed_track_keeps_its_read_buffer(seq, kit, monkeypatch):
-    """Same defect as the RAM path, one function away.
-
-    WaveFile reads through the bytearray it was handed. Passing a fresh one
-    as an argument and keeping no other name for it makes it collectable as
-    soon as loading returns, and the audio then reads whatever replaced it.
-    """
-    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
-    seq.load_kit(kit)
-    assert seq.is_streamed(0)
-    assert seq._stream_buffers[0] is not None
-    assert len(seq._stream_buffers[0]) == sequencer_module.STREAM_BUFFER
-
-
-def test_releasing_a_streamed_track_lets_its_buffer_go(seq, kit, monkeypatch):
-    monkeypatch.setattr(sequencer_module, "MAX_RAM_SAMPLE", 0)
-    seq.load_kit(kit)
-    seq._release_track(0)
-    assert seq._stream_buffers[0] is None
+def test_a_trimmed_track_still_owns_its_audio(seq, tmp_path):
+    """Trimming must not lose the hold on the buffer the DMA walks."""
+    path = write_wav_sized(tmp_path / "trim.wav", sequencer_module.MAX_RAM_SAMPLE * 2)
+    seq.load_track(0, path)
+    assert seq.was_truncated(0) is True
+    assert seq._audio[0] is not None
+    assert seq._views[0] is not None
+    assert len(seq._audio[0]) == seq._sizes[0]
 
 
 def test_an_auditioned_sample_outlives_the_call(seq, kit):
@@ -1805,3 +1855,205 @@ def test_the_downbeat_is_not_sounded_twice(seq, kit):
             seq._on_tick(now)
         now += 1
     assert len(hits) == 1, "the downbeat sounded %d times" % len(hits)
+
+
+# --- adding a sample to a track the kit had nothing on ---------------------
+#
+# The kit spends the whole budget between the tracks that have samples, so a
+# track that had none has nothing left to spend. Refusing reads as "this
+# sample is broken" when it is only "the others have taken it all" - reported
+# from the badge as "I selected a sample for track 5 and it said T5 failed".
+
+
+def test_a_ninth_sample_is_made_room_for_rather_than_refused(seq, tmp_path):
+    size = sequencer_module.MAX_RAM_SAMPLE
+    kit = [write_wav_sized(tmp_path / ("k%d.wav" % t), size) for t in range(4)]
+    seq.load_kit(kit)
+    assert seq.ram_used == sequencer_module.RAM_BUDGET, "the kit must fill the budget"
+
+    extra = write_wav_sized(tmp_path / "extra.wav", size)
+    assert seq.assign_sample(4, extra) is True
+    assert seq.has_sample(4)
+    for track in range(5):
+        assert seq.has_sample(track), "resharing dropped track %d" % track
+    assert seq.ram_used <= sequencer_module.RAM_BUDGET
+
+
+def test_resharing_shortens_the_tracks_that_were_already_there(seq, tmp_path):
+    size = sequencer_module.MAX_RAM_SAMPLE
+    kit = [write_wav_sized(tmp_path / ("s%d.wav" % t), size) for t in range(4)]
+    seq.load_kit(kit)
+    before = seq._sizes[0]
+    seq.assign_sample(4, write_wav_sized(tmp_path / "s4.wav", size))
+    assert seq._sizes[0] < before, "track 0 kept its whole share"
+
+
+def test_all_eight_tracks_can_hold_a_sample(seq, tmp_path):
+    """What the budget is shared for. Short, but every pad sounds."""
+    size = sequencer_module.MAX_RAM_SAMPLE
+    for track in range(TRACK_COUNT):
+        path = write_wav_sized(tmp_path / ("e%d.wav" % track), size)
+        assert seq.assign_sample(track, path) is True, "track %d" % track
+    for track in range(TRACK_COUNT):
+        assert seq.has_sample(track), "track %d went silent" % track
+        assert seq.trigger(track, 100) is True
+    assert seq.ram_used <= sequencer_module.RAM_BUDGET
+
+
+def test_clearing_a_track_needs_no_resharing(seq, tmp_path):
+    kit = [write_wav_sized(tmp_path / ("c%d.wav" % t), 8 * 1024) for t in range(4)]
+    seq.load_kit(kit)
+    assert seq.assign_sample(2, None) is True
+    assert not seq.has_sample(2)
+    assert seq.has_sample(0) and seq.has_sample(1) and seq.has_sample(3)
+
+
+# --- coming back as the badge was left -------------------------------------
+#
+# The badge boots into the sampler, so whatever restore() does is what the
+# player finds. It runs at import: nothing in it may raise, however odd the
+# card is.
+
+
+@pytest.fixture
+def card(tmp_path, monkeypatch):
+    import prefs
+
+    monkeypatch.setattr(prefs.store, "directory", str(tmp_path))
+    return prefs
+
+
+def test_a_fresh_badge_comes_up_on_the_demo(seq, card):
+    assert seq.restore() is False
+    assert seq.song.is_on(0, 0), "no demo pattern"
+
+
+def test_the_last_song_is_restored(seq, card, tmp_path, monkeypatch):
+    import songfile
+
+    monkeypatch.setattr(songfile.store, "directory", str(tmp_path))
+    seq.song.set_length(9)
+    seq.song.set_step(0, 3, 99)
+    songfile.save(seq.song, "MINE")
+    card.set_last_song("MINE")
+
+    fresh = Sequencer()
+    assert fresh.restore() is True
+    assert fresh.song.length == 9
+    assert fresh.song.is_on(0, 3)
+
+
+def test_the_last_samples_are_restored_over_the_song(seq, card, tmp_path):
+    path = write_wav_sized(tmp_path / "kept.wav", 4096)
+    card.set_last_kit([path])
+    seq.restore()
+    assert seq.song.kit[0] == path
+    assert seq.has_sample(0)
+
+
+def test_a_remembered_song_that_is_gone_still_boots(seq, card):
+    card.set_last_song("VANISHED")
+    assert seq.restore() is False
+    assert seq.song.is_on(0, 0), "must fall back to the demo"
+
+
+def test_a_remembered_sample_that_is_gone_still_boots(seq, card):
+    card.set_last_kit(["/sd/samples/not-there.wav"])
+    seq.restore()
+    assert not seq.has_sample(0)
+    assert seq.song is not None
+
+
+def test_restore_never_raises_on_a_card_written_by_anything(seq, card):
+    card.save({"song": 42, "kit": {"not": "a list"}})
+    seq.restore()
+    assert seq.song is not None
+
+
+# --- the shipped kit -------------------------------------------------------
+
+
+def test_the_default_kit_is_a_playable_four(seq):
+    """Track 3 and 4 are the closed and open hat: a crash says nothing at all
+    in the quarter of a second the budget allows, and a hat pair says most of
+    what a beat needs."""
+    assert sequencer_module.DEFAULT_KIT == (
+        "kick_crater.wav",
+        "snare_kraken-head_1.wav",
+        "hh_hats-closed_1.wav",
+        "hh_hats-open_1.wav",
+    )
+
+
+# --- the volume knob survives a power cycle --------------------------------
+
+
+def test_volume_is_not_written_while_the_knob_is_turning(seq, card):
+    seq.nudge_volume(3, now=1000)
+    assert card.volume_position() == card.NO_VOLUME, "wrote mid-turn"
+
+
+def test_volume_is_written_once_the_knob_is_still_and_the_badge_quiet(
+    seq, card, monkeypatch
+):
+    monkeypatch.setattr(sequencer_module, "ticks_ms", lambda: 9000)
+    seq.nudge_volume(3, now=1000)
+    seq.transport.stop()
+    seq.tick()
+    assert card.volume_position() == seq.volume_position
+
+
+def test_volume_is_not_written_under_a_playing_pattern(seq, card, monkeypatch):
+    """A card write is tens of ms against a 32 ms buffer."""
+    monkeypatch.setattr(sequencer_module, "ticks_ms", lambda: 9000)
+    seq.nudge_volume(3, now=1000)
+    seq.transport.start()
+    seq.tick()
+    assert card.volume_position() == card.NO_VOLUME
+    seq.transport.stop()
+    seq.tick()
+    assert card.volume_position() == seq.volume_position, "never caught up"
+
+
+def test_a_saved_volume_comes_back(seq, card):
+    card.set_volume_position(3)
+    fresh = Sequencer()
+    fresh.restore()
+    assert fresh.volume_position == 3
+
+
+def test_a_fresh_badge_uses_the_firmware_default(seq, card):
+    """Zero is a real position meaning silence, so it cannot mean "unset"."""
+    assert card.volume_position() == card.NO_VOLUME
+    fresh = Sequencer()
+    before = fresh.volume_position
+    fresh.restore()
+    assert fresh.volume_position == before
+
+
+def test_a_saved_silence_is_honoured(seq, card):
+    card.set_volume_position(0)
+    fresh = Sequencer()
+    fresh.restore()
+    assert fresh.volume_position == 0
+
+
+def test_a_kit_of_silent_tracks_is_restored_as_silence(seq, card, tmp_path):
+    """A player who cleared every track meant it."""
+    path = write_wav_sized(tmp_path / "one.wav", 4096)
+    seq.load_kit([path])
+    card.set_last_kit([None] * TRACK_COUNT)
+    seq.restore()
+    assert not any(seq.has_sample(t) for t in range(TRACK_COUNT))
+
+
+def test_a_failed_load_does_not_inherit_an_older_reason(seq, tmp_path):
+    """last_error is read to tell "no room" from "will not play"."""
+    size = sequencer_module.MAX_RAM_SAMPLE
+    for track in range(TRACK_COUNT):
+        seq.load_track(track, write_wav_sized(tmp_path / ("f%d.wav" % track), size))
+    assert seq.last_error and "budget" in seq.last_error
+
+    # A different failure entirely: a file that is not there.
+    assert seq.load_track(0, "/nope/missing.wav") is False
+    assert not (seq.last_error and "budget" in seq.last_error), seq.last_error

@@ -6,7 +6,7 @@
 # to come back and start something.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-DEADLINE=$(( $(date +%s) + 3600 ))
+DEADLINE=$(( $(date +%s) + 43200 ))
 
 echo "waiting for RPI-RP2 (hold BOOTSEL while replugging)"
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -25,10 +25,17 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
         sync 2>/dev/null
         echo "flashed spike_mixer v4; waiting for it to come back"
         sleep 6
-        timeout 120 python3 "$HERE/read_c_spike.py"
-        exit $?
+        timeout 150 python3 "$HERE/read_c_spike.py"
+        status=$?
+
+        # Hand the badge back as a working sampler. It is the user's instrument
+        # before it is a test rig, and every further spike can reflash without
+        # hands now that the boot window listens for 'B'.
+        echo "restoring CircuitPython"
+        timeout 300 python3 "$HERE/restore_sampler.py" || echo "restore failed"
+        exit $status
     fi
     sleep 2
 done
-echo "nobody pressed BOOTSEL within the hour"
+echo "nobody pressed BOOTSEL within 12 hours"
 exit 1

@@ -172,3 +172,7 @@ mpy-cross
 
 # Spike build trees. The toolchain and SDK live outside the repo.
 Spikes/c/build/
+
+# The rollback runtime. 2.8 MB; fetched by URL+checksum recorded in
+# docs/rewrite-phase0-plan.md rather than tracked.
+Firmware/circuitpython-10.2.1-pico_w.uf2

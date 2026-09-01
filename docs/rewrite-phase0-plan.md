@@ -252,9 +252,18 @@ stock firmware as loose `.py` files. Flashing it does three things nobody wanted
 
 The real return path is three steps, all host-driven:
 
-1. `Spikes/host/flash.py <cp-10.2.1.uf2>` - stock CircuitPython 10.2.1 for
-   `raspberry_pi_pico_w`, from downloads.circuitpython.org. Verified by the banner
-   matching what the badge ran before.
+1. `Spikes/host/flash.py Firmware/circuitpython-10.2.1-pico_w.uf2` - stock
+   CircuitPython 10.2.1 for `raspberry_pi_pico_w`. Verified by the banner matching what
+   the badge ran before. Reproducible without the file:
+
+   ```
+   https://downloads.circuitpython.org/bin/raspberry_pi_pico_w/en_US/
+       adafruit-circuitpython-raspberry_pi_pico_w-en_US-10.2.1.uf2
+   sha256  df4edd8a783d0014ef276398c94a417c07f33677c9417326dd14c4ea5c659ce3
+   ```
+
+   The image is 2,927,616 bytes and is untracked - a 2.8 MB binary is the user's call to
+   commit, and the URL plus checksum is enough to get it back either way.
 2. Clear the volume. `Tools/build.py` only ever copies, so stale stock modules survive
    a deploy and shadow the build.
 3. `Tools/build.py -o <CIRCUITPY> --mpy-cross ./mpy-cross`.

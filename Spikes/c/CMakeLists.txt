@@ -74,3 +74,25 @@ pico_add_extra_outputs(spike_mixer)
 target_link_options(spike_mixer PRIVATE
     "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/spike_mixer.map"
 )
+
+# --- Task 5: output-path latency and the flash/XIP hazard -------------------
+add_executable(spike_output
+    spike_output.c
+    spike_common.c
+)
+target_include_directories(spike_output PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+pico_generate_pio_header(spike_output ${CMAKE_CURRENT_LIST_DIR}/i2s.pio)
+target_link_libraries(spike_output
+    pico_stdlib
+    hardware_watchdog
+    hardware_clocks
+    hardware_dma
+    hardware_pio
+    hardware_flash
+)
+pico_enable_stdio_usb(spike_output 1)
+pico_enable_stdio_uart(spike_output 0)
+pico_add_extra_outputs(spike_output)
+target_link_options(spike_output PRIVATE
+    "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/spike_output.map"
+)

@@ -1,0 +1,84 @@
+; I2S output, and a second state machine that timestamps the data pin.
+;
+; The badge wires the amp to GP0 = BCLK, GP1 = LRCLK, GP2 = DATA, which is what
+; `audiobusio.I2SOut(board.GP0, board.GP1, board.GP2)` in sequencer.py asks for.
+;
+; Two state machines share those pins. One drives them. The other reads GP2 as
+; an input while the first is driving it, which is legal because PIO input
+; samples the pad rather than the output register - and it is the only way to
+; timestamp a sample leaving the chip without a scope and a spare GPIO.
+
+; --- the transmitter -------------------------------------------------------
+;
+; Standard 16-bit stereo I2S, MSB first, two PIO cycles per bit. The frame is
+; 64 PIO cycles, so a 16 kHz frame rate wants a 1.024 MHz state machine.
+;
+; This is the well-known pico-extras `audio_i2s` program. It is reproduced
+; rather than depended on because pico-extras is a separate checkout, and a
+; second checkout is a second thing that can be missing when someone tries to
+; reproduce a measurement.
+
+.program i2s_out
+.side_set 2
+
+;                              /--- LRCLK  (side-set bit 1, GP1)
+;                              |/-- BCLK   (side-set bit 0, GP0)
+bitloop1:
+    out pins, 1         side 0b10
+    jmp x-- bitloop1    side 0b11
+    out pins, 1         side 0b00
+    set x, 14           side 0b01
+
+bitloop0:
+    out pins, 1         side 0b00
+    jmp x-- bitloop0    side 0b01
+    out pins, 1         side 0b10
+    set x, 14           side 0b11
+
+% c-sdk {
+static inline void i2s_out_init(PIO pio, uint sm, uint offset, uint clock_pin,
+                                uint data_pin, float div) {
+    pio_sm_config c = i2s_out_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, data_pin, 1);
+    sm_config_set_sideset_pins(&c, clock_pin);
+    /* Shift left, MSB first, autopull at 32 bits: one word is a stereo pair. */
+    sm_config_set_out_shift(&c, false, true, 32);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_gpio_init(pio, data_pin);
+    pio_gpio_init(pio, clock_pin);
+    pio_gpio_init(pio, clock_pin + 1);
+    pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, clock_pin, 2, true);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}
+
+; --- the timestamp ---------------------------------------------------------
+;
+; Waits for the data pin to go high, raises IRQ 0, and blocks until the CPU
+; clears it. Silence is all-zero, so the pin only goes high once a sample with a
+; set bit is actually being serialised out - which is the event the DMA transfer
+; count cannot see, because that count says a frame entered the TX FIFO, not
+; that it left the pin.
+
+.program data_watch
+
+.wrap_target
+    wait 1 pin 0
+    irq wait 0
+.wrap
+
+% c-sdk {
+static inline void data_watch_init(PIO pio, uint sm, uint offset,
+                                   uint data_pin, float div) {
+    pio_sm_config c = data_watch_program_get_default_config(offset);
+    sm_config_set_in_pins(&c, data_pin);
+    /* Deliberately no pindirs and no pio_gpio_init: this state machine must
+     * not take the pin away from the transmitter, only observe it. */
+    sm_config_set_clkdiv(&c, div);
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}

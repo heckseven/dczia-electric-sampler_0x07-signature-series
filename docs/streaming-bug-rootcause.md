@@ -754,3 +754,43 @@ Not yet verified on hardware: `prefs.py` was rebuilt from `HEAD` plus this
 session's edits after being truncated to zero bytes by a bad edit script, and
 the badge was disconnected before it could be deployed. The gates and 1223
 tests pass, including new ones covering the rebuild, but it has not been run.
+
+---
+
+## 16. Noted, not acted on: the keypad scans every 20 ms
+
+Found while planning the rewrite, verified against the CircuitPython 10.2.1 source, and
+deliberately left alone - recorded here so it is not rediscovered.
+
+`setup.py:110` constructs `keypad.KeyMatrix` with `row_pins`, `column_pins` and
+`columns_to_anodes`, and no `interval`. The default is `0.020f`
+(`shared-bindings/keypad/KeyMatrix.c:104`), and `interval_ticks = interval * 1024`
+(`shared-module/keypad/__init__.c:95`). So the pads are scanned every 20 ms.
+
+Debounce adds nothing on top: `debounce_threshold` defaults to 1, and the counter in
+`shared-module/keypad/__init__.c:125` reports a transition on the *first* scan that sees
+the new state.
+
+**A pad press therefore waits at least 0-20 ms merely to be noticed** - before the
+sequencer, the mixer or the DMA do anything. That is plausibly comparable to the 32 ms
+mixer buffer everyone has been looking at, it has been there the whole time, and nobody
+chose it.
+
+**20 ms is a floor, not the worst case.** `keypad_tick()` schedules the scan as a
+background callback rather than performing it in the tick interrupt - and section 1 of
+this document establishes that background callbacks are deferred inside SPI transfers
+and blocked outright while `background_prevention_count` is held. A collection is
+25-27 ms on top. So the tail is 20 ms plus whatever the worst deferral is, and nobody
+has measured that.
+
+One more caveat on provenance: the badge runs `Firmware/DCZiaSampler.uf2`, supplied by
+DCZia, and nothing here records whether it is stock 10.2.1 or a custom build. Reading
+the upstream source proves what upstream does, not what is on this chip. The constant
+should be read back at runtime before anyone relies on it.
+
+`keypad.KeyMatrix(..., interval=0.001)` is the one-line change. Untested: it costs a
+faster scan of a 3x4 matrix on every pass, which is not free, and the interaction with
+`debounce_threshold` at that interval has not been measured.
+
+Not pursued now - the decision is to focus on the rewrite. Worth taking before anyone
+concludes from a latency measurement that the runtime is the reason.

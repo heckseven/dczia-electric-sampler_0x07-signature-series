@@ -72,7 +72,7 @@ static uint32_t block_buffer[2][MAX_BLOCK];
  * offset of 7 bit periods, subtracted in the reported figure rather than
  * hand-waved.
  */
-#define TRIGGER_VALUE 0x0100u
+#define TRIGGER_VALUE SPIKE_TEST_AMPLITUDE
 #define TRIGGER_BIT_OFFSET 7
 
 /* 300, not the 10,000 the plan asked for. At the largest block a trial costs

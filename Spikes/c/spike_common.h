@@ -62,6 +62,17 @@
  */
 #define SPIKE_HEARTBEAT_MS 30000
 
+/* Test-tone amplitude, as a 16-bit sample value.
+ *
+ * These spikes drive the badge's real speaker through a MAX98357A with no
+ * volume control of its own - the sample value IS the volume. 0x0100 is 256 of
+ * 32,768, about -42 dBFS: audible as a tick if you are listening for it, and
+ * nothing like the bang full scale would be. No spike should exceed this
+ * without a reason, and none of them has one: every measurement here is about
+ * timing, and timing does not care how loud the tone is.
+ */
+#define SPIKE_TEST_AMPLITUDE 0x0100u
+
 void spike_begin(const char *name, uint32_t version);
 void spike_case(const char *name);
 void spike_case_state(const char *name, const char *state);

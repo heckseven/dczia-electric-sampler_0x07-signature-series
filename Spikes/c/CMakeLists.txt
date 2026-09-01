@@ -158,3 +158,28 @@ spike_usb_variant(spike_usb_c
     CFG_TUD_MIDI_EP_BUFSIZE=64
     CFG_TUD_MSC=1
     CFG_TUD_MSC_EP_BUFSIZE=512)
+
+# --- Task 7: display cost and the supply-coupling artefact ------------------
+#
+# Links the same i2s.pio as Task 5, so the null test runs against the audio
+# path that was actually measured rather than a second one built for it.
+add_executable(spike_display
+    spike_display.c
+    spike_common.c
+)
+target_include_directories(spike_display PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+pico_generate_pio_header(spike_display ${CMAKE_CURRENT_LIST_DIR}/i2s.pio)
+target_link_libraries(spike_display
+    pico_stdlib
+    hardware_watchdog
+    hardware_clocks
+    hardware_dma
+    hardware_pio
+    hardware_i2c
+)
+pico_enable_stdio_usb(spike_display 1)
+pico_enable_stdio_uart(spike_display 0)
+pico_add_extra_outputs(spike_display)
+target_link_options(spike_display PRIVATE
+    "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/spike_display.map"
+)

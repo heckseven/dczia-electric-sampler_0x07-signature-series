@@ -307,6 +307,66 @@ def case_loop(monotonic_ns, machine=None, passes=LOOP_PASSES):
     )
 
 
+def case_body(monotonic_ns, machine, passes=LOOP_PASSES // 2):
+    """What the typical pass is made of.
+
+    The tail is settled - every pass over 20 ms contains a collection - but the
+    8.5 ms body is not, and the rewrite needs to know whether that is the engine
+    or the screen. Timing the two halves separately is the first cut; if
+    `machine.update()` dominates, the next question is which part of it, and
+    that one needs SamplerState opened up.
+
+    Passes that collect are counted but excluded from both histograms. A
+    collection lands inside whichever half was running when the floor was
+    crossed and would otherwise smear 25 ms across one of them at random.
+    """
+    _start("body")
+    if monotonic_ns is None or machine is None:
+        _emit("RESULT", case="body", available=0)
+        return
+
+    import guard
+
+    gc_floor = 16 * 1024
+    engine_us = Histogram()
+    machine_us = Histogram()
+    skipped = 0
+
+    _pin_load()
+    gc.collect()
+
+    for _ in range(passes):
+        guard.feed()
+        if gc.mem_free() < gc_floor:
+            gc.collect()
+            skipped += 1
+            continue
+        started = monotonic_ns()
+        engine.tick()
+        middle = monotonic_ns()
+        machine.update()
+        ended = monotonic_ns()
+        engine_us.add((middle - started) // 1000)
+        machine_us.add((ended - middle) // 1000)
+
+    engine_fields = engine_us.fields()
+    machine_fields = machine_us.fields()
+    _emit(
+        "RESULT",
+        case="body_engine",
+        available=1,
+        skipped=skipped,
+        **engine_fields
+    )
+    _emit(
+        "RESULT",
+        case="body_machine",
+        available=1,
+        skipped=skipped,
+        **machine_fields
+    )
+
+
 def case_gc(monotonic_ns):
     """How long a collection takes, and how often one is needed under load."""
     _start("gc")
@@ -377,5 +437,6 @@ def run(machine=None, with_machine=True):
         machine = _real_machine()
     _emit("CASE", case="machine", state="READY" if machine else "ABSENT")
     case_loop(monotonic_ns, machine)
+    case_body(monotonic_ns, machine)
     case_gc(monotonic_ns)
     _emit("DONE", spike="baseline")

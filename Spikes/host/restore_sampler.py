@@ -26,7 +26,17 @@ RUNTIME = os.path.join(ROOT, "Firmware", "circuitpython-10.2.1-pico_w.uf2")
 
 # Everything else on the volume is either the previous deploy or somebody's
 # stale firmware, and both shadow what is about to be copied on.
-KEEP = {"boot_out.txt", "System Volume Information"}
+#
+# `sd` is in here because deleting it silently disables the SD card. CircuitPython's
+# storage.mount() needs the mount point to exist as a real directory in the root
+# filesystem, and nothing recreates it - not build.py, not setup.py. An earlier
+# version of this script swept it away, and the badge then booted from flash
+# samples with `setup.py` reporting "No SD Card Found!" while the card itself
+# read perfectly. It cost a Task 6 detour to find.
+KEEP = {"boot_out.txt", "System Volume Information", "sd"}
+
+# Directories the firmware needs to exist but never creates.
+REQUIRED_DIRS = ("sd",)
 
 
 def clear(mount):
@@ -35,6 +45,11 @@ def clear(mount):
         if name in KEEP:
             continue
         subprocess.run(["rm", "-rf", os.path.join(mount, name)], check=False)
+    for name in REQUIRED_DIRS:
+        path = os.path.join(mount, name)
+        if not os.path.isdir(path):
+            os.makedirs(path, exist_ok=True)
+            print("recreated missing mount point /%s" % name)
 
 
 def main():

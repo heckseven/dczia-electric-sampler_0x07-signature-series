@@ -129,21 +129,44 @@ def enter_bootsel(timeout=BOOTSEL_TIMEOUT):
     if path:
         return path
 
-    port = badge_module.find_port(timeout=3.0)
-    if port:
-        dev = badge_module.Badge(port)
-        try:
-            dev.open(timeout=5.0)
-            # The C spikes' pump loop takes 'B' as "go to BOOTSEL".
-            dev.write("B")
-            time.sleep(1.5)
-            if bootsel_device() is None:
-                # Not a C spike, then. Try CircuitPython's route.
-                dev.to_bootloader()
-        except badge_module.BadgeGone:
-            pass
-        finally:
-            dev.close()
+    # Keep asking, rather than asking once and waiting.
+    #
+    # A single 'B' assumes the image is sitting in its pump loop ready to read
+    # it. A badge in a reset loop - which is what a spike that has finished and
+    # gone quiet becomes, once the heartbeat starts firing - only listens during
+    # its boot window, and one write timed anywhere else is simply lost.
+    # Retrying costs nothing and turns a coin flip into a certainty: in practice
+    # it lands within two or three tries.
+    deadline = time.time() + timeout
+    tried_circuitpython = False
+    while time.time() < deadline:
+        if bootsel_device():
+            break
+        port = badge_module.find_port(timeout=1.0)
+        if port:
+            try:
+                dev = badge_module.Badge(port)
+                dev.open(timeout=2.0)
+                try:
+                    dev.write("B")
+                finally:
+                    dev.close()
+            except (badge_module.BadgeGone, OSError):
+                pass
+            if not tried_circuitpython and not bootsel_device():
+                # Not a C spike, then. CircuitPython needs its own route, and it
+                # only needs trying once - it either has a REPL or it does not.
+                tried_circuitpython = True
+                try:
+                    dev = badge_module.Badge(port)
+                    dev.open(timeout=3.0)
+                    try:
+                        dev.to_bootloader()
+                    finally:
+                        dev.close()
+                except (badge_module.BadgeGone, OSError):
+                    pass
+        time.sleep(0.15)
 
     return wait_for_bootsel(timeout)
 

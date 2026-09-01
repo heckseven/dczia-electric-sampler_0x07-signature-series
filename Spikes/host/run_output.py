@@ -48,7 +48,7 @@ def main():
         raise SystemExit("port never appeared")
 
     buf, last_ping = b"", 0.0
-    end = time.time() + 180
+    end = time.time() + int(os.environ.get("SPIKE_TIMEOUT", "180"))
     while time.time() < end:
         try:
             buf += ser.read(4096)

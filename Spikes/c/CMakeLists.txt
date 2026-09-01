@@ -96,3 +96,65 @@ pico_add_extra_outputs(spike_output)
 target_link_options(spike_output PRIVATE
     "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/spike_output.map"
 )
+
+# --- Task 6: storage timing -------------------------------------------------
+#
+# A raw block driver, deliberately without a filesystem. FatFS reentrancy is
+# what broke streaming in the Python, so putting FatFS back in would measure the
+# layer that failed rather than the card underneath it.
+add_executable(spike_sd
+    spike_sd.c
+    spike_common.c
+)
+target_include_directories(spike_sd PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_link_libraries(spike_sd
+    pico_stdlib
+    hardware_watchdog
+    hardware_clocks
+    hardware_dma
+    hardware_spi
+)
+pico_enable_stdio_usb(spike_sd 1)
+pico_enable_stdio_uart(spike_sd 0)
+pico_add_extra_outputs(spike_sd)
+target_link_options(spike_sd PRIVATE
+    "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/spike_sd.map"
+)
+
+# --- Task 2 variants (b) and (c): what a USB class costs in SRAM ------------
+#
+# Link-only. The figure wanted is the FIXED overhead a class adds - endpoint
+# buffers and per-instance structs declared at file scope - and that is settled
+# at compile time. These builds are never flashed, and they do not enumerate the
+# classes they link: descriptors would change flash, not SRAM.
+function(spike_usb_variant name)
+    add_executable(${name} spike_scaffold.c spike_common.c usb_class_stubs.c)
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_link_libraries(${name} pico_stdlib pico_multicore hardware_watchdog
+                          hardware_clocks)
+    pico_enable_stdio_usb(${name} 1)
+    pico_enable_stdio_uart(${name} 0)
+    target_compile_definitions(${name} PRIVATE ${ARGN})
+    target_link_options(${name} PRIVATE
+        "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/${name}.map")
+endfunction()
+
+# The buffer sizes ARE the overhead, so they are chosen here explicitly rather
+# than inherited from a default that might move between SDK versions:
+#   MIDI 64-byte RX/TX/EP - one full-speed bulk packet, TinyUSB's own default
+#     for a full-speed device, and what pico_stdio_usb already uses for CDC.
+#   MSC  512-byte EP buffer - one SD block, the smallest size that does not
+#     split every transfer.
+spike_usb_variant(spike_usb_a)
+spike_usb_variant(spike_usb_b
+    CFG_TUD_MIDI=1
+    CFG_TUD_MIDI_RX_BUFSIZE=64
+    CFG_TUD_MIDI_TX_BUFSIZE=64
+    CFG_TUD_MIDI_EP_BUFSIZE=64)
+spike_usb_variant(spike_usb_c
+    CFG_TUD_MIDI=1
+    CFG_TUD_MIDI_RX_BUFSIZE=64
+    CFG_TUD_MIDI_TX_BUFSIZE=64
+    CFG_TUD_MIDI_EP_BUFSIZE=64
+    CFG_TUD_MSC=1
+    CFG_TUD_MSC_EP_BUFSIZE=512)

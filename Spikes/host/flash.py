@@ -51,12 +51,50 @@ def bootsel_device():
     return None
 
 
-def bootsel_mount():
-    """Where RPI-RP2 is mounted, or None."""
+def _writable(path):
+    """Can we actually write here? A mount can claim rw and refuse.
+
+    RPI-RP2 disappears the instant a board leaves BOOTSEL, and the stale mount
+    it leaves behind still shows up in `mount` as rw with the right owner. The
+    first write then fails with EACCES, which looks like a permissions problem
+    and is really a mount pointing at a device that went away.
+    """
+    probe = os.path.join(path, ".spike-probe")
+    try:
+        with open(probe, "wb") as handle:
+            handle.write(b"x")
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def _remount(path):
+    """Cycle a stale mount. Returns whether it came back writable."""
+    device = bootsel_device()
+    if not device:
+        return False
+    for argv in (["udisksctl", "unmount", "-b", device],
+                 ["udisksctl", "mount", "-b", device]):
+        subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        time.sleep(1.0)
+    return os.path.isdir(path) and _writable(path)
+
+
+def bootsel_mount(require_writable=True):
+    """Where RPI-RP2 is mounted, or None.
+
+    Only reports a mount that can actually be written to, remounting once if it
+    cannot - otherwise a caller gets a path that fails on the copy.
+    """
     for base in ("/run/media", "/media"):
         for user in sorted(glob.glob(os.path.join(base, "*"))):
             path = os.path.join(user, BOOTSEL_LABEL)
-            if os.path.isdir(path):
+            if not os.path.isdir(path):
+                continue
+            if not require_writable or _writable(path):
+                return path
+            if _remount(path):
                 return path
     return None
 

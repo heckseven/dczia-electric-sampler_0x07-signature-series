@@ -52,9 +52,13 @@ def main():
     parser.add_argument("--mpy-cross", default="./mpy-cross")
     args = parser.parse_args()
 
-    mount = badge_module.circuitpy_mount()
+    mount = badge_module.ensure_circuitpy()
     if not mount:
-        raise SystemExit("CIRCUITPY is not mounted")
+        raise SystemExit(
+            "CIRCUITPY is neither mounted nor mountable - is the badge "
+            "attached, and is it running CircuitPython rather than sitting "
+            "in BOOTSEL?"
+        )
     if not badge_module.circuitpy_writable(mount):
         raise SystemExit(
             "CIRCUITPY is not writable. The kernel caches the write-protect "
@@ -117,7 +121,7 @@ def main():
         # safe sentinel; matching something the echo contains is how a long run
         # looks like a hang.
         out, matched = dev.line(
-            "spike_baseline.run()", timeout=240, marker=r"DONE spike=baseline"
+            "spike_baseline.run()", timeout=600, marker=r"DONE spike=baseline"
         )
         if not matched:
             print("!! spike did not finish inside the timeout")

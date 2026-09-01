@@ -255,7 +255,7 @@ class Histogram:
         }
 
 
-def case_loop(monotonic_ns, machine=None, passes=LOOP_PASSES):
+def case_loop(monotonic_ns, machine=None, passes=LOOP_PASSES, floor_every=1, label="loop"):
     """The main loop's pass duration, under load.
 
     main.py cannot be imported - its event loop runs at module scope - so its
@@ -281,15 +281,24 @@ def case_loop(monotonic_ns, machine=None, passes=LOOP_PASSES):
     _pin_load()
     gc.collect()
 
+    countdown = 0
     for _ in range(passes):
         started = monotonic_ns()
         guard.feed()
-        free = gc.mem_free()
-        if free < free_floor:
-            free_floor = free
-        if free < gc_floor:
-            gc.collect()
-            collects += 1
+        # gc.mem_free() is not a stored counter - it walks the heap's block
+        # table, and on this badge that measures 5.07 ms. Checking it every
+        # pass, as main.py does, therefore costs more than the engine and the
+        # screen together. `floor_every` exists to measure that claim rather
+        # than argue it.
+        if countdown <= 0:
+            countdown = floor_every
+            free = gc.mem_free()
+            if free < free_floor:
+                free_floor = free
+            if free < gc_floor:
+                gc.collect()
+                collects += 1
+        countdown -= 1
         engine.tick()
         if machine is not None:
             machine.update()
@@ -297,8 +306,9 @@ def case_loop(monotonic_ns, machine=None, passes=LOOP_PASSES):
 
     _emit(
         "RESULT",
-        case="loop",
+        case=label,
         available=1,
+        floor_every=floor_every,
         machine=1 if machine is not None else 0,
         passes=passes,
         collects=collects,
@@ -364,6 +374,69 @@ def case_body(monotonic_ns, machine, passes=LOOP_PASSES // 2):
         available=1,
         skipped=skipped,
         **machine_fields
+    )
+
+
+def case_overhead(monotonic_ns, rounds=2000):
+    """The parts of the pass that are not the engine or the screen.
+
+    engine.tick() and machine.update() together are 3.5 ms of an 8.5 ms pass,
+    so half of it is the loop's own scaffolding: guard.feed(), the
+    gc.mem_free() floor check, and the cost of asking the clock what time it is.
+
+    gc.mem_free() is the interesting one. main.py calls it on every single pass
+    to decide whether to collect, and on MicroPython it is not a stored counter
+    - it walks the heap's block table. On a 200 KB heap that is not obviously
+    free, and if it is expensive then the floor check is costing a slice of
+    every pass in order to avoid a collection.
+
+    Each is timed in a batch and divided, because one call is well under the
+    30.5 us the clock can resolve.
+    """
+    _start("overhead")
+    if monotonic_ns is None:
+        _emit("RESULT", case="overhead", available=0)
+        return
+
+    import guard
+
+    _pin_load()
+    gc.collect()
+
+    started = monotonic_ns()
+    for _ in range(rounds):
+        gc.mem_free()
+    mem_free_ns = (monotonic_ns() - started) // rounds
+
+    started = monotonic_ns()
+    for _ in range(rounds):
+        guard.feed()
+    feed_ns = (monotonic_ns() - started) // rounds
+
+    started = monotonic_ns()
+    for _ in range(rounds):
+        monotonic_ns()
+    clock_ns = (monotonic_ns() - started) // rounds
+
+    # An empty loop of the same shape, so the per-iteration cost of the loop
+    # itself can be subtracted rather than attributed to what it contains.
+    started = monotonic_ns()
+    for _ in range(rounds):
+        pass
+    empty_ns = (monotonic_ns() - started) // rounds
+
+    _emit(
+        "RESULT",
+        case="overhead",
+        available=1,
+        rounds=rounds,
+        mem_free_ns=mem_free_ns,
+        feed_ns=feed_ns,
+        clock_ns=clock_ns,
+        empty_loop_ns=empty_ns,
+        mem_free_net_ns=mem_free_ns - empty_ns,
+        feed_net_ns=feed_ns - empty_ns,
+        clock_net_ns=clock_ns - empty_ns,
     )
 
 
@@ -436,7 +509,12 @@ def run(machine=None, with_machine=True):
     if machine is None and with_machine:
         machine = _real_machine()
     _emit("CASE", case="machine", state="READY" if machine else "ABSENT")
-    case_loop(monotonic_ns, machine)
+    # The same loop twice: once as main.py runs it, once checking the heap
+    # every sixteenth pass. If gc.mem_free() really is 5 ms, the second is a
+    # different instrument entirely and the difference is the proof.
+    case_loop(monotonic_ns, machine, floor_every=1, label="loop")
+    case_loop(monotonic_ns, machine, floor_every=16, label="loop_sparse")
     case_body(monotonic_ns, machine)
+    case_overhead(monotonic_ns)
     case_gc(monotonic_ns)
     _emit("DONE", spike="baseline")

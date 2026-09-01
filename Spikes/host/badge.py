@@ -27,6 +27,7 @@ each spike does not rediscover it.
 import glob
 import os
 import re
+import subprocess
 import time
 
 import serial
@@ -323,6 +324,54 @@ def circuitpy_mount():
             path = os.path.join(user, "CIRCUITPY")
             if os.path.isdir(path):
                 return path
+    return None
+
+
+def circuitpy_device():
+    """The block device holding CIRCUITPY, or None.
+
+    Found by label rather than by device node: the badge is not always /dev/sda,
+    and after a reset it may not be the node it was a minute ago.
+    """
+    result = subprocess.run(
+        ["lsblk", "-o", "NAME,LABEL", "-nr"],
+        capture_output=True,
+        text=True,
+    )
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "CIRCUITPY":
+            return "/dev/" + parts[0]
+    return None
+
+
+def ensure_circuitpy(timeout=ENUMERATE_TIMEOUT):
+    """Where CIRCUITPY is mounted, mounting it first if it is not.
+
+    Resetting the badge repeatedly leaves the volume present but unmounted -
+    udisks auto-mounts on attach, and an attach it decides is a repeat of one
+    it has already seen does not always get one. The campaign resets the badge
+    for every spike, so this happens often enough that failing with "CIRCUITPY
+    is not mounted" would stop a run that has nothing wrong with it.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        path = circuitpy_mount()
+        if path:
+            return path
+        device = circuitpy_device()
+        if device:
+            subprocess.run(
+                ["udisksctl", "mount", "-b", device],
+                capture_output=True,
+                text=True,
+            )
+            # Whether that succeeded or reported it was already mounted, the
+            # answer is the same question asked again.
+            path = circuitpy_mount()
+            if path:
+                return path
+        time.sleep(1.0)
     return None
 
 

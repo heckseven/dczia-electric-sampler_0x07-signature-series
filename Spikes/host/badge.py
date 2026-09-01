@@ -375,6 +375,36 @@ def ensure_circuitpy(timeout=ENUMERATE_TIMEOUT):
     return None
 
 
+def ensure_circuitpy_writable(attempts=3):
+    """A mounted, writable CIRCUITPY - resetting the badge if that is what it takes.
+
+    The volume can come up write-protected at the block layer, and no remount
+    fixes it: the kernel caches the SCSI write-protect bit at device attach, so
+    `udisksctl unmount` and `mount` change nothing. The only cure is making the
+    badge re-enumerate.
+
+    It happens often enough during a campaign that resets the badge for every
+    spike that failing with "permission denied" would stop runs which have
+    nothing wrong with them.
+    """
+    for attempt in range(attempts):
+        path = ensure_circuitpy()
+        if path and circuitpy_writable(path):
+            return path
+        if attempt + 1 == attempts:
+            break
+        # Re-enumerate. Nothing softer than this clears the cached bit.
+        try:
+            dev = Badge()
+            dev.open(timeout=ENUMERATE_TIMEOUT)
+            dev.reset()
+            dev.close()
+        except BadgeGone:
+            pass
+        time.sleep(3.0)
+    return None
+
+
 def circuitpy_writable(path=None):
     """Whether CIRCUITPY can actually be written to.
 

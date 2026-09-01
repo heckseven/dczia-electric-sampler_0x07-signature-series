@@ -169,3 +169,6 @@ cython_debug/
 # The CircuitPython-matched mpy-cross, fetched per docs/handoff-2026-08-28.md.
 # A 1.4 MB platform binary tied to one runtime version; not the repo's to carry.
 mpy-cross
+
+# Spike build trees. The toolchain and SDK live outside the repo.
+Spikes/c/build/

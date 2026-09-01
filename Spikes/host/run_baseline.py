@@ -52,18 +52,12 @@ def main():
     parser.add_argument("--mpy-cross", default="./mpy-cross")
     args = parser.parse_args()
 
-    mount = badge_module.ensure_circuitpy()
+    mount = badge_module.ensure_circuitpy_writable()
     if not mount:
         raise SystemExit(
-            "CIRCUITPY is neither mounted nor mountable - is the badge "
-            "attached, and is it running CircuitPython rather than sitting "
-            "in BOOTSEL?"
-        )
-    if not badge_module.circuitpy_writable(mount):
-        raise SystemExit(
-            "CIRCUITPY is not writable. The kernel caches the write-protect "
-            "bit at attach, so a remount will not help - reset the badge to "
-            "force re-enumeration and try again."
+            "could not get a writable CIRCUITPY, even after re-enumerating - "
+            "is the badge attached and running CircuitPython rather than "
+            "sitting in BOOTSEL?"
         )
 
     print("deploying spike to %s" % mount)

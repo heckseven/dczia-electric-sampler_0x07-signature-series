@@ -238,8 +238,30 @@ firmware should log bounce histograms passively as telemetry during normal play.
 
 ## Residual risk
 
-Rollback is reflashing `Firmware/DCZiaSampler.uf2`, which is host-driven **only while
-the image is alive**. `picotool reboot -f -u` reaches BOOTSEL from a running image that
+**Correction, found by using it: `Firmware/DCZiaSampler.uf2` is not the way back.**
+
+It is a 2023 image - `Adafruit CircuitPython 8.2.2 on 2023-08-01` - carrying DCZia's
+stock firmware as loose `.py` files. Flashing it does three things nobody wanted:
+
+- downgrades CircuitPython by two major versions, so the rework will not run at all
+  (it needs `i2cdisplaybus`, which 8.x does not have),
+- replaces the deployed build with stock DCZia sources, which then shadow anything
+  deployed over the top, and
+- spans the whole 2 MB, so it rewrites the CIRCUITPY filesystem, where the 28 KB spike
+  image writes only the bottom of flash and leaves it alone.
+
+The real return path is three steps, all host-driven:
+
+1. `Spikes/host/flash.py <cp-10.2.1.uf2>` - stock CircuitPython 10.2.1 for
+   `raspberry_pi_pico_w`, from downloads.circuitpython.org. Verified by the banner
+   matching what the badge ran before.
+2. Clear the volume. `Tools/build.py` only ever copies, so stale stock modules survive
+   a deploy and shadow the build.
+3. `Tools/build.py -o <CIRCUITPY> --mpy-cross ./mpy-cross`.
+
+Songs, kits and `settings.prefs` are on the SD card and survive all of it.
+
+Rollback is host-driven **only while the image is alive**. `picotool reboot -f -u` reaches BOOTSEL from a running image that
 still exposes the reset interface - exactly what a wedged spike may not. A badge that
 wedges below that level needs one hands-on BOOTSEL. Task 1's fault matrix is what bounds
 how often that happens; it cannot make it never.

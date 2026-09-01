@@ -87,7 +87,17 @@ void spike_begin(const char *name, uint32_t version) {
            (unsigned long)version,
            watchdog_caused_reboot() ? "watchdog" : "clean");
 
-    watchdog_enable(SPIKE_WATCHDOG_MS, true);
+    /* pause_on_debug = false, deliberately.
+     *
+     * `true` sets PAUSE_DBG0, PAUSE_DBG1 and PAUSE_JTAG, any of which pauses
+     * the counter while the debug interface looks active - and this badge has
+     * exposed SWD pads with nothing driving them. A spike wedged in a DMA abort
+     * spin sat enumerated-but-dead for over an hour with an 8 s watchdog armed
+     * and never reset, which is what that would look like.
+     *
+     * Nothing here is ever debugged over SWD, and an unattended campaign needs
+     * a watchdog that cannot be talked out of firing, so the pause is off. */
+    watchdog_enable(SPIKE_WATCHDOG_MS, false);
     last_heartbeat = get_absolute_time();
     heartbeat_required = SPIKE_HEARTBEAT_MS > 0;
 }

@@ -51,3 +51,26 @@ pico_add_extra_outputs(spike_scaffold)
 target_link_options(spike_scaffold PRIVATE
     "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/spike_scaffold.map"
 )
+
+# --- Task 4: mixer cost and bank contention --------------------------------
+#
+# hardware_dma is here for the contention case, not for audio: a DMA hammering
+# the striped SRAM is what makes the mixer's cycle count mean something on a bus
+# it has to share.
+add_executable(spike_mixer
+    spike_mixer.c
+    spike_common.c
+)
+target_include_directories(spike_mixer PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_link_libraries(spike_mixer
+    pico_stdlib
+    hardware_watchdog
+    hardware_clocks
+    hardware_dma
+)
+pico_enable_stdio_usb(spike_mixer 1)
+pico_enable_stdio_uart(spike_mixer 0)
+pico_add_extra_outputs(spike_mixer)
+target_link_options(spike_mixer PRIVATE
+    "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/spike_mixer.map"
+)

@@ -66,7 +66,22 @@ void spike_begin(const char *name, uint32_t version) {
     scratch_clear();
 
     stdio_init_all();
-    sleep_ms(SPIKE_CDC_WINDOW_MS);
+
+    /* Listen through the hold - do not merely wait it out.
+     *
+     * This window exists so the host can always reach a freshly booted spike.
+     * It could not: it slept. A spike that wedges before reaching its pump loop
+     * is then unreachable by anything except holding BOOTSEL while replugging,
+     * which is the single failure the whole recovery contract is meant to
+     * prevent. Found by falling into it - a DMA abort spun forever, USB stopped
+     * being serviced, and the badge had to be recovered by hand.
+     */
+    absolute_time_t hold_until = make_timeout_time_ms(SPIKE_CDC_WINDOW_MS);
+    while (!time_reached(hold_until)) {
+        if (getchar_timeout_us(1000) == 'B') {
+            spike_reboot_to_bootsel();
+        }
+    }
 
     printf("SPIKE name=%s version=%lu reset=%s\n", name,
            (unsigned long)version,

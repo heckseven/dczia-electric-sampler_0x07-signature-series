@@ -39,6 +39,38 @@ KEEP = {"boot_out.txt", "System Volume Information", "sd"}
 REQUIRED_DIRS = ("sd",)
 
 
+def writable(path):
+    """Can we actually write here? A mount can claim rw and refuse."""
+    probe = os.path.join(path, ".spike-probe")
+    try:
+        with open(probe, "wb") as handle:
+            handle.write(b"x")
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def remount(path):
+    """Cycle a stale mount. Returns whether it came back writable."""
+    result = subprocess.run(
+        ["lsblk", "-o", "NAME,LABEL", "-nr"], capture_output=True, text=True
+    )
+    device = None
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "CIRCUITPY":
+            device = "/dev/" + parts[0]
+            break
+    if not device:
+        return False
+    for argv in (["udisksctl", "unmount", "-b", device],
+                 ["udisksctl", "mount", "-b", device]):
+        subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        time.sleep(1.5)
+    return os.path.isdir(path) and writable(path)
+
+
 def clear(mount):
     """Remove everything the build does not own, so nothing shadows it."""
     for name in os.listdir(mount):
@@ -67,6 +99,14 @@ def main():
     if not mount:
         raise SystemExit("CIRCUITPY did not appear")
     badge_module.ensure_circuitpy_writable()
+    if not writable(mount):
+        # A mount survives the volume going away during a flash and still
+        # reports rw with the right owner; the first write then fails with
+        # EACCES, which reads as a permissions problem and is really a mount
+        # pointing at a device that was replaced underneath it. Same failure
+        # the BOOTSEL side had, same cure.
+        if not remount(mount):
+            raise SystemExit("CIRCUITPY is mounted but not writable: %s" % mount)
     print("CIRCUITPY at %s" % mount)
 
     clear(mount)

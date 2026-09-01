@@ -183,3 +183,24 @@ pico_add_extra_outputs(spike_display)
 target_link_options(spike_display PRIVATE
     "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/spike_display.map"
 )
+
+# --- The fault matrix -------------------------------------------------------
+#
+# Drives itself across resets through a scratch register, so the whole matrix
+# runs unattended - which is the property it exists to prove.
+add_executable(spike_fault
+    spike_fault.c
+    spike_common.c
+)
+target_include_directories(spike_fault PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_link_libraries(spike_fault
+    pico_stdlib
+    hardware_watchdog
+    hardware_clocks
+)
+pico_enable_stdio_usb(spike_fault 1)
+pico_enable_stdio_uart(spike_fault 0)
+pico_add_extra_outputs(spike_fault)
+target_link_options(spike_fault PRIVATE
+    "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/spike_fault.map"
+)

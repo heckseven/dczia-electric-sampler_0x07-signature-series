@@ -101,3 +101,17 @@ def cases(records):
         elif word == "RESULT":
             state[name] = "OK"
     return state
+
+
+def unfinished(records):
+    """Cases that were announced and never reported - i.e. ones that died.
+
+    Only STARTED counts as unfinished. A spike may also announce a case with a
+    state of its own to record something that has no result to report, and
+    treating those as failures cries wolf on every run.
+    """
+    return {
+        name: state
+        for name, state in cases(records).items()
+        if state == "STARTED"
+    }

@@ -71,6 +71,15 @@ def main():
     time.sleep(3.0)
 
     with badge_module.Badge() as dev:
+        # Reset before importing. A REPL left over from a previous run still
+        # holds the old module in sys.modules, so `import spike_baseline`
+        # silently re-runs the previous build and reports numbers from code
+        # that is no longer on disk - which looks like the edit not working.
+        # A reset also puts the badge through its real boot, which is the state
+        # the measurement is supposed to describe.
+        print("resetting for a clean import")
+        dev.reset()
+
         print("getting a REPL")
         if not dev.repl():
             raise SystemExit(
@@ -118,12 +127,11 @@ def main():
     for keyword, fields in records:
         print(keyword, " ".join("%s=%s" % kv for kv in sorted(fields.items())))
 
-    states = report.cases(records)
-    incomplete = [name for name, state in states.items() if state != "OK"]
+    incomplete = report.unfinished(records)
     if incomplete:
         print("\n=== cases that did not finish ===")
-        for name in incomplete:
-            print("  %s: %s" % (name, states[name]))
+        for name, state in sorted(incomplete.items()):
+            print("  %s: %s" % (name, state))
 
     interesting = [
         line

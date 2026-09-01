@@ -58,10 +58,21 @@ REPORT_VERSION = 1
 # short enough that the histogram fits in memory.
 LOOP_PASSES = 4000
 
-# Bucket edges in microseconds. Chosen to straddle every figure the repo
-# disagrees about - 200 us, 6.8 ms, 8 ms - and to put the audio buffer's 32 ms
-# and a collection's 25-27 ms in their own buckets.
-BUCKETS_US = (100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 50000)
+# Timings are streamed into buckets rather than stored.
+#
+# The first version of this kept a list of 4,000 samples and died with
+# "MemoryError: allocating 16384 bytes" the moment the real state machine was
+# attached - a list of 4,000 ints doubles to 4,096 slots, which is 16 KB, and
+# with the sampler screen and settings tree built there is no 16 KB. Measuring
+# the loop must not be the thing that changes what the loop has to work with.
+#
+# Fine and uniform below 20 ms so percentiles are meaningful at 250 us - the
+# loop turns out to live at 5-10 ms, and 5,000 us buckets cannot tell 6 ms from
+# 9 ms. Coarse above, where only the shape of the tail matters.
+FINE_US = 250
+FINE_LIMIT_US = 20000
+FINE_BUCKETS = FINE_LIMIT_US // FINE_US
+COARSE_EDGES_US = (25000, 30000, 40000, 60000)
 
 
 def _emit(keyword, **fields):
@@ -174,26 +185,74 @@ def _pin_load():
         engine.toggle_play()
 
 
-def _histogram(samples_us):
-    """Bucket counts plus the order statistics that actually get quoted."""
-    counts = [0] * (len(BUCKETS_US) + 1)
-    for value in samples_us:
-        placed = False
-        for index in range(len(BUCKETS_US)):
-            if value < BUCKETS_US[index]:
-                counts[index] += 1
-                placed = True
-                break
-        if not placed:
-            counts[-1] += 1
-    ordered = sorted(samples_us)
-    count = len(ordered)
-    return counts, {
-        "min": ordered[0],
-        "p50": ordered[count // 2],
-        "p99": ordered[min(count - 1, (count * 99) // 100)],
-        "max": ordered[-1],
-    }
+class Histogram:
+    """Counts, min and max, without keeping the samples.
+
+    Allocated once up front so that nothing grows while the thing being
+    measured is running.
+    """
+
+    def __init__(self):
+        self.counts = [0] * (FINE_BUCKETS + len(COARSE_EDGES_US) + 1)
+        self.total = 0
+        self.min = None
+        self.max = None
+
+    def add(self, value):
+        self.total += 1
+        if self.min is None or value < self.min:
+            self.min = value
+        if self.max is None or value > self.max:
+            self.max = value
+        if value < FINE_LIMIT_US:
+            # Uniform below the limit, so the bucket is arithmetic rather than
+            # a scan - this runs once per loop pass.
+            self.counts[value // FINE_US] += 1
+            return
+        for offset in range(len(COARSE_EDGES_US)):
+            if value < COARSE_EDGES_US[offset]:
+                self.counts[FINE_BUCKETS + offset] += 1
+                return
+        self.counts[-1] += 1
+
+    def _upper(self, index):
+        """The upper edge of a bucket, for reporting a percentile."""
+        if index < FINE_BUCKETS:
+            return (index + 1) * FINE_US
+        offset = index - FINE_BUCKETS
+        if offset < len(COARSE_EDGES_US):
+            return COARSE_EDGES_US[offset]
+        return -1  # overflow: above the last edge, no upper bound to quote
+
+    def percentile(self, fraction):
+        """Bucket-resolution percentile: the upper edge of the bucket it lands in.
+
+        Quoted as an upper bound rather than an interpolation, because 250 us
+        of honesty beats a decimal place of invention.
+        """
+        if not self.total:
+            return -1
+        target = (self.total * fraction) // 100
+        seen = 0
+        for index in range(len(self.counts)):
+            seen += self.counts[index]
+            if seen > target:
+                return self._upper(index)
+        return self._upper(len(self.counts) - 1)
+
+    def fields(self):
+        return {
+            "n": self.total,
+            "min": self.min if self.min is not None else -1,
+            "max": self.max if self.max is not None else -1,
+            "p50": self.percentile(50),
+            "p90": self.percentile(90),
+            "p99": self.percentile(99),
+            "fine_us": FINE_US,
+            "fine_buckets": FINE_BUCKETS,
+            "coarse_us": ",".join(str(e) for e in COARSE_EDGES_US),
+            "counts": ",".join(str(c) for c in self.counts),
+        }
 
 
 def case_loop(monotonic_ns, machine=None, passes=LOOP_PASSES):
@@ -212,9 +271,12 @@ def case_loop(monotonic_ns, machine=None, passes=LOOP_PASSES):
     import guard
 
     gc_floor = 16 * 1024
-    samples = []
     collects = 0
     free_floor = gc.mem_free()
+
+    # Everything this loop touches is allocated before the load is pinned, so
+    # the measurement adds nothing to the heap it is measuring.
+    histogram = Histogram()
 
     _pin_load()
     gc.collect()
@@ -231,19 +293,17 @@ def case_loop(monotonic_ns, machine=None, passes=LOOP_PASSES):
         engine.tick()
         if machine is not None:
             machine.update()
-        samples.append((monotonic_ns() - started) // 1000)
+        histogram.add((monotonic_ns() - started) // 1000)
 
-    counts, stats = _histogram(samples)
     _emit(
         "RESULT",
         case="loop",
         available=1,
+        machine=1 if machine is not None else 0,
         passes=passes,
         collects=collects,
         free_floor=free_floor,
-        buckets_us=",".join(str(b) for b in BUCKETS_US),
-        counts=",".join(str(c) for c in counts),
-        **stats
+        **histogram.fields()
     )
 
 
@@ -254,8 +314,8 @@ def case_gc(monotonic_ns):
         _emit("RESULT", case="gc", available=0)
         return
 
+    histogram = Histogram()
     _pin_load()
-    pauses = []
     for _ in range(24):
         # Let the loop generate real garbage between collections rather than
         # timing a collect on an already-clean heap, which is the fast case and
@@ -264,26 +324,58 @@ def case_gc(monotonic_ns):
             engine.tick()
         started = monotonic_ns()
         gc.collect()
-        pauses.append((monotonic_ns() - started) // 1000)
+        histogram.add((monotonic_ns() - started) // 1000)
 
-    counts, stats = _histogram(pauses)
     _emit(
         "RESULT",
         case="gc",
         available=1,
-        collections=len(pauses),
         free_after=gc.mem_free(),
-        buckets_us=",".join(str(b) for b in BUCKETS_US),
-        counts=",".join(str(c) for c in counts),
-        **stats
+        **histogram.fields()
     )
 
 
-def run(machine=None):
-    """Every case, in order, each announced before it runs."""
+def _real_machine():
+    """The state machine main.py runs, brought up to the sampler screen.
+
+    Measuring the loop without this measures `engine.tick()` and calls it the
+    loop. The shipping body is `guard.feed(); gc check; engine.tick();
+    machine.update()`, and `machine.update()` is what draws the display and the
+    LEDs - on a badge where a full frame over I2C is tens of milliseconds, that
+    is not a rounding error.
+
+    Startup is stepped rather than jumped: `go_to_state("sampler")` would skip
+    the warming that StartupState does, and the sampler screen it builds is not
+    the same object as the one a warmed badge is holding.
+    """
+    import statemachine
+
+    machine = statemachine.StateMachine()
+    machine.go_to_state("startup")
+    for _ in range(6000):
+        engine.tick()
+        machine.update()
+        state = machine.state
+        if state is not None and state.name == "sampler":
+            return machine
+    # Startup did not finish. Say so rather than silently measuring a banner.
+    _emit("CASE", case="machine", state="STARTUP_INCOMPLETE")
+    return machine
+
+
+def run(machine=None, with_machine=True):
+    """Every case, in order, each announced before it runs.
+
+    `with_machine` builds the real state machine so the loop figure is the
+    shipping loop. Passing False measures the engine alone, which is the lower
+    bound and is only useful for the difference between the two.
+    """
     _emit("SPIKE", name="baseline", version=REPORT_VERSION)
     monotonic_ns = case_timebase()
     case_constants()
+    if machine is None and with_machine:
+        machine = _real_machine()
+    _emit("CASE", case="machine", state="READY" if machine else "ABSENT")
     case_loop(monotonic_ns, machine)
     case_gc(monotonic_ns)
     _emit("DONE", spike="baseline")

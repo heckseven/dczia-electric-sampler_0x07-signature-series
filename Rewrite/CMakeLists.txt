@@ -24,6 +24,9 @@ add_executable(rt
     src/main.c
     src/audio.c
     src/console.c
+    src/sd.c
+    src/fat.c
+    src/kit.c
 )
 target_include_directories(rt PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 pico_generate_pio_header(rt ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)
@@ -33,6 +36,7 @@ target_link_libraries(rt
     hardware_clocks
     hardware_dma
     hardware_pio
+    hardware_spi
     hardware_watchdog
 )
 # CDC only. The badge's UART pins are the MIDI jack, and stdio on them would put

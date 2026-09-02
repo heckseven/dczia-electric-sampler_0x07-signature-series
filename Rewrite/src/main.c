@@ -13,6 +13,9 @@
 
 #include "audio.h"
 #include "console.h"
+#include "fat.h"
+#include "kit.h"
+#include "sd.h"
 
 /* -30 dBFS at the sample, and the master starts at -12 dB, so the badge makes a
  * tick rather than a bang. This drives a real speaker through an amp with no
@@ -64,11 +67,49 @@ int main(void) {
         }
     }
 
-    /* Every track gets the same sample at a different pitch - an octave below
-     * to an octave above across the eight, which exercises the interpolator in
-     * both directions rather than only at unity. */
+    /* The card, if it is there. The default kit is the one sequencer.py
+     * settles on, and the paths are where the CircuitPython firmware keeps
+     * them - so this reads the player's actual samples, not a copy. */
+    static const char *DEFAULT_KIT[] = {
+        "/samples/kick_crater.wav",
+        "/samples/snare_kraken-head_1.wav",
+        "/samples/hh_hats-closed_1.wav",
+        "/samples/hh_hats-open_1.wav",
+    };
+
+    bool card = sd_init();
+    bool mounted = card && fat_mount();
+    printf("RESULT case=storage card=%d mounted=%d blocks=%lu\n", card ? 1 : 0,
+           mounted ? 1 : 0, (unsigned long)sd_blocks());
+
+    uint32_t loaded_tracks = 0;
+    if (mounted) {
+        absolute_time_t load_start = get_absolute_time();
+        for (uint8_t t = 0; t < (uint8_t)count_of(DEFAULT_KIT); t++) {
+            uint32_t frames_loaded = 0;
+            enum kit_result r = kit_load_track(t, DEFAULT_KIT[t], &frames_loaded);
+            printf("RESULT case=kit track=%u path=%s result=%s frames=%lu\n", t,
+                   DEFAULT_KIT[t], kit_result_name(r),
+                   (unsigned long)frames_loaded);
+            if (r == KIT_OK) {
+                loaded_tracks++;
+            }
+        }
+        printf("RESULT case=kit loaded=%lu arena_used=%lu arena_free=%lu "
+               "load_us=%lld\n",
+               (unsigned long)loaded_tracks, (unsigned long)audio_arena_used(),
+               (unsigned long)audio_arena_free(),
+               (long long)absolute_time_diff_us(load_start, get_absolute_time()));
+    }
+
+    /* Any track the card did not fill falls back to the synthesised blip, so a
+     * missing card is a quieter badge rather than a silent one. */
     for (uint8_t t = 0; t < TRACK_COUNT; t++) {
-        audio_set_sample(t, blip, frames);
+        if (t >= loaded_tracks) {
+            audio_set_sample(t, blip, frames);
+        }
+        /* An octave below to an octave above across the eight, which exercises
+         * the interpolator in both directions rather than only at unity. */
         audio_set_pitch(t, (PITCH_UNITY / 2) + (PITCH_UNITY * t) / (TRACK_COUNT - 1));
         audio_set_gain(t, 0x6000);
     }

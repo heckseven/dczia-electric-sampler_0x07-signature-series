@@ -50,7 +50,83 @@ class BadgeGone(Exception):
     """The port went away and did not come back inside the timeout."""
 
 
+# Which board is ours.
+#
+# A second RP2040 on the same machine is not hypothetical - a DCZia MK9 badge
+# from another project was plugged in alongside the sampler, took /dev/ttyACM0,
+# and every tool here aimed at it. Nothing was flashed, because its MicroPython
+# REPL answered the CircuitPython bootloader commands with a NameError instead
+# of rebooting - luck, not design.
+#
+# So boards are chosen by identity, never by port order. The RP2040's flash UID
+# is stable across firmware, which makes it the one handle that survives
+# CircuitPython, a C image and BOOTSEL alike.
+TARGET_UID = os.environ.get("BADGE_UID", "E661410403330F22")
+
+# Anything whose by-id string matches these is known to belong to somebody else.
+FOREIGN = ("MK9",)
+
+BY_ID = "/dev/serial/by-id"
+
+
+def _candidates():
+    """(device, identity) for every USB serial port, most-preferred first."""
+    found = []
+    if os.path.isdir(BY_ID):
+        for name in sorted(os.listdir(BY_ID)):
+            device = os.path.realpath(os.path.join(BY_ID, name))
+            found.append((device, name))
+    return found
+
+
+def target_port():
+    """The sampler's serial port, or None.
+
+    Refuses to fall back to "the only ACM device" when a foreign board is
+    present: guessing is how the wrong badge gets flashed.
+    """
+    candidates = _candidates()
+    if not candidates:
+        return None
+
+    for device, name in candidates:
+        if TARGET_UID and TARGET_UID in name:
+            return device
+
+    ours = [(d, n) for d, n in candidates
+            if not any(f in n for f in FOREIGN)]
+    if len(ours) == 1:
+        return ours[0][0]
+    if not ours:
+        return None
+    # More than one plausible board and no UID match. Say so rather than pick.
+    raise BadgeGone(
+        "cannot tell which board is the sampler - candidates: %s. "
+        "Set BADGE_UID to the right one." % ", ".join(n for _, n in ours)
+    )
+
+
+def foreign_boards():
+    """Identities of attached boards that are definitely not ours."""
+    return [n for _, n in _candidates() if any(f in n for f in FOREIGN)]
+
+
 def find_port(timeout=ENUMERATE_TIMEOUT):
+    """The sampler's port, waiting for it to appear.
+
+    Identity first: falls back to the old scan only when by-id has nothing to
+    say, which is the case on a machine with exactly one board.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        found = target_port()
+        if found:
+            return found
+        time.sleep(0.2)
+    return _find_port_by_scan(timeout=0.5)
+
+
+def _find_port_by_scan(timeout=ENUMERATE_TIMEOUT):
     """The badge's serial port, waiting for it to appear. None on timeout."""
     deadline = time.time() + timeout
     while time.time() < deadline:

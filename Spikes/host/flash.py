@@ -39,16 +39,35 @@ BOOTSEL_LABEL = "RPI-RP2"
 BOOTSEL_TIMEOUT = 30.0
 
 
-def bootsel_device():
-    """The block device of a board sitting in BOOTSEL, or None."""
+def bootsel_devices():
+    """Every board sitting in BOOTSEL right now."""
     result = subprocess.run(
         ["lsblk", "-o", "NAME,LABEL", "-nr"], capture_output=True, text=True
     )
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[1] == BOOTSEL_LABEL:
-            return "/dev/" + parts[0]
-    return None
+    return [
+        "/dev/" + parts[0]
+        for parts in (line.split() for line in result.stdout.splitlines())
+        if len(parts) >= 2 and parts[1] == BOOTSEL_LABEL
+    ]
+
+
+def bootsel_device():
+    """The block device of a board sitting in BOOTSEL, or None.
+
+    Refuses to choose when two are present. In BOOTSEL every RP2040 presents an
+    identical RPI-RP2 volume - the label carries no identity at all - so there
+    is no safe way to tell the sampler from somebody else's badge here. The
+    guard exists because a second RP2040 really was attached, and the only
+    reason it was not flashed is that its MicroPython answered the bootloader
+    command with a NameError.
+    """
+    devices = bootsel_devices()
+    if len(devices) > 1:
+        raise SystemExit(
+            "two boards are in BOOTSEL (%s) and RPI-RP2 carries no identity - "
+            "unplug the one that is not the sampler" % ", ".join(devices)
+        )
+    return devices[0] if devices else None
 
 
 def _writable(path):
@@ -180,6 +199,11 @@ def flash(uf2_path, timeout=BOOTSEL_TIMEOUT):
     """
     if not os.path.isfile(uf2_path):
         raise SystemExit("no such image: %s" % uf2_path)
+
+    foreign = badge_module.foreign_boards()
+    if foreign:
+        print("note: another board is attached and will be left alone: %s"
+              % ", ".join(foreign))
 
     mount = enter_bootsel(timeout)
     if not mount:

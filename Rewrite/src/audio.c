@@ -69,6 +69,7 @@ static volatile uint32_t stat_blocks;
 static volatile uint32_t stat_worst_cycles;
 static volatile uint32_t stat_active;
 static volatile uint32_t stat_peak_active;
+static volatile uint32_t stat_late;
 /* Which tracks have a voice sounding. The display reads this every frame, so it
  * is a single word rather than something that needs walking. */
 static volatile uint32_t active_mask;
@@ -148,6 +149,15 @@ static void __not_in_flash_func(mix_block)(uint32_t *out) {
          * right failure: a late hit beats a lost one. */
         uint32_t start = 0;
         uint64_t at = voices[v].at_frame;
+        if (at != 0 && at < block_start) {
+            /* Booked for a block that has already gone. It still sounds - a
+             * late hit beats a lost one - but it sounds now rather than when it
+             * was asked for, so the timing is wrong by however late it was.
+             * Counted, because that is the only way to tell the difference
+             * between a sequencer that is accurate and one that is merely
+             * usually accurate. */
+            stat_late++;
+        }
         if (at > block_start) {
             uint64_t ahead = at - block_start;
             if (ahead >= BLOCK_FRAMES) {
@@ -473,6 +483,10 @@ uint32_t audio_active_voices(void) {
 
 uint32_t audio_peak_voices(void) {
     return stat_peak_active;
+}
+
+uint32_t audio_late(void) {
+    return stat_late;
 }
 
 uint32_t audio_active_mask(void) {

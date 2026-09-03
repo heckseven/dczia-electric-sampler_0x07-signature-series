@@ -106,6 +106,13 @@ int main(void) {
         uint32_t base_us = timer_hw->timerawl;
 
         int32_t best = 0x7FFFFFFF, worst = -0x7FFFFFFF;
+        /* Which hit was the outlier. A single stray reading hiding inside
+         * min/mean/max looks identical to broad jitter and wants a completely
+         * different fix; knowing it is always hit zero - or never is - settles
+         * that in one number. */
+        uint32_t best_index = 0;
+        uint32_t discarded = 0;
+        int32_t warmup_us = 0;
         int64_t total = 0;
         uint32_t counted = 0, missed = 0, last_hits = seq.hits;
 
@@ -141,8 +148,37 @@ int main(void) {
                           SAMPLE_RATE);
             int32_t error = measured_us - expected_us;
 
+            /* Discard the first hit of each trial, and say so rather than
+             * quietly dropping it.
+             *
+             * It reads about 30 us where every other hit in the same trial
+             * reads 20,000, and with the transport now starting a full
+             * lookahead in the future that is not something the firmware can
+             * do - a hit booked 16 ms out cannot sound in 30 us. It is a stale
+             * edge: the previous trial's final tone leaves the watcher armed,
+             * and neither a settle nor a read-back-confirmed clear removes it.
+             *
+             * The first trial, which has no previous tone, shows no such hit
+             * (min_at=1, spread 1 us), which is what identifies it. */
+            if (discarded == 0) {
+                discarded = 1;
+                warmup_us = error;
+                continue;
+            }
+
+            /* The first few, individually. A single outlier hiding inside
+             * min/mean/max is indistinguishable from broad jitter, and the two
+             * want completely different fixes. */
+            if (counted < 4) {
+                printf("RESULT case=sample bpm=%u n=%lu error_us=%ld "
+                       "lead_frames=%ld\n",
+                       song.bpm, (unsigned long)counted, (long)error,
+                       (long)((int64_t)scheduled - (int64_t)audio_frames()));
+            }
+
             if (error < best) {
                 best = error;
+                best_index = counted;
             }
             if (error > worst) {
                 worst = error;
@@ -154,13 +190,15 @@ int main(void) {
 
         printf("RESULT case=timing bpm=%u division=%s step_frames=%lu.%03lu "
                "hits=%lu missed=%lu min_us=%ld mean_us=%ld max_us=%ld "
-               "spread_us=%ld underruns=%lu\n",
+               "spread_us=%ld min_at=%lu warmup_us=%ld late=%lu underruns=%lu\n",
                song.bpm, song_division_name(&song),
                (unsigned long)(thousandths / 1000u),
                (unsigned long)(thousandths % 1000u),
                (unsigned long)counted, (unsigned long)missed, (long)best,
                (long)(counted ? total / counted : 0), (long)worst,
-               (long)(worst - best), (unsigned long)audio_underruns());
+               (long)(worst - best), (unsigned long)best_index, (long)warmup_us,
+               (unsigned long)audio_late(),
+               (unsigned long)audio_underruns());
     }
 
     printf("DONE spike=rt-timing\n");

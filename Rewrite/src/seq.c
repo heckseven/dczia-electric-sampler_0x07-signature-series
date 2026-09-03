@@ -23,6 +23,23 @@
 #include "audio.h"
 #include "seq.h"
 
+/* How far ahead hits are booked.
+ *
+ * One block was the obvious choice and the wrong one. Booking a hit for the
+ * block about to be mixed leaves no slack at all: any pause in the caller - USB
+ * service, a display flush, anything - pushes a tick past its own block, and
+ * the mixer then starts that voice immediately rather than when it was asked
+ * for. Measured, that showed up as occasional hits arriving 3.8 ms early
+ * against their schedule, which is the pipeline delay they had missed.
+ *
+ * Booking early costs nothing, and that is the whole point of handing the mixer
+ * an absolute frame: a hit booked eight blocks out still sounds on exactly the
+ * frame it names. So the lookahead only has to exceed the caller's worst pause,
+ * and 16 ms is far past anything this loop does while staying well inside a
+ * step even at 300 BPM and 1/32.
+ */
+#define SEQ_LOOKAHEAD_FRAMES (BLOCK_FRAMES * 8)
+
 /* Frames per tick, in 32.32 fixed point.
  *
  * Kept fractional rather than rounded because rounding here is exactly the
@@ -48,7 +65,18 @@ void seq_start(struct seq *seq) {
         return;
     }
     seq->running = true;
-    seq->start_frame = audio_frames();
+    /* Start one lookahead in the future, not now.
+     *
+     * Tick 0 is due the instant the transport starts, so booking it for the
+     * current frame books it for a block already being mixed - and the mixer
+     * then starts that voice at the next opportunity rather than a full
+     * pipeline later, like every other hit. Measured, the first hit of a
+     * pattern landed about 4 ms adrift of the rest.
+     *
+     * Sixteen milliseconds of delay before the first note is imperceptible on
+     * a Play press, and it makes every hit in the pattern - including the
+     * first - sound exactly one pipeline after the frame it names. */
+    seq->start_frame = audio_frames() + SEQ_LOOKAHEAD_FRAMES;
     seq->next_frame = seq->start_frame;
     seq->next_frac = 0;
     seq->next_tick = 0;
@@ -97,9 +125,7 @@ void seq_update(struct seq *seq) {
      * a handful of ticks. */
     for (;;) {
         uint64_t tick_frame = seq->next_frame;
-        if (tick_frame > now + BLOCK_FRAMES) {
-            /* Not yet, and not within the block about to be mixed. Scheduling
-             * a block ahead is what lets a hit be placed inside it. */
+        if (tick_frame > now + SEQ_LOOKAHEAD_FRAMES) {
             break;
         }
 
@@ -144,7 +170,13 @@ void seq_update(struct seq *seq) {
             uint32_t position = (uint32_t)(tick % cycle);
             uint32_t base = position / ticks_per_step;
 
-            for (uint32_t which = 0; which < 2; which++) {
+            /* Two candidates, unless the track is one step long - then both
+             * wrap to the same step and it would fire twice. That is not
+             * hypothetical: the timing rig used a one-step track, and the
+             * duplicate showed up as occasional hits measured against a tone
+             * that was already sounding. */
+            uint32_t candidates = (length > 1) ? 2 : 1;
+            for (uint32_t which = 0; which < candidates; which++) {
                 uint32_t step = (base + which) % length;
                 if (!song_is_on(song, (uint8_t)t, step)) {
                     continue;

@@ -127,6 +127,11 @@ uint32_t audio_active_voices(void);
  * the instantaneous count lands between hits and reports zero. */
 uint32_t audio_peak_voices(void);
 
+/* Voices that were booked for a block already gone, so they sounded late.
+ * Should be zero; anything else means the scheduler is not being called often
+ * enough for its lookahead. */
+uint32_t audio_late(void);
+
 /* Bit per track, set while any of its voices is sounding. What the display
  * lights up, and cheap enough to read every frame. */
 uint32_t audio_active_mask(void);

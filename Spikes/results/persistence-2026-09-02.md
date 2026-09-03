@@ -144,3 +144,31 @@ loop was just standing still while the card thought about it.
 
 The general shape is worth keeping: a slow peripheral does not cost time, it costs
 *attention*, and the two are only the same if nothing else has a deadline.
+
+## Surviving a reset, and a filesystem that stays sound
+
+**measured**, in two passes driven from a scratch register so it runs unattended: save a
+song with distinctive values, audit the filesystem, reset the chip through the watchdog,
+then load the song back on the other side.
+
+```
+pass=1 mounted=1  saved=ok bpm=211  files=68 crosslinks=0 bad_chains=0
+-- port dropped, reconnecting --
+pass=2 mounted=1  loaded=ok bpm=211->211 wrong=0  files=68 crosslinks=0 bad_chains=0
+```
+
+**Every field identical, across a reset that cleared RAM.** `wrong=0` covers tempo,
+division, all eight lengths and mutes, and all 512 steps and offsets.
+
+**Said plainly: a watchdog reset is not a power cycle.** It does not interrupt the card's
+supply, and this does not pretend otherwise. What it does establish is that the song came
+off the card rather than out of memory, because memory does not survive it. Pulling the
+cable mid-write is a different question and needs a person.
+
+The audit is a small fsck over `/songs` and `/samples` - 68 files. For each: follow the
+chain to the end and confirm the bytes read match the length the directory claims, and
+confirm no file starts on a cluster another file already claimed. A cross-link is what a
+bad write ordering produces and it is invisible until something reads the wrong bytes,
+which makes it exactly the thing worth checking after a thousand overwrites.
+
+Zero cross-links and zero short chains, before the reset and after it.

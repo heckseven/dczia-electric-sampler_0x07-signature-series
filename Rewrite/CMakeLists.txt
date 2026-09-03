@@ -184,3 +184,20 @@ target_link_libraries(rt_soak
 pico_enable_stdio_usb(rt_soak 1)
 pico_enable_stdio_uart(rt_soak 0)
 pico_add_extra_outputs(rt_soak)
+
+# --- Phase 3: survives a reset, and the filesystem stays sound -------------
+add_executable(rt_check
+    measure/measure_check.c
+    src/console.c
+    src/sd.c
+    src/fat.c
+    src/song.c
+    src/songfile.c
+    src/msgpack.c
+)
+target_include_directories(rt_check PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(rt_check pico_stdlib hardware_clocks hardware_dma
+                      hardware_spi hardware_watchdog)
+pico_enable_stdio_usb(rt_check 1)
+pico_enable_stdio_uart(rt_check 0)
+pico_add_extra_outputs(rt_check)

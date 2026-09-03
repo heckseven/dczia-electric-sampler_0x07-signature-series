@@ -123,6 +123,15 @@ def find_port(timeout=ENUMERATE_TIMEOUT):
         if found:
             return found
         time.sleep(0.2)
+
+    # No blind fallback while somebody else's board is attached.
+    #
+    # The sampler's by-id entry disappears for a second or two whenever it
+    # resets, and a scan during that window returns whatever else is plugged in.
+    # That is not theoretical: it handed a MicroPython REPL on a DCZia MK9 back
+    # twice, and the second time it was mid-way through writing a file.
+    if foreign_boards():
+        return None
     return _find_port_by_scan(timeout=0.5)
 
 

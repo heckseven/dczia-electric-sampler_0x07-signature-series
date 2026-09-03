@@ -7,6 +7,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 
 #include "hardware/clocks.h"
 #include "pico/stdlib.h"
@@ -19,6 +20,7 @@
 #include "kit.h"
 #include "seq.h"
 #include "song.h"
+#include "songfile.h"
 #include "sd.h"
 
 /* -30 dBFS at the sample, and the master starts at -12 dB, so the badge makes a
@@ -133,17 +135,108 @@ int main(void) {
     static struct seq seq;
     song_init(&song);
     seq_init(&seq, &song);
+    bool loaded_song = false;
 
-    /* Something to hear on the first press of Play. A four-on-the-floor kick
+    /* Whatever is on the card, if anything.
+     *
+     * The first song in /songs, which is a placeholder for choosing one - that
+     * belongs to the menu, and the menu is Phase 3. What matters here is that
+     * the format reader works against files the player actually has rather than
+     * against ones this firmware wrote itself. */
+    if (mounted) {
+        char name[FAT_NAME_MAX];
+        bool is_dir = false;
+        uint32_t size = 0;
+        uint32_t found = 0;
+        for (uint32_t i = 0; i < 32; i++) {
+            if (!fat_list(SONG_DIR, i, name, sizeof(name), &is_dir, &size)) {
+                break;
+            }
+            if (is_dir) {
+                continue;
+            }
+            found++;
+            if (found == 1) {
+                char path[FAT_NAME_MAX + 16];
+                strcpy(path, SONG_DIR);
+                strcat(path, "/");
+                strncat(path, name, FAT_NAME_MAX - 1);
+                enum songfile_result r = songfile_load(path, &song);
+                printf("RESULT case=song path=%s bytes=%lu result=%s bpm=%u "
+                       "div=%s empty=%d\n",
+                       path, (unsigned long)size, songfile_result_name(r),
+                       song.bpm, song_division_name(&song),
+                       song_is_empty(&song) ? 1 : 0);
+                /* Field by field, so "it loaded" can be checked against what
+                 * the Python actually wrote rather than taken on trust. */
+                if (r == SONGFILE_OK) {
+                    printf("RESULT case=song lengths=%u,%u,%u muted2=%u "
+                           "vol0_q12=%u\n",
+                           song.lengths[0], song.lengths[1], song.lengths[2],
+                           song.muted[2], song.volume_q12[0]);
+                    printf("RESULT case=song t0s0=%u,%ld t0s2=%u,%ld "
+                           "t1s1=%u,%ld\n",
+                           song_velocity(&song, 0, 0),
+                           (long)song_offset(&song, 0, 0),
+                           song_velocity(&song, 0, 2),
+                           (long)song_offset(&song, 0, 2),
+                           song_velocity(&song, 1, 1),
+                           (long)song_offset(&song, 1, 1));
+                }
+                if (r != SONGFILE_OK) {
+                    song_init(&song);
+                } else {
+                    loaded_song = true;
+                }
+            } else {
+                printf("RESULT case=song also=%s bytes=%lu\n", name,
+                       (unsigned long)size);
+            }
+        }
+        printf("RESULT case=song count=%lu\n", (unsigned long)found);
+
+        /* If nothing turned up, say whether the directory is empty or the
+         * listing is broken - those want completely different fixes, and
+         * "count=0" alone cannot tell them apart. */
+        if (found == 0) {
+            for (uint32_t i = 0; i < 12; i++) {
+                if (!fat_list("/", i, name, sizeof(name), &is_dir, &size)) {
+                    break;
+                }
+                printf("RESULT case=root entry=%s dir=%d bytes=%lu\n", name,
+                       is_dir ? 1 : 0, (unsigned long)size);
+            }
+        }
+    }
+
+    /* Something to hear on the first press of Play, when the card had nothing. A four-on-the-floor kick
      * with hats on the offbeats says more about whether the timing is right
      * than an empty grid does. */
-    for (uint32_t s = 0; s < 8; s += 2) {
-        song_set_step(&song, 0, s, VELOCITY_DEFAULT, 0);
+    if (!loaded_song) {
+        for (uint32_t s = 0; s < 8; s += 2) {
+            song_set_step(&song, 0, s, VELOCITY_DEFAULT, 0);
+        }
+        song_set_step(&song, 1, 4, VELOCITY_DEFAULT, 0);
+        for (uint32_t s = 1; s < 8; s += 2) {
+            song_set_step(&song, 2, s, 80, 0);
+        }
     }
-    song_set_step(&song, 1, 4, VELOCITY_DEFAULT, 0);
-    for (uint32_t s = 1; s < 8; s += 2) {
-        song_set_step(&song, 2, s, 80, 0);
-    }
+
+    /* LIVE or SEQ, toggled by a Function tap - engine/controls.py's design,
+     * and independent of whether the transport is running.
+     *
+     * The first version tied this to the transport: pads played when stopped
+     * and edited when running. That is two orthogonal things collapsed into
+     * one, and it loses the thing a sampler is mostly for - playing pads over a
+     * pattern that is already going.
+     *
+     * Tap versus hold is the same 250 ms the Python uses, and for the same
+     * reason: Function held is a modifier (Function + pad selects a track),
+     * Function tapped is a command. A press that did something else while it
+     * was down was a modifier, whatever its duration. */
+    bool seq_mode = false;
+    uint32_t function_down_ms = 0;
+    bool function_used = false;
 
     uint8_t page = 0;
     uint8_t selected = 0;
@@ -171,22 +264,24 @@ int main(void) {
         while (input_next(&event)) {
             switch (event.kind) {
             case INPUT_KEY_DOWN:
-                if (event.key <= KEY_PAD_LAST) {
-                    if (input_held(KEY_FUNCTION)) {
-                        /* Function scopes the pads to choosing a track, which
-                         * is the gesture engine/controls.py already defines. */
+                if (event.key == KEY_FUNCTION) {
+                    function_down_ms = to_ms_since_boot(get_absolute_time());
+                    function_used = false;
+                } else if (input_held(KEY_FUNCTION)) {
+                    /* Anything pressed while Function is down makes it a
+                     * modifier rather than a tap. */
+                    function_used = true;
+                    if (event.key <= KEY_PAD_LAST) {
                         selected = event.key;
-                    } else if (seq.running) {
-                        /* While the transport runs the pads write the pattern:
-                         * a pad is a step of the selected track on this page,
-                         * lit clears and unlit records. Playing them live at the
-                         * same time would need somewhere else to put the
-                         * gesture, and that is a Phase 3 question. */
+                    }
+                } else if (event.key <= KEY_PAD_LAST) {
+                    if (seq_mode) {
                         uint32_t step = page * STEPS_PER_PAGE + event.key;
                         bool on = song_toggle_step(&song, selected, step);
                         printf("RESULT case=edit track=%u step=%lu on=%d\n",
                                selected, (unsigned long)step, on ? 1 : 0);
                     } else {
+                        /* LIVE: the pad plays, transport running or not. */
                         audio_trigger(event.key);
                         hits++;
                     }
@@ -200,6 +295,18 @@ int main(void) {
                         (song_length(&song) + STEPS_PER_PAGE - 1) /
                         STEPS_PER_PAGE;
                     page = (uint8_t)((page + 1) % (pages ? pages : 1));
+                }
+                break;
+
+            case INPUT_KEY_UP:
+                if (event.key == KEY_FUNCTION && !function_used) {
+                    uint32_t held =
+                        to_ms_since_boot(get_absolute_time()) - function_down_ms;
+                    if (held < 250) {
+                        seq_mode = !seq_mode;
+                        printf("RESULT case=mode mode=%s\n",
+                               seq_mode ? "SEQ" : "LIVE");
+                    }
                 }
                 break;
 
@@ -261,7 +368,7 @@ int main(void) {
             for (uint32_t t = 0; t < TRACK_COUNT; t++) {
                 uint32_t x = t * 16;
                 bool lit;
-                if (seq.running) {
+                if (seq_mode) {
                     /* Eight cells, eight steps of this page for the selected
                      * track, so the grid reads as the thing being edited - and
                      * the playhead is the cell the transport is on. */
@@ -280,7 +387,7 @@ int main(void) {
                 if (!lit) {
                     display_rect(x + 1, 1, 14, 14, true);
                 }
-                if (!seq.running && t == selected) {
+                if (!seq_mode && t == selected) {
                     display_fill_rect(x + 7, 5, 2, 6, !lit);
                 }
             }
@@ -317,13 +424,14 @@ int main(void) {
         if (time_reached(next_report)) {
             printf("RESULT case=stats blocks=%lu underruns=%lu "
                    "worst_cycles=%lu peak=%lu hits=%lu selected=%u "
-                   "pages=%lu run=%d tick=%lu seqhits=%lu\n",
+                   "pages=%lu run=%d mode=%s tick=%lu seqhits=%lu\n",
                    (unsigned long)audio_blocks(),
                    (unsigned long)audio_underruns(),
                    (unsigned long)audio_worst_cycles(),
                    (unsigned long)audio_peak_voices(),
                    (unsigned long)hits, selected,
                    (unsigned long)pages_written, seq.running ? 1 : 0,
+                   seq_mode ? "SEQ" : "LIVE",
                    (unsigned long)seq.tick, (unsigned long)seq.hits);
             next_report = make_timeout_time_ms(2000);
         }

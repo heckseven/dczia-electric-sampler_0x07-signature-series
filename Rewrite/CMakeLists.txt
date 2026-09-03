@@ -31,6 +31,8 @@ add_executable(rt
     src/display.c
     src/song.c
     src/seq.c
+    src/msgpack.c
+    src/songfile.c
 )
 target_include_directories(rt PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 pico_generate_pio_header(rt ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)

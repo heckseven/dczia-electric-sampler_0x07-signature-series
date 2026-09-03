@@ -105,3 +105,48 @@ direction, mutes, velocity, and offsets being re-clamped when a division shorten
 That split is deliberate. The badge measures latency, jitter and underruns because only
 the badge can. A laptop checks tick attribution exhaustively in a millisecond, and it is
 where the one-step double-fire was found.
+
+## Reading the Python's own song files
+
+Phase 2 reads the existing `.song` format rather than inventing one, so the player's work
+survives the rewrite. Proving that needed a file the Python wrote, and `/songs` on the
+card was empty - so CircuitPython was restored, told to save a song with deliberately
+awkward values, and the C firmware then read it back.
+
+**measured**, field by field:
+
+| field | CircuitPython wrote | C read |
+|---|---|---|
+| bpm | 137 | 137 |
+| division | 1 (1/8) | 1/8 |
+| lengths | 5, 3, rest default | 5, 3, 8 |
+| muted[2] | True | 1 |
+| track_volume[0] | 1.5 | 6144 in Q12 = 1.5 |
+| step (0,0) | velocity 111, offset 0 | 111, 0 |
+| step (0,2) | velocity 64, offset +1 | 64, +1 |
+| step (1,1) | velocity 90, offset -1 | 90, -1 |
+
+Every field exact.
+
+### What the file actually looks like, and why guessing failed
+
+The first attempt returned `not_a_song` after correctly reading `bpm`. Two things about
+the real bytes were wrong in the assumptions:
+
+**The keys are not in the order `to_dict` writes them.** CircuitPython dictionaries
+iterate in hash order, so the file begins `bpm`, `kit`, `track_strength`, `v`. A reader
+that matched keys positionally would have worked on one build and broken on the next.
+This one matches by name, so the order does not matter.
+
+**The Python writes `None` for a per-track value it has never set.** `track_volume` came
+out as `[1.5, None, None, None, None, None, None, None]` - one float and seven nils. A
+reader expecting eight numbers consumed 8 bytes where it should have consumed 41, and
+every key after that point was read out of the middle of a value.
+
+That is this format's characteristic failure: **one misread value and the rest of the
+file is garbage**, with no checksum to notice. The fix is a nil case wherever a per-track
+value can be absent - volumes, mutes and step rows alike.
+
+Worth stating plainly: this was only found by reading a file the Python actually wrote.
+A reader tested against files it had written itself would have passed, because it would
+never have produced a nil.

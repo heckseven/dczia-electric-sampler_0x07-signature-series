@@ -295,3 +295,39 @@ so it keeps one working song - "session" by default - and remembers which.
 Saving is **Function + Select click**, deliberately a gesture `engine/controls.py` does
 not assign. Saving belongs in the menu; putting a placeholder on a real gesture would
 teach a habit that later has to be unlearned.
+
+## Songs carry their own sounds
+
+A song's `kit` field holds a sample path per track, and the rewrite was writing eight nils
+into it - which loads and plays, and quietly loses which sounds the song was made with.
+
+Now it round-trips, including the detail that makes it awkward: **the two firmwares mount
+the same card at different places.** The Python's filesystem puts it at `/sd` and writes
+`/sd/samples/kick_crater.wav`; this one mounts at the root and wants
+`/samples/kick_crater.wav`. Same file, two names, and a song has to mean the same thing
+opened in either - so the prefix is stripped coming in and put back going out.
+
+**measured**, with paths written both ways in the same song so the translation is
+exercised rather than assumed:
+
+```
+round=1 saved=ok loaded=ok failures=0
+round=2 saved=ok loaded=ok failures=0
+```
+
+and read back by CircuitPython's own `songfile.load`:
+
+```
+BPM 164 DIV 1/8T
+KIT ['/sd/samples/hh_hats-closed_1.wav', None, '/sd/samples/fx_lucifer.wav', None,
+     '/sd/samples/1001.wav', '/sd/samples/cymbals_crucible-edge_1.wav',
+     '/sd/samples/kick_crater.wav', '/sd/samples/snare_kraken-head_1.wav']
+```
+
+Every path in the form the Python expects, and the empty tracks back as `None` rather
+than as empty strings, which is what its own `set_sample` writes.
+
+The boot order changed to suit this: **the song loads before the kit.** Loading samples
+first means loading whichever ones this build happens to default to and then loading them
+again once the song says otherwise. A song that names its sounds should sound the way it
+did when it was saved.

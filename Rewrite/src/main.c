@@ -120,17 +120,50 @@ int main(void) {
     printf("RESULT case=storage card=%d mounted=%d blocks=%lu\n", card ? 1 : 0,
            mounted ? 1 : 0, (unsigned long)sd_blocks());
 
+    /* The song first, then the sounds it names.
+     *
+     * This order matters: a song carries the paths of the samples it was saved
+     * with, so loading the kit before knowing which song is open means loading
+     * the wrong one and reloading it a moment later. Songs should sound the way
+     * they did when they were saved, not the way this build happens to start. */
+    song_init(&song);
+    seq_init(&seq, &song);
+    bool loaded_song = false;
     uint32_t loaded_tracks = 0;
+
     if (mounted) {
+        prefs_load(&prefs);
+        build_song_path();
+        enum songfile_result r = songfile_load(song_path, &song);
+        printf("RESULT case=song path=%s result=%s bpm=%u div=%s empty=%d "
+               "prefs=%d volume=%ld\n",
+               song_path, songfile_result_name(r), song.bpm,
+               song_division_name(&song), song_is_empty(&song) ? 1 : 0,
+               prefs.loaded ? 1 : 0, (long)prefs.volume);
+        if (r == SONGFILE_OK) {
+            loaded_song = true;
+        } else {
+            song_init(&song);
+        }
+
         absolute_time_t load_start = get_absolute_time();
-        for (uint8_t t = 0; t < (uint8_t)count_of(DEFAULT_KIT); t++) {
+        for (uint8_t t = 0; t < TRACK_COUNT; t++) {
+            const char *path = song.kit[t][0] ? song.kit[t] : NULL;
+            if (path == NULL && t < (uint8_t)count_of(DEFAULT_KIT)) {
+                path = DEFAULT_KIT[t];
+            }
+            if (path == NULL) {
+                continue;
+            }
             uint32_t frames_loaded = 0;
-            enum kit_result r = kit_load_track(t, DEFAULT_KIT[t], &frames_loaded);
+            enum kit_result kr = kit_load_track(t, path, &frames_loaded);
             printf("RESULT case=kit track=%u path=%s result=%s frames=%lu\n", t,
-                   DEFAULT_KIT[t], kit_result_name(r),
-                   (unsigned long)frames_loaded);
-            if (r == KIT_OK) {
+                   path, kit_result_name(kr), (unsigned long)frames_loaded);
+            if (kr == KIT_OK) {
                 loaded_tracks++;
+                /* Record what was actually loaded, so saving writes the kit
+                 * that is playing rather than the one that was asked for. */
+                song_set_kit_path(&song, t, path);
             }
         }
         printf("RESULT case=kit loaded=%lu arena_used=%lu arena_free=%lu "
@@ -146,9 +179,10 @@ int main(void) {
         if (t >= loaded_tracks) {
             audio_set_sample(t, blip, frames);
         }
-        /* An octave below to an octave above across the eight, which exercises
-         * the interpolator in both directions rather than only at unity. */
-        audio_set_pitch(t, (PITCH_UNITY / 2) + (PITCH_UNITY * t) / (TRACK_COUNT - 1));
+        /* Unity. The spread of pitches here during bring-up existed to
+         * exercise the interpolator in both directions; a player wants their
+         * samples at the pitch they recorded them. */
+        audio_set_pitch(t, PITCH_UNITY);
         audio_set_gain(t, 0x6000);
     }
     audio_set_master(TEST_MASTER);
@@ -161,30 +195,6 @@ int main(void) {
     printf("RESULT case=input note=pads 0-7 play, Function+pad selects, "
            "Select turns pitch, Volume turns level\n");
 
-    /* One pattern, and a transport that counts frames rather than milliseconds.
-     * Both static: nothing here allocates after init, and a song is 1.2 KB. */
-    song_init(&song);
-    seq_init(&seq, &song);
-    bool loaded_song = false;
-
-    /* The song the badge was last working on, named by the settings file both
-     * firmwares share - so a song opened in the Python is the one that comes
-     * back here. */
-    if (mounted) {
-        prefs_load(&prefs);
-        build_song_path();
-        enum songfile_result r = songfile_load(song_path, &song);
-        printf("RESULT case=song path=%s result=%s bpm=%u div=%s empty=%d "
-               "prefs=%d volume=%ld\n",
-               song_path, songfile_result_name(r), song.bpm,
-               song_division_name(&song), song_is_empty(&song) ? 1 : 0,
-               prefs.loaded ? 1 : 0, (long)prefs.volume);
-        if (r == SONGFILE_OK) {
-            loaded_song = true;
-        } else {
-            song_init(&song);
-        }
-    }
 
     /* Something to hear on the first press of Play, when the card had nothing. A four-on-the-floor kick
      * with hats on the offbeats says more about whether the timing is right

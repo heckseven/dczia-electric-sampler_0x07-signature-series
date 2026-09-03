@@ -131,6 +131,26 @@ enum songfile_result songfile_load(const char *path, struct song *song) {
             read_byte_rows(&mp, song->steps, VELOCITY_OFF);
         } else if (mp_key_is(key, key_length, "offsets")) {
             read_byte_rows(&mp, song->offsets, OFFSET_BIAS);
+        } else if (mp_key_is(key, key_length, "kit")) {
+            uint32_t count;
+            if (mp_array(&mp, &count)) {
+                for (uint32_t t = 0; t < count; t++) {
+                    if (mp_nil(&mp)) {
+                        continue; /* no sample chosen for this track */
+                    }
+                    const uint8_t *path;
+                    uint32_t length;
+                    if (!mp_bytes(&mp, &path, &length)) {
+                        break;
+                    }
+                    if (t < TRACK_COUNT && length < KIT_PATH_MAX) {
+                        char text[KIT_PATH_MAX];
+                        memcpy(text, path, length);
+                        text[length] = '\0';
+                        song_set_kit_path(song, (uint8_t)t, text);
+                    }
+                }
+            }
         } else if (mp_key_is(key, key_length, "track_volume")) {
             uint32_t count;
             if (mp_array(&mp, &count)) {
@@ -221,7 +241,16 @@ enum songfile_result songfile_save(const char *path, const struct song *song) {
     mpw_str(&w, "kit");
     mpw_array(&w, TRACK_COUNT);
     for (uint32_t t = 0; t < TRACK_COUNT; t++) {
-        mpw_nil(&w);
+        if (song->kit[t][0] == '\0') {
+            mpw_nil(&w);
+        } else {
+            /* Written back with the /sd prefix the Python expects, so a song
+             * saved here opens there with its sounds rather than in silence. */
+            char full[KIT_PATH_MAX + 4];
+            strcpy(full, "/sd");
+            strncat(full, song->kit[t], KIT_PATH_MAX - 1);
+            mpw_str(&w, full);
+        }
     }
 
     mpw_str(&w, "muted");

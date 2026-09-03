@@ -13,6 +13,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 
 #include "pico/stdlib.h"
 
@@ -47,6 +48,25 @@ static void fill(struct song *song, uint32_t round) {
         song->muted[t] = (uint8_t)((t + round) & 1);
         song->volume_q12[t] = (uint16_t)(2048 + t * 512);
     }
+    /* Real sample paths, so the /sd prefix translation is exercised rather
+     * than assumed: the Python writes "/sd/samples/x.wav" and this firmware
+     * mounts the card at the root, so a song has to survive the trip in both
+     * directions to mean the same thing to both. */
+    static const char *PATHS[] = {
+        "/samples/kick_crater.wav",
+        "/sd/samples/snare_kraken-head_1.wav",
+        "/samples/hh_hats-closed_1.wav",
+        "",
+        "/samples/fx_lucifer.wav",
+        "",
+        "/sd/samples/1001.wav",
+        "/samples/cymbals_crucible-edge_1.wav",
+    };
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        song_set_kit_path(song, (uint8_t)t,
+                          PATHS[(t + round) % count_of(PATHS)]);
+    }
+
     int32_t limit = song_max_offset(song);
     for (uint32_t t = 0; t < TRACK_COUNT; t++) {
         for (uint32_t s = 0; s < song->lengths[t]; s++) {
@@ -70,6 +90,7 @@ static void compare(const struct song *a, const struct song *b) {
     check(a->division == b->division, "division");
     for (uint32_t t = 0; t < TRACK_COUNT; t++) {
         check(a->lengths[t] == b->lengths[t], "length");
+        check(strcmp(a->kit[t], b->kit[t]) == 0, "kit path");
         check(a->muted[t] == b->muted[t], "muted");
         /* Volume goes out as thousandths of a float and comes back as Q12, so
          * it cannot be expected to be bit-exact. One part in 4096 is well
@@ -99,6 +120,11 @@ int main(void) {
     }
 
     fat_delete(TEST_PATH);
+    /* Tidy up after the prefs test, which deliberately left its output behind
+     * so the bytes could be looked at. It has been looked at. */
+    if (fat_delete("/settings.test")) {
+        printf("RESULT case=save removed=/settings.test\n");
+    }
 
     for (uint32_t round = 1; round <= 2; round++) {
         fill(&written, round);

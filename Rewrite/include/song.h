@@ -50,6 +50,15 @@ enum division {
 
 #define DIVISION_DEFAULT DIVISION_SIXTEENTH
 
+/* A sample path, as stored in a song.
+ *
+ * "/sd/samples/cymbals_crucible-center_1.wav" is the longest that occurs on the
+ * card and the Python writes them with the /sd prefix its filesystem mounts
+ * under. This firmware mounts the card at the root, so the prefix is stripped
+ * on the way in and put back on the way out - the file has to keep meaning the
+ * same thing to both. */
+#define KIT_PATH_MAX 48
+
 struct song {
     uint8_t steps[TRACK_COUNT][MAX_STEPS];   /* velocity; 0 is off */
     uint8_t offsets[TRACK_COUNT][MAX_STEPS]; /* biased by OFFSET_BIAS */
@@ -61,6 +70,10 @@ struct song {
     uint16_t volume_q12[TRACK_COUNT];
     uint8_t division;
     uint16_t bpm;
+
+    /* Which sample each track plays. Empty means the track has no opinion and
+     * the default kit is used, which is what None means in the Python. */
+    char kit[TRACK_COUNT][KIT_PATH_MAX];
 };
 
 void song_init(struct song *song);
@@ -90,5 +103,8 @@ void song_set_division(struct song *song, int32_t division);
 /* The longest track, which is what the display pages over. */
 uint32_t song_length(const struct song *song);
 bool song_is_empty(const struct song *song);
+
+/* Set a track's sample path, stripping a leading "/sd" if the caller kept it. */
+void song_set_kit_path(struct song *song, uint8_t track, const char *path);
 
 #endif /* SONG_H */

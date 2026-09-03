@@ -138,3 +138,25 @@ bool song_is_empty(const struct song *song) {
     }
     return true;
 }
+
+void song_set_kit_path(struct song *song, uint8_t track, const char *path) {
+    if (track >= TRACK_COUNT) {
+        return;
+    }
+    if (path == NULL || path[0] == '\0') {
+        song->kit[track][0] = '\0';
+        return;
+    }
+    /* The Python's filesystem mounts the card at /sd and writes paths to match.
+     * This one mounts it at the root. Same file, two names, and a song has to
+     * mean the same thing opened in either. */
+    if (strncmp(path, "/sd/", 4) == 0) {
+        path += 3;
+    }
+    uint32_t n = 0;
+    while (path[n] && n < KIT_PATH_MAX - 1) {
+        song->kit[track][n] = path[n];
+        n++;
+    }
+    song->kit[track][n] = '\0';
+}

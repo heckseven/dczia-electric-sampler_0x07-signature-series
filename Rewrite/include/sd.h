@@ -29,6 +29,18 @@
 bool sd_init(void);
 bool sd_read(uint32_t lba, uint8_t *buffer);
 
+/* Write one block. The card holds the bus while it programs - milliseconds -
+ * and this waits for it rather than returning early. */
+bool sd_write(uint32_t lba, const uint8_t *buffer);
+
+/* Write, then read back and compare.
+ *
+ * Used for everything that is filesystem structure rather than file contents.
+ * A wrong byte in a FAT or a directory entry is not a wrong song, it is a card
+ * that will not mount, and finding out later is not acceptable. A verifying
+ * read costs 476 us against the milliseconds the write already took. */
+bool sd_write_verified(uint32_t lba, const uint8_t *buffer);
+
 /* Capacity in 512-byte blocks, from the CSD, across the full 22 bits of C_SIZE.
  *
  * Phase 0 found CircuitPython's sdcardio reporting exactly the value a 16-bit

@@ -23,6 +23,13 @@ enum songfile_result {
 };
 
 enum songfile_result songfile_load(const char *path, struct song *song);
+/* Write a song where CircuitPython can read it.
+ *
+ * The safety of the write itself belongs to fat_write - data, then chain, then
+ * one directory entry - so that a power cut leaves either the old song or the
+ * new one and never neither. */
+enum songfile_result songfile_save(const char *path, const struct song *song);
+
 const char *songfile_result_name(enum songfile_result result);
 
 #endif /* SONGFILE_H */

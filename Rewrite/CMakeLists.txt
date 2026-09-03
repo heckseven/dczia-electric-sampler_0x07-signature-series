@@ -122,3 +122,38 @@ target_link_libraries(rt_timing
 pico_enable_stdio_usb(rt_timing 1)
 pico_enable_stdio_uart(rt_timing 0)
 pico_add_extra_outputs(rt_timing)
+
+# --- Phase 3: the write path, exercised end to end -------------------------
+add_executable(rt_save
+    measure/measure_save.c
+    src/console.c
+    src/sd.c
+    src/fat.c
+    src/song.c
+    src/songfile.c
+    src/msgpack.c
+)
+target_include_directories(rt_save PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(rt_save
+    pico_stdlib
+    hardware_clocks
+    hardware_dma
+    hardware_spi
+    hardware_watchdog
+)
+pico_enable_stdio_usb(rt_save 1)
+pico_enable_stdio_uart(rt_save 0)
+pico_add_extra_outputs(rt_save)
+
+add_executable(rt_clean
+    measure/measure_clean.c
+    src/console.c
+    src/sd.c
+    src/fat.c
+)
+target_include_directories(rt_clean PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(rt_clean pico_stdlib hardware_clocks hardware_dma
+                      hardware_spi hardware_watchdog)
+pico_enable_stdio_usb(rt_clean 1)
+pico_enable_stdio_uart(rt_clean 0)
+pico_add_extra_outputs(rt_clean)

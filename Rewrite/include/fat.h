@@ -48,4 +48,19 @@ uint32_t fat_read(struct fat_file *file, void *buffer, uint32_t length);
 bool fat_list(const char *path, uint32_t index, char *name_out,
               uint32_t name_size, bool *is_dir, uint32_t *size_out);
 
+/* Write a file whole, into a directory that already exists.
+ *
+ * The ordering is the point - data, then the FAT chain, then one directory
+ * entry, then release the old chain - so that a power cut leaves either the old
+ * file or the new one and never neither. See the note above fat_write in fat.c.
+ *
+ * A new file gets an 8.3 name. Long-name writing is a run of extra entries with
+ * a checksum tying them to the short one, and getting that wrong produces a
+ * directory other systems disagree about. */
+bool fat_write(const char *path, const uint8_t *data, uint32_t length);
+
+/* Remove a file and release its clusters. Matches on the 8.3 name, so it can
+ * clear entries this firmware wrote before it understood long names. */
+bool fat_delete(const char *path);
+
 #endif /* FAT_H */

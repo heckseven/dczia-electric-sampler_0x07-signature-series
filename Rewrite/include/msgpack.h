@@ -38,4 +38,29 @@ bool mp_skip(struct mp *mp);
 
 bool mp_key_is(const uint8_t *key, uint32_t length, const char *name);
 
+/* --- writing --------------------------------------------------------------- */
+
+struct mpw {
+    uint8_t *data;
+    uint32_t at;
+    uint32_t end;
+    /* Cleared the first time anything would overflow, and never set again, so
+     * one check at the end covers the whole document. */
+    bool ok;
+};
+
+void mpw_init(struct mpw *w, uint8_t *buffer, uint32_t capacity);
+void mpw_map(struct mpw *w, uint32_t count);
+void mpw_array(struct mpw *w, uint32_t count);
+void mpw_str(struct mpw *w, const char *text);
+void mpw_bin(struct mpw *w, const uint8_t *bytes, uint32_t n);
+void mpw_int(struct mpw *w, int32_t value);
+void mpw_bool(struct mpw *w, bool value);
+void mpw_nil(struct mpw *w);
+
+/* A float, given as thousandths. The Python reads floats for track volumes, and
+ * writing an integer there would work today and break on a version that stops
+ * being tolerant. */
+void mpw_float_milli(struct mpw *w, int32_t milli);
+
 #endif /* MSGPACK_H */

@@ -313,3 +313,148 @@ bool mp_skip(struct mp *mp) {
 bool mp_key_is(const uint8_t *key, uint32_t length, const char *name) {
     return strlen(name) == length && memcmp(key, name, length) == 0;
 }
+
+/* --- writing --------------------------------------------------------------- *
+ *
+ * The mirror of the reader, and only as much of it. Everything written here has
+ * to be readable by CircuitPython's msgpack, which is the test that matters:
+ * a file this firmware can read back but the Python cannot is a file that has
+ * stranded the player's work in a rewrite that was supposed to preserve it.
+ */
+
+void mpw_init(struct mpw *w, uint8_t *buffer, uint32_t capacity) {
+    w->data = buffer;
+    w->at = 0;
+    w->end = capacity;
+    w->ok = true;
+}
+
+static void emit(struct mpw *w, uint8_t byte) {
+    if (!w->ok || w->at >= w->end) {
+        w->ok = false;
+        return;
+    }
+    w->data[w->at++] = byte;
+}
+
+static void emit_bytes(struct mpw *w, const uint8_t *bytes, uint32_t n) {
+    if (!w->ok || w->at + n > w->end) {
+        w->ok = false;
+        return;
+    }
+    memcpy(&w->data[w->at], bytes, n);
+    w->at += n;
+}
+
+void mpw_map(struct mpw *w, uint32_t count) {
+    if (count < 16) {
+        emit(w, (uint8_t)(0x80 | count));
+    } else {
+        emit(w, 0xDE);
+        emit(w, (uint8_t)(count >> 8));
+        emit(w, (uint8_t)count);
+    }
+}
+
+void mpw_array(struct mpw *w, uint32_t count) {
+    if (count < 16) {
+        emit(w, (uint8_t)(0x90 | count));
+    } else {
+        emit(w, 0xDC);
+        emit(w, (uint8_t)(count >> 8));
+        emit(w, (uint8_t)count);
+    }
+}
+
+void mpw_str(struct mpw *w, const char *text) {
+    uint32_t n = (uint32_t)strlen(text);
+    if (n < 32) {
+        emit(w, (uint8_t)(0xA0 | n));
+    } else {
+        emit(w, 0xD9);
+        emit(w, (uint8_t)n);
+    }
+    emit_bytes(w, (const uint8_t *)text, n);
+}
+
+void mpw_bin(struct mpw *w, const uint8_t *bytes, uint32_t n) {
+    emit(w, 0xC4);
+    emit(w, (uint8_t)n);
+    emit_bytes(w, bytes, n);
+}
+
+void mpw_int(struct mpw *w, int32_t value) {
+    if (value >= 0 && value < 128) {
+        emit(w, (uint8_t)value);
+    } else if (value < 0 && value >= -32) {
+        emit(w, (uint8_t)value);
+    } else if (value >= 0 && value < 256) {
+        emit(w, 0xCC);
+        emit(w, (uint8_t)value);
+    } else if (value >= 0 && value < 65536) {
+        emit(w, 0xCD);
+        emit(w, (uint8_t)(value >> 8));
+        emit(w, (uint8_t)value);
+    } else {
+        emit(w, 0xD2);
+        emit(w, (uint8_t)(value >> 24));
+        emit(w, (uint8_t)(value >> 16));
+        emit(w, (uint8_t)(value >> 8));
+        emit(w, (uint8_t)value);
+    }
+}
+
+void mpw_bool(struct mpw *w, bool value) {
+    emit(w, value ? 0xC3 : 0xC2);
+}
+
+void mpw_nil(struct mpw *w) {
+    emit(w, 0xC0);
+}
+
+void mpw_float_milli(struct mpw *w, int32_t milli) {
+    /* Build an IEEE-754 single by hand. No FPU on this chip, and the Python
+     * reads floats here - writing an integer where it expects a float would
+     * work today and is exactly the kind of near-miss that breaks on a version
+     * that stops being tolerant. */
+    emit(w, 0xCA);
+    if (milli == 0) {
+        emit(w, 0);
+        emit(w, 0);
+        emit(w, 0);
+        emit(w, 0);
+        return;
+    }
+    bool negative = milli < 0;
+    uint32_t magnitude = (uint32_t)(negative ? -milli : milli);
+
+    /* value = magnitude / 1000, normalised to 1.xxx * 2^exponent. */
+    int32_t exponent = 0;
+    uint64_t scaled = (uint64_t)magnitude << 24; /* headroom for the mantissa */
+    uint64_t divided = scaled / 1000u;
+    while (divided >= (1ull << 24)) {
+        divided >>= 1;
+        exponent++;
+    }
+    while (divided < (1ull << 23)) {
+        divided <<= 1;
+        exponent--;
+    }
+    /* Where the exponent comes from, written out because getting it wrong is
+     * silent: the encoder produced exactly twice the value, which reads back as
+     * a plausible volume rather than as an error.
+     *
+     *   divided_initial = value * 2^24            (magnitude << 24, over 1000)
+     *   divided_final   = divided_initial / 2^exponent   (the two loops)
+     *   divided_final   = m * 2^23, with m in [1, 2)
+     *
+     * so value = m * 2^(exponent - 1), and IEEE wants the exponent of m. */
+    int32_t biased = exponent - 1 + 127;
+    uint32_t mantissa = (uint32_t)(divided & 0x7FFFFF);
+    uint32_t bits = (negative ? 0x80000000u : 0u) |
+                    ((uint32_t)(biased & 0xFF) << 23) | mantissa;
+    emit(w, (uint8_t)(bits >> 24));
+    emit(w, (uint8_t)(bits >> 16));
+    emit(w, (uint8_t)(bits >> 8));
+    emit(w, (uint8_t)bits);
+}

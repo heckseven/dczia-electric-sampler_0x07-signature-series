@@ -188,6 +188,75 @@ bool sd_init(void) {
     return true;
 }
 
+bool sd_write(uint32_t lba, const uint8_t *buffer) {
+    cs(true);
+    uint32_t arg = block_addressed ? lba : lba * SD_BLOCK;
+    if (command(24, arg, 0xFF) != 0x00) {
+        cs(false);
+        return false;
+    }
+
+    /* One byte of gap, then the data token, then the block. The gap is in the
+     * spec and cards do enforce it. */
+    xfer(0xFF);
+    xfer(0xFE);
+
+    dma_channel_config tc = dma_channel_get_default_config(dma_tx);
+    channel_config_set_transfer_data_size(&tc, DMA_SIZE_8);
+    channel_config_set_read_increment(&tc, true);
+    channel_config_set_write_increment(&tc, false);
+    channel_config_set_dreq(&tc, spi_get_dreq(SD_SPI, true));
+    dma_channel_configure(dma_tx, &tc, &spi_get_hw(SD_SPI)->dr, buffer,
+                          SD_BLOCK, true);
+    dma_channel_wait_for_finish_blocking(dma_tx);
+
+    /* Drain what came back while the block went out. Leaving it in the RX FIFO
+     * desynchronises every later read on this bus, which looks like a card
+     * fault and is not one. */
+    while (spi_is_busy(SD_SPI)) {
+        tight_loop_contents();
+    }
+    while (spi_is_readable(SD_SPI)) {
+        (void)spi_get_hw(SD_SPI)->dr;
+    }
+
+    xfer(0xFF); /* CRC, ignored in SPI mode */
+    xfer(0xFF);
+
+    /* The card answers with a five-bit status: 0b00101 is accepted. */
+    uint8_t response = xfer(0xFF);
+    if ((response & 0x1F) != 0x05) {
+        cs(false);
+        return false;
+    }
+
+    /* It holds MISO low while it programs. This is the part that takes
+     * milliseconds and the part a caller must not interrupt. */
+    uint32_t deadline = timer_hw->timerawl + 500000u;
+    while ((int32_t)(timer_hw->timerawl - deadline) < 0) {
+        if (xfer(0xFF) != 0x00) {
+            cs(false);
+            return true;
+        }
+    }
+    cs(false);
+    return false;
+}
+
+bool sd_write_verified(uint32_t lba, const uint8_t *buffer) {
+    if (!sd_write(lba, buffer)) {
+        return false;
+    }
+    /* Read it back and compare. Writes to a filesystem are the one place where
+     * finding out later is not acceptable, and a block read costs 476 us
+     * against the milliseconds the write already took. */
+    uint8_t check[SD_BLOCK];
+    if (!sd_read(lba, check)) {
+        return false;
+    }
+    return memcmp(check, buffer, SD_BLOCK) == 0;
+}
+
 uint32_t sd_blocks(void) {
     return capacity_blocks;
 }

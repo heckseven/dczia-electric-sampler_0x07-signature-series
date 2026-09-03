@@ -184,3 +184,82 @@ const char *songfile_result_name(enum songfile_result result) {
     }
     return "unknown";
 }
+
+/* --- saving ---------------------------------------------------------------- */
+
+enum songfile_result songfile_save(const char *path, const struct song *song) {
+    struct mpw w;
+    mpw_init(&w, buffer, sizeof(buffer));
+
+    /* The keys Song.from_dict looks for. It uses data.get with defaults, so a
+     * missing key is not an error - but the ones this firmware actually holds
+     * are all written, and the ones it does not are written as the empty values
+     * the Python would have used, rather than left out. A file that silently
+     * drops a field is worse than one that says the field is empty. */
+    mpw_map(&w, 12);
+
+    mpw_str(&w, "v");
+    mpw_int(&w, 1);
+
+    mpw_str(&w, "length");
+    mpw_int(&w, (int32_t)song_length(song));
+
+    mpw_str(&w, "lengths");
+    mpw_bin(&w, song->lengths, TRACK_COUNT);
+
+    mpw_str(&w, "division");
+    mpw_int(&w, song->division);
+
+    mpw_str(&w, "bpm");
+    mpw_int(&w, song->bpm);
+
+    /* Not modelled in this phase. Written as the Python's own empty values so
+     * a round trip through here does not quietly invent content. */
+    mpw_str(&w, "kit_name");
+    mpw_str(&w, "");
+
+    mpw_str(&w, "kit");
+    mpw_array(&w, TRACK_COUNT);
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        mpw_nil(&w);
+    }
+
+    mpw_str(&w, "muted");
+    mpw_array(&w, TRACK_COUNT);
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        mpw_bool(&w, song->muted[t] != 0);
+    }
+
+    mpw_str(&w, "track_strength");
+    mpw_array(&w, TRACK_COUNT);
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        mpw_nil(&w);
+    }
+
+    mpw_str(&w, "track_volume");
+    mpw_array(&w, TRACK_COUNT);
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        /* Q12 back to thousandths: 4096 is 1.0. */
+        mpw_float_milli(&w, ((int32_t)song->volume_q12[t] * 1000) / 4096);
+    }
+
+    mpw_str(&w, "steps");
+    mpw_array(&w, TRACK_COUNT);
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        mpw_bin(&w, song->steps[t], MAX_STEPS);
+    }
+
+    mpw_str(&w, "offsets");
+    mpw_array(&w, TRACK_COUNT);
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        mpw_bin(&w, song->offsets[t], MAX_STEPS);
+    }
+
+    if (!w.ok) {
+        return SONGFILE_TOO_BIG;
+    }
+    if (!fat_write(path, buffer, w.at)) {
+        return SONGFILE_NO_FILE;
+    }
+    return SONGFILE_OK;
+}

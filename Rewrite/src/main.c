@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "console.h"
 #include "fat.h"
+#include "input.h"
 #include "kit.h"
 #include "sd.h"
 
@@ -118,37 +119,95 @@ int main(void) {
 
     printf("RESULT case=running note=stream is live and silent\n");
 
-    uint32_t tick = 0;
-    absolute_time_t next_trigger = make_timeout_time_ms(500);
+    input_init();
+    printf("RESULT case=input note=pads 0-7 play, Function+pad selects, "
+           "Select turns pitch, Volume turns level\n");
+
+    uint8_t selected = 0;
+    uint32_t hits = 0;
+    /* Pitch as a 16.16 rate, tracked per track so the knob is relative to
+     * whatever the track is already doing rather than to unity. */
+    static uint32_t pitch[TRACK_COUNT];
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        pitch[t] = PITCH_UNITY;
+        audio_set_pitch((uint8_t)t, PITCH_UNITY);
+    }
+    int16_t master = TEST_MASTER;
+    audio_set_master(master);
+
     absolute_time_t next_report = make_timeout_time_ms(2000);
 
     while (true) {
         console_pump();
+        input_poll();
 
-        if (time_reached(next_trigger)) {
-            /* Every track at once, faster than the blip decays, so both voices
-             * of all eight tracks overlap. That is 16 voices - the worst case
-             * the instrument can produce - rather than the one-at-a-time load
-             * that says nothing about the budget. */
-            for (uint8_t t = 0; t < TRACK_COUNT; t++) {
-                audio_trigger(t);
+        struct input_event event;
+        while (input_next(&event)) {
+            switch (event.kind) {
+            case INPUT_KEY_DOWN:
+                if (event.key <= KEY_PAD_LAST) {
+                    if (input_held(KEY_FUNCTION)) {
+                        selected = event.key;
+                    } else {
+                        audio_trigger(event.key);
+                        hits++;
+                    }
+                } else if (event.key == KEY_PLAY) {
+                    audio_stop_all();
+                }
+                break;
+
+            case INPUT_SELECT_TURN: {
+                /* A semitone a click, as a ratio rather than a table: 2^(1/12)
+                 * is 1.0595, and 1090/1029 is that to five decimal places in
+                 * integers a Cortex-M0+ can multiply without help. */
+                int32_t steps = event.delta;
+                uint32_t p = pitch[selected];
+                while (steps > 0 && p < PITCH_UNITY * 4) {
+                    p = (uint32_t)(((uint64_t)p * 1090u) / 1029u);
+                    steps--;
+                }
+                while (steps < 0 && p > PITCH_UNITY / 4) {
+                    p = (uint32_t)(((uint64_t)p * 1029u) / 1090u);
+                    steps++;
+                }
+                pitch[selected] = p;
+                audio_set_pitch(selected, p);
+                printf("RESULT case=pitch track=%u rate_q16=%lu "
+                       "percent=%lu\n",
+                       selected, (unsigned long)p,
+                       (unsigned long)((uint64_t)p * 100u / PITCH_UNITY));
+                break;
             }
-            tick++;
-            next_trigger = make_timeout_time_ms(40);
+
+            case INPUT_VOLUME_TURN: {
+                int32_t next = master + event.delta * 0x0400;
+                if (next > 0x7FFF) {
+                    next = 0x7FFF;
+                }
+                if (next < 0) {
+                    next = 0;
+                }
+                master = (int16_t)next;
+                audio_set_master(master);
+                printf("RESULT case=volume master=%d\n", master);
+                break;
+            }
+
+            default:
+                break;
+            }
         }
 
         if (time_reached(next_report)) {
-            printf("RESULT case=stats blocks=%lu underruns=%lu worst_cycles=%lu "
-                   "active=%lu peak=%lu triggers=%lu\n",
+            printf("RESULT case=stats blocks=%lu underruns=%lu "
+                   "worst_cycles=%lu peak=%lu hits=%lu selected=%u\n",
                    (unsigned long)audio_blocks(),
                    (unsigned long)audio_underruns(),
                    (unsigned long)audio_worst_cycles(),
-                   (unsigned long)audio_active_voices(),
                    (unsigned long)audio_peak_voices(),
-                   (unsigned long)tick);
+                   (unsigned long)hits, selected);
             next_report = make_timeout_time_ms(2000);
         }
-
-        sleep_ms(1);
     }
 }

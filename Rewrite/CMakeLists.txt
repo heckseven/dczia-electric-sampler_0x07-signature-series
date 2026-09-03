@@ -27,6 +27,7 @@ add_executable(rt
     src/sd.c
     src/fat.c
     src/kit.c
+    src/input.c
 )
 target_include_directories(rt PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 pico_generate_pio_header(rt ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)

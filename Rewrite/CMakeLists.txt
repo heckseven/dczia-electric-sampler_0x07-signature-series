@@ -157,3 +157,30 @@ target_link_libraries(rt_clean pico_stdlib hardware_clocks hardware_dma
 pico_enable_stdio_usb(rt_clean 1)
 pico_enable_stdio_uart(rt_clean 0)
 pico_add_extra_outputs(rt_clean)
+
+# --- Phase 3: a thousand saves, while playing ------------------------------
+add_executable(rt_soak
+    measure/measure_soak.c
+    src/audio.c
+    src/console.c
+    src/sd.c
+    src/fat.c
+    src/song.c
+    src/seq.c
+    src/songfile.c
+    src/msgpack.c
+)
+target_include_directories(rt_soak PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+pico_generate_pio_header(rt_soak ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)
+target_link_libraries(rt_soak
+    pico_stdlib
+    pico_multicore
+    hardware_clocks
+    hardware_dma
+    hardware_pio
+    hardware_spi
+    hardware_watchdog
+)
+pico_enable_stdio_usb(rt_soak 1)
+pico_enable_stdio_uart(rt_soak 0)
+pico_add_extra_outputs(rt_soak)

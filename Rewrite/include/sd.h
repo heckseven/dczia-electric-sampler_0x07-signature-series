@@ -47,6 +47,14 @@ bool sd_write_verified(uint32_t lba, const uint8_t *buffer);
  * truncation gives - 58,064,896 blocks where the card holds 125,173,760. That
  * is harmless on a card partitioned below 29.7 GB and silently addresses the
  * wrong blocks above it. */
+/* Something to run while the card is busy programming a block.
+ *
+ * A save holds the bus for tens of milliseconds. The audio does not care - it
+ * is on the other core - but anything on this one with a deadline does, and the
+ * sequencer is the obvious example. Set it to whatever needs to keep running,
+ * or leave it unset. */
+void sd_set_idle_hook(void (*hook)(void));
+
 uint32_t sd_blocks(void);
 
 #endif /* SD_H */

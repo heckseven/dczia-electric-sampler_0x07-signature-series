@@ -87,3 +87,60 @@ name still saves and loads, as long as nothing else ever looks for the long one.
 - A thousand save cycles, then a check for leaked clusters.
 - Saving while the transport runs.
 - Pulling power mid-write. The one criterion that needs a person and a cable.
+
+## A thousand saves, while playing
+
+**measured**, 1,000 save-and-reload cycles with the transport running and the mixer
+sounding, each round changing the tempo and a step so a save that quietly did nothing
+would show up as a mismatch:
+
+| | |
+|---|---|
+| rounds | 1,000 |
+| save failures | **0** |
+| load failures | **0** |
+| field mismatches | **0** |
+| mean save | 36.1 ms |
+| worst save | 57.4 ms |
+| **free clusters before** | **905,784** |
+| **free clusters after** | **905,784** |
+| **leaked** | **0** |
+| underruns | **0** |
+
+Clusters are 32 KB here, so a 1.2 KB song occupies one. Allocating a new cluster and
+freeing the old one balances exactly over a thousand overwrites, which is the answer to
+the question the leak-rather-than-corrupt policy raises: it costs nothing when nothing
+goes wrong.
+
+## Two failures that look nothing alike
+
+The first run of this soak reported **zero underruns and 476 late hits out of 826**. Both
+numbers are about the same 36 ms, and they are completely different problems.
+
+The audio never noticed. It is on the other core with two blocks of buffer ahead of it,
+and the card does not touch either. **The sequencer noticed enormously**: it books hits
+about 16 ms ahead and it cannot book anything while the main loop is sitting inside
+`sd_write` waiting for the card to finish programming. Fifty-eight percent of the hits in
+that run arrived at whatever moment the loop next got a turn.
+
+Raising the lookahead does not fix it. It would have to exceed 36 ms, and at 300 BPM a
+1/32 step is 25 ms - a lookahead longer than a step books a track's voices before its
+previous hit has finished, which trades late hits for missing ones.
+
+What does fix it is noticing where the time actually goes. Almost all of those 36 ms are
+the card holding MISO low while it programs a block, and during that the CPU has nothing
+to do. `sd_set_idle_hook` runs the caller's own work in that gap - the sequencer's
+scheduler, here.
+
+**measured**, same soak with the hook set:
+
+```
+rounds=1000 save_fail=0 load_fail=0 mismatch=0 mean_save_us=36062 worst_save_us=55756
+free_before=905784 free_after=905784 leaked=0 underruns=0 late=0 seqhits=824
+```
+
+**Late hits: 476 to 0.** Saves cost the same. The work was always there to be done; the
+loop was just standing still while the card thought about it.
+
+The general shape is worth keeping: a slow peripheral does not cost time, it costs
+*attention*, and the two are only the same if nothing else has a deadline.

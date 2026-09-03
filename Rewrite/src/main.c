@@ -52,6 +52,14 @@ static const int16_t *make_blip(uint32_t *frames_out) {
     return data;
 }
 
+/* The transport, at file scope so the card's idle hook can reach it. */
+static struct song song;
+static struct seq seq;
+
+static void keep_time(void) {
+    seq_update(&seq);
+}
+
 int main(void) {
     console_begin("rt-phase1");
 
@@ -82,6 +90,11 @@ int main(void) {
         "/samples/hh_hats-closed_1.wav",
         "/samples/hh_hats-open_1.wav",
     };
+
+    /* Keep the sequencer scheduling while the card is busy - see the note on
+     * sd_set_idle_hook. Set before the first card operation, so even the kit
+     * load benefits. */
+    sd_set_idle_hook(keep_time);
 
     bool card = sd_init();
     bool mounted = card && fat_mount();
@@ -131,8 +144,6 @@ int main(void) {
 
     /* One pattern, and a transport that counts frames rather than milliseconds.
      * Both static: nothing here allocates after init, and a song is 1.2 KB. */
-    static struct song song;
-    static struct seq seq;
     song_init(&song);
     seq_init(&seq, &song);
     bool loaded_song = false;

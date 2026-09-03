@@ -63,4 +63,10 @@ bool fat_write(const char *path, const uint8_t *data, uint32_t length);
  * clear entries this firmware wrote before it understood long names. */
 bool fat_delete(const char *path);
 
+/* Free clusters, by walking a whole FAT copy. Thousands of sectors, so this is
+ * for tests: it exists to answer "did repeated saving leak space", which the
+ * write path's leak-rather-than-corrupt policy makes a real question. */
+uint32_t fat_count_free(void);
+uint32_t fat_cluster_bytes(void);
+
 #endif /* FAT_H */

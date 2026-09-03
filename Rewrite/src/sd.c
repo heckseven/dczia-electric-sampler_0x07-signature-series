@@ -18,6 +18,29 @@ static uint32_t capacity_blocks;
 static int dma_rx = -1, dma_tx = -1;
 static uint8_t dummy_tx[SD_BLOCK];
 
+/* Called between blocks during a multi-block operation.
+ *
+ * A save is thirty milliseconds of card time, and the caller is not running
+ * during it. That does not trouble the audio - it is on the other core, with
+ * its own buffers - but it does trouble the sequencer, which books hits only a
+ * short way ahead and cannot book them while it is not being called. Measured
+ * during a thousand-save soak: no underruns at all, and hundreds of sequenced
+ * hits arriving late.
+ *
+ * A hook rather than a direct call to the sequencer, because sd.c has no
+ * business knowing what a sequencer is. */
+static void (*idle_hook)(void);
+
+void sd_set_idle_hook(void (*hook)(void)) {
+    idle_hook = hook;
+}
+
+static void idle(void) {
+    if (idle_hook != NULL) {
+        idle_hook();
+    }
+}
+
 static inline uint8_t xfer(uint8_t v) {
     uint8_t r = 0xFF;
     spi_write_read_blocking(SD_SPI, &v, &r, 1);
@@ -230,14 +253,18 @@ bool sd_write(uint32_t lba, const uint8_t *buffer) {
         return false;
     }
 
-    /* It holds MISO low while it programs. This is the part that takes
-     * milliseconds and the part a caller must not interrupt. */
+    /* It holds MISO low while it programs - milliseconds, and the bulk of what
+     * a save costs. The bus cannot be used during it, but the CPU is otherwise
+     * free, so this is exactly where the caller gets a chance to keep its own
+     * deadlines. */
     uint32_t deadline = timer_hw->timerawl + 500000u;
     while ((int32_t)(timer_hw->timerawl - deadline) < 0) {
         if (xfer(0xFF) != 0x00) {
             cs(false);
+            idle();
             return true;
         }
+        idle();
     }
     cs(false);
     return false;

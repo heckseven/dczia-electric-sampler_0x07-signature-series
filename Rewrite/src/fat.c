@@ -865,3 +865,40 @@ static bool directory_cluster(const char *path, uint32_t *cluster_out,
     *cluster_out = cluster;
     return true;
 }
+
+/* Free clusters, counted by walking the FAT.
+ *
+ * The only way to see leaked clusters. The write path deliberately leaks rather
+ * than risking corruption when something fails part-way, so "does repeated
+ * saving lose space" is a question with a real answer, and this is how to ask
+ * it. Expensive - a whole FAT copy is thousands of sectors - so it is for tests
+ * rather than for the instrument.
+ */
+uint32_t fat_count_free(void) {
+    if (!volume.mounted) {
+        return 0;
+    }
+    uint32_t free_count = 0;
+    uint32_t entries = volume.total_clusters + 2;
+    uint32_t sectors = (entries * 4 + SD_BLOCK - 1) / SD_BLOCK;
+
+    for (uint32_t sector = 0; sector < sectors; sector++) {
+        if (!read_cached(volume.fat_lba + sector)) {
+            return free_count;
+        }
+        for (uint32_t i = 0; i < SD_BLOCK / 4; i++) {
+            uint32_t cluster = sector * (SD_BLOCK / 4) + i;
+            if (cluster < 2 || cluster >= entries) {
+                continue;
+            }
+            if ((le32(&cache[i * 4]) & 0x0FFFFFFFu) == 0) {
+                free_count++;
+            }
+        }
+    }
+    return free_count;
+}
+
+uint32_t fat_cluster_bytes(void) {
+    return volume.sectors_per_cluster * SD_BLOCK;
+}

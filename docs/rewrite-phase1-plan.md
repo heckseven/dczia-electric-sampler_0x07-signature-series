@@ -65,6 +65,10 @@ Each is measurable by the Phase 0 harness, unattended:
 1. Boots to playable in under two seconds, kit loaded from the card.
 2. Twelve pads trigger samples. Trigger-to-output **at or under 5 ms worst case**,
    measured at the pin by the Task 5 method.
+   **Met, 2026-09-02: 2,568 / 3,563 / 4,561 us** over 300 dithered trials, measured at
+   the pin through the shipped audio path rather than a spike's copy of it. Task 5's rig
+   predicted 2,566 / 3,565 / 4,560 - agreement within 3 us on every statistic. Add up to
+   1.05 ms for the key scan for a full press-to-sound worst case of about 5.6 ms.
 3. Per-track pitch works over at least +/- one octave and is audibly correct.
 4. **Zero underruns over ten minutes** of continuous play at 16 voices.
 5. No allocation after init - provable by the absence of `malloc` in the linked image.

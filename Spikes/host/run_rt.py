@@ -17,7 +17,8 @@ import badge as badge_module  # noqa: E402
 import flash as flash_module  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-IMAGE = os.path.join(HERE, "..", "..", "Rewrite", "build", "rt.uf2")
+def image_path(name):
+    return os.path.join(HERE, "..", "..", "Rewrite", "build", name + ".uf2")
 
 
 def follow(seconds):
@@ -63,6 +64,7 @@ def follow(seconds):
 def main():
     args = [a for a in sys.argv[1:] if a != "--watch"]
     watch = float(args[0]) if args else 30.0
+    target = args[1] if len(args) > 1 else "rt"
 
     # --watch attaches to whatever is already running. Reflashing to read the
     # log would restart the firmware, which is the opposite of what you want
@@ -73,9 +75,9 @@ def main():
     mount = flash_module.enter_bootsel(timeout=60)
     if not mount:
         raise SystemExit("could not reach BOOTSEL")
-    shutil.copyfile(IMAGE, os.path.join(mount, "rt.uf2"))
+    shutil.copyfile(image_path(target), os.path.join(mount, target + ".uf2"))
     os.sync()
-    print("flashed rt", flush=True)
+    print("flashed %s" % target, flush=True)
 
     # By identity, not by port order. The RP2040's flash UID survives the
     # reflash - the board is usb-Raspberry_Pi_Pico_<UID> under rt where it was

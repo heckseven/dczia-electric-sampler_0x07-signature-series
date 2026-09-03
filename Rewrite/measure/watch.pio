@@ -1,0 +1,29 @@
+; A second state machine that timestamps the I2S data pin.
+;
+; Measurement only - never linked into the instrument. It reads GP2 as an input
+; while the I2S state machine is driving it, which is legal because PIO input
+; samples the pad rather than the output register, and is the only way to
+; timestamp a sample leaving the chip without a scope and a spare GPIO.
+;
+; The DMA transfer count cannot answer this: it says when a frame entered the
+; PIO TX FIFO, not when it left. The joined FIFO is eight words deep, which at
+; 16 kHz is half a millisecond of the answer.
+
+.program data_watch
+
+.wrap_target
+    wait 1 pin 0
+    irq wait 0
+.wrap
+
+% c-sdk {
+static inline void data_watch_init(PIO pio, uint sm, uint offset,
+                                   uint data_pin, float div) {
+    pio_sm_config c = data_watch_program_get_default_config(offset);
+    sm_config_set_in_pins(&c, data_pin);
+    /* Deliberately no pindirs and no pio_gpio_init: this must observe the pin,
+     * not take it away from the transmitter. */
+    sm_config_set_clkdiv(&c, div);
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}

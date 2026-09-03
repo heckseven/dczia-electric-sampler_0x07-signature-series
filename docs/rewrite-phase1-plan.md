@@ -29,6 +29,10 @@ something needs 2.56 ms.
 budget - so idling means streaming silence, not stopping BCLK. This reverses what the
 CircuitPython firmware does, and Phase 0 is why.
 
+**Confirmed by ear, 2026-09-02:** playing the badge with the display updating live
+produced no pops. The artefact that justified stopping the stream is inaudible once the
+disturbance is short enough, so the 7 ms is bought back for nothing.
+
 **The whole audio path lives in SRAM.** `__not_in_flash_func` on the ISR and everything it
 calls, no calls into flash from the ISR, and every interrupt but the audio DMA masked
 during a flash write. Measured: a 35 ms erase costs zero underruns and no measurable

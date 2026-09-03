@@ -201,3 +201,20 @@ target_link_libraries(rt_check pico_stdlib hardware_clocks hardware_dma
 pico_enable_stdio_usb(rt_check 1)
 pico_enable_stdio_uart(rt_check 0)
 pico_add_extra_outputs(rt_check)
+
+# --- Phase 3: the torn-write test, which needs a person and a cable --------
+add_executable(rt_pull
+    measure/measure_pull.c
+    src/console.c
+    src/sd.c
+    src/fat.c
+    src/song.c
+    src/songfile.c
+    src/msgpack.c
+)
+target_include_directories(rt_pull PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(rt_pull pico_stdlib hardware_clocks hardware_dma
+                      hardware_spi hardware_watchdog)
+pico_enable_stdio_usb(rt_pull 1)
+pico_enable_stdio_uart(rt_pull 0)
+pico_add_extra_outputs(rt_pull)

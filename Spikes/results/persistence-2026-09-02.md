@@ -172,3 +172,48 @@ bad write ordering produces and it is invisible until something reads the wrong 
 which makes it exactly the thing worth checking after a thousand overwrites.
 
 Zero cross-links and zero short chains, before the reset and after it.
+
+## Pulling the power: one clean verdict, and a sound card after sixteen pulls
+
+The write ordering exists for exactly one situation, and this is the only test that
+creates it. Two songs, A and B, alike in nothing - different tempo, division, lengths,
+mutes, volumes and every step - written alternately as fast as the card allows. Whenever
+power returns the badge reads the file back before doing anything else and says which of
+the two it is, or that it is neither.
+
+**What was established:**
+
+```
+verdict=A load=ok bpm=100 files=69 fs_problems=0
+```
+
+A complete song A. Not a mixture, not missing. And after roughly sixteen power cuts
+landing during active writing, the audit over `/songs` and `/samples` reports **zero
+cross-links and zero short chains across all 69 files**, with the card still writing at
+41-61 us per save - the same range as before any of it.
+
+**What was not established, and why.** The intent was eight independent verdicts. One was
+captured, because the host runner was wrong in two ways and the player's pulls paid for
+both:
+
+- After a pull, the next cycle began while the port was still disappearing, opened the
+  dying handle, failed, and counted one pull as two. Eight pulls produced one cycle's
+  worth of data.
+- Attaching to a badge already mid-write found no verdict to read, because the firmware
+  announced it once at boot and the runner arrived later.
+
+Both are fixed - the firmware repeats its verdict while waiting, and the runner waits for
+the port to be gone and stay gone before starting a cycle - and verdict capture is
+confirmed working. But the honest count is **one confirmed clean verdict plus an
+end-state audit**, not eight samples, and the end state should not be presented as though
+it were.
+
+**What one verdict is worth.** The asymmetry is the point: a single `TORN` or `ABSENT`
+would have disproved the ordering outright, and none appeared in sixteen chances. That is
+evidence, not proof. A pull that lands between saves proves nothing, and there is no way
+to aim one at the ~40 ms window that matters.
+
+**Standing conclusion:** the ordering is a design argument - data, then chain, then one
+directory-entry sector, then release - supported by one clean observation and sixteen
+pulls' worth of undamaged filesystem. It is not a measured guarantee, and this file does
+not call it one.

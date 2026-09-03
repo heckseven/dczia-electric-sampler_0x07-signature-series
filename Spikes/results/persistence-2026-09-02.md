@@ -261,3 +261,37 @@ A third cycle hung waiting for a reset that did not arrive, which is a further h
 fault and not a firmware one. It was stopped there: eleven cable pulls had already been
 spent on harness bugs, and the marginal value of a fourth verdict did not justify a
 twelfth.
+
+## Settings: written without taking anything away
+
+`/settings.prefs` belongs to both firmwares. It holds keys this rewrite does not model -
+`brightness`, `text`, `animation`, `kit` - and a writer that dropped them would take the
+player's settings away the first time they saved a song.
+
+So `prefs.c` carries values it cannot interpret through **byte for byte**, rather than
+re-encoding them. Re-encoding something you do not understand is how a round trip quietly
+changes it.
+
+**measured**, against a copy with the original restored afterwards:
+
+| key | before | after |
+|---|---|---|
+| `song` | 1 byte (empty) | 6 bytes ("probe") |
+| `volume` | absent | 1 byte |
+| `brightness` | 1 | **1** |
+| `text` | 11 | **11** |
+| `animation` | 8 | **8** |
+
+Four keys in, five out, and the three the rewrite knows nothing about are byte-identical.
+The original file was written back at the end of the test - `restored=1` - because a test
+that proves a settings writer is safe by overwriting the settings has the order wrong.
+
+## What the instrument does with it now
+
+The badge loads the song named in the shared settings file, so a song last opened in the
+Python is the one that comes back. There is no menu and therefore no way to type a name,
+so it keeps one working song - "session" by default - and remembers which.
+
+Saving is **Function + Select click**, deliberately a gesture `engine/controls.py` does
+not assign. Saving belongs in the menu; putting a placeholder on a real gesture would
+teach a habit that later has to be unlearned.

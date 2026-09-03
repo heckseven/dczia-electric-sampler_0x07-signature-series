@@ -58,6 +58,10 @@ void mpw_int(struct mpw *w, int32_t value);
 void mpw_bool(struct mpw *w, bool value);
 void mpw_nil(struct mpw *w);
 
+/* Already-encoded bytes, copied verbatim. For carrying a value through that
+ * this build read but does not interpret. */
+void mpw_raw(struct mpw *w, const uint8_t *bytes, uint32_t n);
+
 /* A float, given as thousandths. The Python reads floats for track volumes, and
  * writing an integer there would work today and break on a version that stops
  * being tolerant. */

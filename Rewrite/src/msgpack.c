@@ -412,6 +412,15 @@ void mpw_nil(struct mpw *w) {
     emit(w, 0xC0);
 }
 
+/* Bytes straight through, already encoded.
+ *
+ * For values this build read but does not understand: re-encoding something you
+ * cannot interpret is how a round trip quietly changes it, and copying the
+ * original bytes cannot. */
+void mpw_raw(struct mpw *w, const uint8_t *bytes, uint32_t n) {
+    emit_bytes(w, bytes, n);
+}
+
 void mpw_float_milli(struct mpw *w, int32_t milli) {
     /* Build an IEEE-754 single by hand. No FPU on this chip, and the Python
      * reads floats here - writing an integer where it expects a float would

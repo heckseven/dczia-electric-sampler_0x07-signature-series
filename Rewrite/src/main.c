@@ -20,6 +20,7 @@
 #include "kit.h"
 #include "seq.h"
 #include "song.h"
+#include "prefs.h"
 #include "songfile.h"
 #include "sd.h"
 
@@ -56,8 +57,26 @@ static const int16_t *make_blip(uint32_t *frames_out) {
 static struct song song;
 static struct seq seq;
 
+static struct prefs prefs;
+
 static void keep_time(void) {
     seq_update(&seq);
+}
+
+/* Where the current pattern lives on the card.
+ *
+ * There is no menu yet and therefore no way to type a name, so the badge keeps
+ * one working song and remembers which it was. "session" is the default; if the
+ * player has a song open from the Python it is that one, because the name comes
+ * out of the settings file both firmwares share. */
+static char song_path[PREFS_NAME_MAX + 24];
+
+static void build_song_path(void) {
+    const char *name = prefs.song[0] ? prefs.song : "session";
+    strcpy(song_path, SONG_DIR);
+    strcat(song_path, "/");
+    strncat(song_path, name, PREFS_NAME_MAX - 1);
+    strcat(song_path, SONG_SUFFIX);
 }
 
 int main(void) {
@@ -148,75 +167,22 @@ int main(void) {
     seq_init(&seq, &song);
     bool loaded_song = false;
 
-    /* Whatever is on the card, if anything.
-     *
-     * The first song in /songs, which is a placeholder for choosing one - that
-     * belongs to the menu, and the menu is Phase 3. What matters here is that
-     * the format reader works against files the player actually has rather than
-     * against ones this firmware wrote itself. */
+    /* The song the badge was last working on, named by the settings file both
+     * firmwares share - so a song opened in the Python is the one that comes
+     * back here. */
     if (mounted) {
-        char name[FAT_NAME_MAX];
-        bool is_dir = false;
-        uint32_t size = 0;
-        uint32_t found = 0;
-        for (uint32_t i = 0; i < 32; i++) {
-            if (!fat_list(SONG_DIR, i, name, sizeof(name), &is_dir, &size)) {
-                break;
-            }
-            if (is_dir) {
-                continue;
-            }
-            found++;
-            if (found == 1) {
-                char path[FAT_NAME_MAX + 16];
-                strcpy(path, SONG_DIR);
-                strcat(path, "/");
-                strncat(path, name, FAT_NAME_MAX - 1);
-                enum songfile_result r = songfile_load(path, &song);
-                printf("RESULT case=song path=%s bytes=%lu result=%s bpm=%u "
-                       "div=%s empty=%d\n",
-                       path, (unsigned long)size, songfile_result_name(r),
-                       song.bpm, song_division_name(&song),
-                       song_is_empty(&song) ? 1 : 0);
-                /* Field by field, so "it loaded" can be checked against what
-                 * the Python actually wrote rather than taken on trust. */
-                if (r == SONGFILE_OK) {
-                    printf("RESULT case=song lengths=%u,%u,%u muted2=%u "
-                           "vol0_q12=%u\n",
-                           song.lengths[0], song.lengths[1], song.lengths[2],
-                           song.muted[2], song.volume_q12[0]);
-                    printf("RESULT case=song t0s0=%u,%ld t0s2=%u,%ld "
-                           "t1s1=%u,%ld\n",
-                           song_velocity(&song, 0, 0),
-                           (long)song_offset(&song, 0, 0),
-                           song_velocity(&song, 0, 2),
-                           (long)song_offset(&song, 0, 2),
-                           song_velocity(&song, 1, 1),
-                           (long)song_offset(&song, 1, 1));
-                }
-                if (r != SONGFILE_OK) {
-                    song_init(&song);
-                } else {
-                    loaded_song = true;
-                }
-            } else {
-                printf("RESULT case=song also=%s bytes=%lu\n", name,
-                       (unsigned long)size);
-            }
-        }
-        printf("RESULT case=song count=%lu\n", (unsigned long)found);
-
-        /* If nothing turned up, say whether the directory is empty or the
-         * listing is broken - those want completely different fixes, and
-         * "count=0" alone cannot tell them apart. */
-        if (found == 0) {
-            for (uint32_t i = 0; i < 12; i++) {
-                if (!fat_list("/", i, name, sizeof(name), &is_dir, &size)) {
-                    break;
-                }
-                printf("RESULT case=root entry=%s dir=%d bytes=%lu\n", name,
-                       is_dir ? 1 : 0, (unsigned long)size);
-            }
+        prefs_load(&prefs);
+        build_song_path();
+        enum songfile_result r = songfile_load(song_path, &song);
+        printf("RESULT case=song path=%s result=%s bpm=%u div=%s empty=%d "
+               "prefs=%d volume=%ld\n",
+               song_path, songfile_result_name(r), song.bpm,
+               song_division_name(&song), song_is_empty(&song) ? 1 : 0,
+               prefs.loaded ? 1 : 0, (long)prefs.volume);
+        if (r == SONGFILE_OK) {
+            loaded_song = true;
+        } else {
+            song_init(&song);
         }
     }
 
@@ -284,6 +250,24 @@ int main(void) {
                     function_used = true;
                     if (event.key <= KEY_PAD_LAST) {
                         selected = event.key;
+                    } else if (event.key == KEY_SELECT_PUSH && mounted) {
+                        /* Save. Deliberately a gesture engine/controls.py does
+                         * not assign, because saving belongs in the menu and
+                         * the menu does not exist yet - a placeholder on a real
+                         * gesture would teach a habit that later has to be
+                         * unlearned. */
+                        enum songfile_result r =
+                            songfile_save(song_path, &song);
+                        if (r == SONGFILE_OK) {
+                            const char *name =
+                                prefs.song[0] ? prefs.song : "session";
+                            strncpy(prefs.song, name, PREFS_NAME_MAX - 1);
+                            prefs.song[PREFS_NAME_MAX - 1] = '\0';
+                            prefs.volume = master;
+                            prefs_save(&prefs);
+                        }
+                        printf("RESULT case=save path=%s result=%s\n",
+                               song_path, songfile_result_name(r));
                     }
                 } else if (event.key <= KEY_PAD_LAST) {
                     if (seq_mode) {

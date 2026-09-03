@@ -88,6 +88,23 @@ void audio_set_gain(uint8_t track, int16_t gain);
  * tail rather than being dropped. */
 void audio_trigger(uint8_t track);
 
+/* Trigger on an exact frame, at Q15 `velocity`. Zero means as soon as possible.
+ *
+ * Absolute rather than an offset, and the difference is not cosmetic. An offset
+ * has to be measured from something, and the only "now" available to core 0 is
+ * a frame count that advances a block at a time - so the block the caller means
+ * and the block the mixer fills next need not be the same one. Measured, that
+ * was 5.7 ms of spread on sequenced hits. Handing over the target frame lets
+ * the mixer decide, which is the only place that knows. */
+void audio_trigger_at_frame(uint8_t track, uint64_t at_frame,
+                            int16_t velocity);
+
+/* Frames emitted since the stream started - the sequencer's clock.
+ *
+ * Counting the same thing the audio counts is what stops the two drifting
+ * apart, and this is a crystal rather than a main loop. */
+uint64_t audio_frames(void);
+
 void audio_stop(uint8_t track);
 void audio_stop_all(void);
 

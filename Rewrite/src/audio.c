@@ -28,6 +28,18 @@ struct voice {
     uint32_t step;  /* 16.16 per output frame */
     int16_t gain;   /* Q15, copied from the track at trigger time */
     uint32_t age;   /* for choosing which voice a retrigger steals */
+    /* The frame this voice should first sound on, absolute. Zero means now.
+     *
+     * Absolute rather than an offset from "now", because there is no reliable
+     * "now" on the other core: `frames_emitted` only advances at block
+     * boundaries, so an offset computed against it on core 0 is measured from
+     * whichever block happened to have finished - and the next block to be
+     * mixed may not be the one the caller meant. Measured, that cost 5.7 ms of
+     * spread on sequenced hits, against the 62.5 us a frame is worth.
+     *
+     * Handing the mixer the target frame moves the decision to the only place
+     * that knows which block it is about to fill. */
+    uint64_t at_frame;
 };
 
 struct track {
@@ -74,6 +86,10 @@ static volatile uint32_t capture_remaining;
 static volatile uint32_t capture_sum;
 static volatile uint32_t trigger_age;
 
+/* Frames emitted. 64-bit because 32 would wrap after 74 hours at 16 kHz, and a
+ * sequencer that stops after three days is a bug somebody eventually finds. */
+static volatile uint64_t frames_emitted;
+
 /* --- the mixer ------------------------------------------------------------ *
  *
  * The loop Phase 0 measured: a 16.16 phase accumulator, linear interpolation
@@ -88,6 +104,10 @@ static volatile uint32_t trigger_age;
 static void __not_in_flash_func(mix_block)(uint32_t *out) {
     int32_t accumulator[BLOCK_FRAMES];
     memset(accumulator, 0, sizeof(accumulator));
+
+    /* frames_emitted is bumped after this returns, so it names the first frame
+     * of the block being filled right now. */
+    uint64_t block_start = frames_emitted;
 
     uint32_t arm = capture_arm;
     if (arm != 0) {
@@ -113,9 +133,6 @@ static void __not_in_flash_func(mix_block)(uint32_t *out) {
         if (data == NULL) {
             continue;
         }
-        active++;
-        mask |= 1u << (v / VOICES_PER_TRACK);
-
         uint32_t phase = voices[v].phase;
         uint32_t step = voices[v].step;
         uint32_t frames = voices[v].frames;
@@ -125,7 +142,24 @@ static void __not_in_flash_func(mix_block)(uint32_t *out) {
          * must stop one short of the end rather than read past it. */
         uint32_t limit = (frames - 1) << 16;
 
-        for (uint32_t f = 0; f < BLOCK_FRAMES; f++) {
+        /* Where in this block the voice begins. One booked for a later block
+         * waits silently and does not count as active - it has not started.
+         * One booked for a block already gone starts immediately, which is the
+         * right failure: a late hit beats a lost one. */
+        uint32_t start = 0;
+        uint64_t at = voices[v].at_frame;
+        if (at > block_start) {
+            uint64_t ahead = at - block_start;
+            if (ahead >= BLOCK_FRAMES) {
+                continue;
+            }
+            start = (uint32_t)ahead;
+        }
+        voices[v].at_frame = 0;
+        active++;
+        mask |= 1u << (v / VOICES_PER_TRACK);
+
+        for (uint32_t f = start; f < BLOCK_FRAMES; f++) {
             if (phase >= limit) {
                 /* Ran out mid-block. Free the voice and leave the rest of the
                  * block as it stands - the samples already summed are real. */
@@ -217,6 +251,7 @@ static void __not_in_flash_func(serve)(int just_finished, uint32_t *buffer,
         stat_worst_cycles = elapsed;
     }
     stat_blocks++;
+    frames_emitted += BLOCK_FRAMES;
 }
 
 static void __not_in_flash_func(core1_main)(void) {
@@ -360,6 +395,11 @@ void audio_set_gain(uint8_t track, int16_t gain) {
 }
 
 void audio_trigger(uint8_t track) {
+    audio_trigger_at_frame(track, 0, 0x7FFF);
+}
+
+void audio_trigger_at_frame(uint8_t track, uint64_t at_frame,
+                            int16_t velocity) {
     if (track >= TRACK_COUNT) {
         return;
     }
@@ -390,7 +430,11 @@ void audio_trigger(uint8_t track) {
     voices[chosen].phase = 0;
     voices[chosen].frames = frames;
     voices[chosen].step = tracks[track].step;
-    voices[chosen].gain = tracks[track].gain;
+    /* Velocity scales the track's own level rather than replacing it, so a
+     * quiet track stays quiet at full velocity. */
+    voices[chosen].gain =
+        (int16_t)(((int32_t)tracks[track].gain * velocity) >> 15);
+    voices[chosen].at_frame = at_frame;
     voices[chosen].age = ++trigger_age;
     voices[chosen].data = data;
 }
@@ -446,4 +490,8 @@ bool audio_capture_done(void) {
 
 uint32_t audio_capture_sum(void) {
     return capture_sum;
+}
+
+uint64_t audio_frames(void) {
+    return frames_emitted;
 }

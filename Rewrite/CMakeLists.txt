@@ -29,6 +29,8 @@ add_executable(rt
     src/kit.c
     src/input.c
     src/display.c
+    src/song.c
+    src/seq.c
 )
 target_include_directories(rt PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 pico_generate_pio_header(rt ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)
@@ -95,3 +97,26 @@ target_link_libraries(rt_null
 pico_enable_stdio_usb(rt_null 1)
 pico_enable_stdio_uart(rt_null 0)
 pico_add_extra_outputs(rt_null)
+
+# --- Phase 2 criterion 2: sequenced step timing, measured at the pin --------
+add_executable(rt_timing
+    measure/measure_timing.c
+    src/audio.c
+    src/console.c
+    src/song.c
+    src/seq.c
+)
+target_include_directories(rt_timing PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+pico_generate_pio_header(rt_timing ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)
+pico_generate_pio_header(rt_timing ${CMAKE_CURRENT_LIST_DIR}/measure/watch.pio)
+target_link_libraries(rt_timing
+    pico_stdlib
+    pico_multicore
+    hardware_clocks
+    hardware_dma
+    hardware_pio
+    hardware_watchdog
+)
+pico_enable_stdio_usb(rt_timing 1)
+pico_enable_stdio_uart(rt_timing 0)
+pico_add_extra_outputs(rt_timing)

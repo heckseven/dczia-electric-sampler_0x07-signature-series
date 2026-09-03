@@ -17,6 +17,8 @@
 #include "fat.h"
 #include "input.h"
 #include "kit.h"
+#include "seq.h"
+#include "song.h"
 #include "sd.h"
 
 /* -30 dBFS at the sample, and the master starts at -12 dB, so the badge makes a
@@ -125,6 +127,25 @@ int main(void) {
     printf("RESULT case=input note=pads 0-7 play, Function+pad selects, "
            "Select turns pitch, Volume turns level\n");
 
+    /* One pattern, and a transport that counts frames rather than milliseconds.
+     * Both static: nothing here allocates after init, and a song is 1.2 KB. */
+    static struct song song;
+    static struct seq seq;
+    song_init(&song);
+    seq_init(&seq, &song);
+
+    /* Something to hear on the first press of Play. A four-on-the-floor kick
+     * with hats on the offbeats says more about whether the timing is right
+     * than an empty grid does. */
+    for (uint32_t s = 0; s < 8; s += 2) {
+        song_set_step(&song, 0, s, VELOCITY_DEFAULT, 0);
+    }
+    song_set_step(&song, 1, 4, VELOCITY_DEFAULT, 0);
+    for (uint32_t s = 1; s < 8; s += 2) {
+        song_set_step(&song, 2, s, 80, 0);
+    }
+
+    uint8_t page = 0;
     uint8_t selected = 0;
     uint32_t hits = 0;
     /* Pitch as a 16.16 rate, tracked per track so the knob is relative to
@@ -144,6 +165,7 @@ int main(void) {
     while (true) {
         console_pump();
         input_poll();
+        seq_update(&seq);
 
         struct input_event event;
         while (input_next(&event)) {
@@ -151,17 +173,45 @@ int main(void) {
             case INPUT_KEY_DOWN:
                 if (event.key <= KEY_PAD_LAST) {
                     if (input_held(KEY_FUNCTION)) {
+                        /* Function scopes the pads to choosing a track, which
+                         * is the gesture engine/controls.py already defines. */
                         selected = event.key;
+                    } else if (seq.running) {
+                        /* While the transport runs the pads write the pattern:
+                         * a pad is a step of the selected track on this page,
+                         * lit clears and unlit records. Playing them live at the
+                         * same time would need somewhere else to put the
+                         * gesture, and that is a Phase 3 question. */
+                        uint32_t step = page * STEPS_PER_PAGE + event.key;
+                        bool on = song_toggle_step(&song, selected, step);
+                        printf("RESULT case=edit track=%u step=%lu on=%d\n",
+                               selected, (unsigned long)step, on ? 1 : 0);
                     } else {
                         audio_trigger(event.key);
                         hits++;
                     }
                 } else if (event.key == KEY_PLAY) {
-                    audio_stop_all();
+                    seq_toggle(&seq);
+                    printf("RESULT case=transport running=%d bpm=%u div=%s\n",
+                           seq.running ? 1 : 0, song.bpm,
+                           song_division_name(&song));
+                } else if (event.key == KEY_SELECT_PUSH) {
+                    uint32_t pages =
+                        (song_length(&song) + STEPS_PER_PAGE - 1) /
+                        STEPS_PER_PAGE;
+                    page = (uint8_t)((page + 1) % (pages ? pages : 1));
                 }
                 break;
 
-            case INPUT_SELECT_TURN: {
+            case INPUT_SELECT_TURN:
+                if (seq.running) {
+                    /* Tempo while it plays, pitch while it does not - the knob
+                     * means whatever the badge is currently doing. */
+                    song_set_bpm(&song, song.bpm + event.delta);
+                    printf("RESULT case=bpm bpm=%u\n", song.bpm);
+                    break;
+                }
+                {
                 /* A semitone a click, as a ratio rather than a table: 2^(1/12)
                  * is 1.0595, and 1090/1029 is that to five decimal places in
                  * integers a Cortex-M0+ can multiply without help. */
@@ -210,7 +260,19 @@ int main(void) {
             uint32_t sounding = audio_active_mask();
             for (uint32_t t = 0; t < TRACK_COUNT; t++) {
                 uint32_t x = t * 16;
-                bool lit = (sounding >> t) & 1u;
+                bool lit;
+                if (seq.running) {
+                    /* Eight cells, eight steps of this page for the selected
+                     * track, so the grid reads as the thing being edited - and
+                     * the playhead is the cell the transport is on. */
+                    uint32_t step = page * STEPS_PER_PAGE + t;
+                    lit = song_is_on(&song, selected, step);
+                    if (seq_step_of(&seq, selected) == step) {
+                        display_fill_rect(x + 1, 1, 14, 2, true);
+                    }
+                } else {
+                    lit = (sounding >> t) & 1u;
+                }
                 /* Filled while the track is sounding, outlined when idle, and
                  * the selected one keeps a gap down its middle so it reads as
                  * chosen whether or not it happens to be playing. */
@@ -218,7 +280,7 @@ int main(void) {
                 if (!lit) {
                     display_rect(x + 1, 1, 14, 14, true);
                 }
-                if (t == selected) {
+                if (!seq.running && t == selected) {
                     display_fill_rect(x + 7, 5, 2, 6, !lit);
                 }
             }
@@ -255,13 +317,14 @@ int main(void) {
         if (time_reached(next_report)) {
             printf("RESULT case=stats blocks=%lu underruns=%lu "
                    "worst_cycles=%lu peak=%lu hits=%lu selected=%u "
-                   "pages=%lu\n",
+                   "pages=%lu run=%d tick=%lu seqhits=%lu\n",
                    (unsigned long)audio_blocks(),
                    (unsigned long)audio_underruns(),
                    (unsigned long)audio_worst_cycles(),
                    (unsigned long)audio_peak_voices(),
                    (unsigned long)hits, selected,
-                   (unsigned long)pages_written);
+                   (unsigned long)pages_written, seq.running ? 1 : 0,
+                   (unsigned long)seq.tick, (unsigned long)seq.hits);
             next_report = make_timeout_time_ms(2000);
         }
     }

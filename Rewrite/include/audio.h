@@ -110,4 +110,8 @@ uint32_t audio_active_voices(void);
  * the instantaneous count lands between hits and reports zero. */
 uint32_t audio_peak_voices(void);
 
+/* Bit per track, set while any of its voices is sounding. What the display
+ * lights up, and cheap enough to read every frame. */
+uint32_t audio_active_mask(void);
+
 #endif /* AUDIO_H */

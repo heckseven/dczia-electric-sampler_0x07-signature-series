@@ -13,6 +13,7 @@
 
 #include "audio.h"
 #include "console.h"
+#include "display.h"
 #include "fat.h"
 #include "input.h"
 #include "kit.h"
@@ -119,6 +120,7 @@ int main(void) {
 
     printf("RESULT case=running note=stream is live and silent\n");
 
+    display_init();
     input_init();
     printf("RESULT case=input note=pads 0-7 play, Function+pad selects, "
            "Select turns pitch, Volume turns level\n");
@@ -136,6 +138,8 @@ int main(void) {
     audio_set_master(master);
 
     absolute_time_t next_report = make_timeout_time_ms(2000);
+    absolute_time_t next_frame = make_timeout_time_ms(33);
+    uint32_t pages_written = 0;
 
     while (true) {
         console_pump();
@@ -199,14 +203,65 @@ int main(void) {
             }
         }
 
+        /* 30 Hz is faster than anyone reads and slower than the pads move, and
+         * the flush only touches pages that actually changed - so a frame where
+         * nothing happened costs nothing on the bus. */
+        if (time_reached(next_frame)) {
+            uint32_t sounding = audio_active_mask();
+            for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+                uint32_t x = t * 16;
+                bool lit = (sounding >> t) & 1u;
+                /* Filled while the track is sounding, outlined when idle, and
+                 * the selected one keeps a gap down its middle so it reads as
+                 * chosen whether or not it happens to be playing. */
+                display_fill_rect(x + 1, 1, 14, 14, lit);
+                if (!lit) {
+                    display_rect(x + 1, 1, 14, 14, true);
+                }
+                if (t == selected) {
+                    display_fill_rect(x + 7, 5, 2, 6, !lit);
+                }
+            }
+
+            /* Pitch of the selected track, as a bar centred on unity: left of
+             * centre is flat, right is sharp, +/- two octaves end to end. */
+            uint32_t p = pitch[selected];
+            uint32_t span = 0;
+            if (p >= PITCH_UNITY) {
+                span = 64 + (uint32_t)(((uint64_t)(p - PITCH_UNITY) * 63u) /
+                                       (PITCH_UNITY * 3u));
+            } else {
+                span = 64 - (uint32_t)(((uint64_t)(PITCH_UNITY - p) * 63u) /
+                                       (PITCH_UNITY * 3u / 4u));
+            }
+            if (span > 127) {
+                span = 127;
+            }
+            display_fill_rect(0, 17, OLED_WIDTH, 5, false);
+            display_pixel(64, 16, true);
+            uint32_t from = span < 64 ? span : 64;
+            uint32_t to = span < 64 ? 64 : span;
+            display_fill_rect(from, 18, (to - from) + 1, 3, true);
+
+            /* Master level across the bottom. */
+            uint32_t level = ((uint32_t)master * OLED_WIDTH) / 0x8000u;
+            display_fill_rect(0, 26, OLED_WIDTH, 5, false);
+            display_fill_rect(0, 27, level, 3, true);
+
+            pages_written += display_flush();
+            next_frame = make_timeout_time_ms(33);
+        }
+
         if (time_reached(next_report)) {
             printf("RESULT case=stats blocks=%lu underruns=%lu "
-                   "worst_cycles=%lu peak=%lu hits=%lu selected=%u\n",
+                   "worst_cycles=%lu peak=%lu hits=%lu selected=%u "
+                   "pages=%lu\n",
                    (unsigned long)audio_blocks(),
                    (unsigned long)audio_underruns(),
                    (unsigned long)audio_worst_cycles(),
                    (unsigned long)audio_peak_voices(),
-                   (unsigned long)hits, selected);
+                   (unsigned long)hits, selected,
+                   (unsigned long)pages_written);
             next_report = make_timeout_time_ms(2000);
         }
     }

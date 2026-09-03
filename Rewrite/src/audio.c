@@ -57,6 +57,9 @@ static volatile uint32_t stat_blocks;
 static volatile uint32_t stat_worst_cycles;
 static volatile uint32_t stat_active;
 static volatile uint32_t stat_peak_active;
+/* Which tracks have a voice sounding. The display reads this every frame, so it
+ * is a single word rather than something that needs walking. */
+static volatile uint32_t active_mask;
 static volatile uint32_t trigger_age;
 
 /* --- the mixer ------------------------------------------------------------ *
@@ -76,6 +79,7 @@ static void __not_in_flash_func(mix_block)(uint32_t *out) {
 
     int32_t master = master_gain;
     uint32_t active = 0;
+    uint32_t mask = 0;
 
     for (uint32_t v = 0; v < VOICE_COUNT; v++) {
         const int16_t *data = voices[v].data;
@@ -83,6 +87,7 @@ static void __not_in_flash_func(mix_block)(uint32_t *out) {
             continue;
         }
         active++;
+        mask |= 1u << (v / VOICES_PER_TRACK);
 
         uint32_t phase = voices[v].phase;
         uint32_t step = voices[v].step;
@@ -115,6 +120,7 @@ static void __not_in_flash_func(mix_block)(uint32_t *out) {
             voices[v].phase = phase;
         }
     }
+    active_mask = mask;
     /* Peak, not instantaneous. A sample taken every two seconds almost always
      * lands between hits and reports zero, which says nothing about the load
      * the mixer actually carried. */
@@ -383,4 +389,8 @@ uint32_t audio_active_voices(void) {
 
 uint32_t audio_peak_voices(void) {
     return stat_peak_active;
+}
+
+uint32_t audio_active_mask(void) {
+    return active_mask;
 }

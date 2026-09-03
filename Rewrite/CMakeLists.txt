@@ -28,6 +28,7 @@ add_executable(rt
     src/fat.c
     src/kit.c
     src/input.c
+    src/display.c
 )
 target_include_directories(rt PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 pico_generate_pio_header(rt ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)
@@ -37,6 +38,7 @@ target_link_libraries(rt
     hardware_clocks
     hardware_dma
     hardware_pio
+    hardware_i2c
     hardware_spi
     hardware_watchdog
 )

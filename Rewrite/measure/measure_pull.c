@@ -108,8 +108,25 @@ static uint32_t audit(const char *directory, uint32_t *files_out) {
         }
         uint32_t total = 0, got;
         uint8_t chunk[64];
+        /* Capped, and feeding the dog as it goes.
+         *
+         * Neither was here to begin with, and the pair of omissions cost three
+         * of the player's power pulls. The samples directory holds an 812 KB
+         * file; reading every file at boot without pumping ran past the 8 s
+         * watchdog, so the badge reset mid-audit, booted, started auditing
+         * again, and never reached the line that reports the verdict. A boot
+         * loop that looks exactly like a hang, caused by the checker rather
+         * than by anything it was checking. */
+        uint32_t cap = size * 2 + 1024;
         while ((got = fat_read(&file, chunk, sizeof(chunk))) != 0) {
             total += got;
+            if (total > cap) {
+                problems++;
+                break;
+            }
+            if ((total & 0x0FFF) == 0) {
+                console_pump();
+            }
         }
         if (total != size) {
             problems++;
@@ -156,9 +173,14 @@ int main(void) {
         verdict = "TORN";
     }
 
+    /* Only the directory being written.
+     *
+     * /samples is megabytes and nothing here writes to it, so reading all of it
+     * on every boot costs seconds and proves nothing about a torn song. The
+     * full sweep lives in rt_scan, which is run deliberately rather than on the
+     * path between a power cut and its verdict. */
     uint32_t songs_files = 0, samples_files = 0;
     uint32_t problems = audit("/songs", &songs_files);
-    problems += audit("/samples", &samples_files);
 
     printf("RESULT case=pull verdict=%s load=%s bpm=%u files=%lu "
            "fs_problems=%lu\n",

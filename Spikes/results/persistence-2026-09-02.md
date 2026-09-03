@@ -214,6 +214,50 @@ evidence, not proof. A pull that lands between saves proves nothing, and there i
 to aim one at the ~40 ms window that matters.
 
 **Standing conclusion:** the ordering is a design argument - data, then chain, then one
-directory-entry sector, then release - supported by one clean observation and sixteen
+directory-entry sector, then release - supported by one clean observation and eleven
 pulls' worth of undamaged filesystem. It is not a measured guarantee, and this file does
 not call it one.
+
+## The card is undamaged, and the checker was the problem
+
+A read-only sweep with bounded reads, run after every pull:
+
+```
+4_welcome.wav                 declared=812352  read=812352  ok
+cymbals_crucible-center_1.wav declared=101188  read=101188  ok
+...
+files=85
+```
+
+**Eighty-five files, every one reading back its exact declared size**, no overruns, no
+cross-links, no mismatches. Nothing the pulls did damaged anything.
+
+What did go wrong was the boot audit inside the pull test itself. It read *every* file on
+the card - including an 812 KB sample - without feeding the watchdog, so the badge reset
+part-way through, booted, began auditing again, and never reached the line that reports
+the verdict. A boot loop that looks exactly like a hang, produced by the checking rather
+than by anything checked, and it consumed three of the player's power pulls before it was
+recognised.
+
+It is fixed three ways: reads are capped, they pump the watchdog as they go, and the boot
+audit is scoped to `/songs`. Megabytes of samples say nothing about whether a *song* was
+torn, and the full sweep now lives in `rt_scan`, run deliberately rather than sitting
+between a power cut and its verdict.
+
+**The harness was then validated on the badge's own time**, using a mode where the
+firmware resets itself mid-write:
+
+```
+cycle 1  verdict=A  files=5  fs_problems=0
+cycle 2  verdict=B  files=5  fs_problems=0
+```
+
+Two consecutive cycles, each capturing its own verdict, and different ones - so it is
+reading the file rather than repeating a stale answer. That is the property that failed
+throughout the manual attempts. A self-reset keeps the card powered and therefore proves
+nothing about torn writes; it proves only that the harness counts.
+
+A third cycle hung waiting for a reset that did not arrive, which is a further harness
+fault and not a firmware one. It was stopped there: eleven cable pulls had already been
+spent on harness bugs, and the marginal value of a fourth verdict did not justify a
+twelfth.

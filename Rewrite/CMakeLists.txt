@@ -218,3 +218,16 @@ target_link_libraries(rt_pull pico_stdlib hardware_clocks hardware_dma
 pico_enable_stdio_usb(rt_pull 1)
 pico_enable_stdio_uart(rt_pull 0)
 pico_add_extra_outputs(rt_pull)
+
+add_executable(rt_scan
+    measure/measure_scan.c
+    src/console.c
+    src/sd.c
+    src/fat.c
+)
+target_include_directories(rt_scan PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(rt_scan pico_stdlib hardware_clocks hardware_dma
+                      hardware_spi hardware_watchdog)
+pico_enable_stdio_usb(rt_scan 1)
+pico_enable_stdio_uart(rt_scan 0)
+pico_add_extra_outputs(rt_scan)

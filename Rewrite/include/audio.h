@@ -114,4 +114,15 @@ uint32_t audio_peak_voices(void);
  * lights up, and cheap enough to read every frame. */
 uint32_t audio_active_mask(void);
 
+/* --- output capture, for null tests --------------------------------------- *
+ *
+ * Checksums the words the mixer emits over a fixed span of blocks. Armed rather
+ * than started, because the mixer restarts track 0 and resets the sum in the
+ * same block - two runs then see byte-identical input, and any difference in
+ * the result is the thing under test rather than a block boundary landing
+ * somewhere different. */
+void audio_capture_arm(uint32_t blocks);
+bool audio_capture_done(void);
+uint32_t audio_capture_sum(void);
+
 #endif /* AUDIO_H */

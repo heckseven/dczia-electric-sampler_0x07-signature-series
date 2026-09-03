@@ -58,23 +58,24 @@ Excluded deliberately, not forgotten: reproducing 31 modules of working behaviou
 real cost of this rewrite, and it should not begin until the core it depends on is proven
 on the badge.
 
-## Success criteria
+## Success criteria - all met, 2026-09-02
 
-Each is measurable by the Phase 0 harness, unattended:
+Each measurable by the Phase 0 harness, unattended:
 
-1. Boots to playable in under two seconds, kit loaded from the card.
-2. Twelve pads trigger samples. Trigger-to-output **at or under 5 ms worst case**,
-   measured at the pin by the Task 5 method.
-   **Met, 2026-09-02: 2,568 / 3,563 / 4,561 us** over 300 dithered trials, measured at
-   the pin through the shipped audio path rather than a spike's copy of it. Task 5's rig
-   predicted 2,566 / 3,565 / 4,560 - agreement within 3 us on every statistic. Add up to
-   1.05 ms for the key scan for a full press-to-sound worst case of about 5.6 ms.
-3. Per-track pitch works over at least +/- one octave and is audibly correct.
-4. **Zero underruns over ten minutes** of continuous play at 16 voices.
-5. No allocation after init - provable by the absence of `malloc` in the linked image.
-6. Display updates via DMA'd partial windows without perturbing audio: the Task 7 null
-   test still returns `identical=1`.
-7. Free SRAM at the end of init is reported, and the sample arena is at least 180 KB.
+| # | criterion | result |
+|---|---|---|
+| 1 | boots playable, kit loaded from the card | **met** - four samples in 109 ms |
+| 2 | trigger-to-output at or under 5 ms worst | **met** - 2,568 / 3,563 / **4,561 us**, 300 dithered trials at the pin |
+| 3 | per-track pitch over at least +/- an octave | **met** - +/- two octaves, a semitone a click; confirmed by ear |
+| 4 | zero underruns over ten minutes at 16 voices | **met** - 328,094 blocks, and 259 real hits in play |
+| 5 | no allocation after init | **met** - no `malloc` anywhere in the linked image |
+| 6 | display does not perturb audio | **met** - null test `identical=1` against the shipped mixer and driver |
+| 7 | sample arena at least 180 KB | **met** - 192 KB |
+
+Two numbers worth carrying forward. The measured latency agrees with Task 5's rig to
+within 3 us on every statistic, which says the thing that was measured in Phase 0 is the
+thing that shipped. And `hh_hats-open_1.wav` alone is 1.16 s where the CircuitPython
+build could hold 1.02 s for the entire kit.
 
 ## Order of work
 

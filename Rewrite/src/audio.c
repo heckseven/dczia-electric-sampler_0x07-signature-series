@@ -60,6 +60,18 @@ static volatile uint32_t stat_peak_active;
 /* Which tracks have a voice sounding. The display reads this every frame, so it
  * is a single word rather than something that needs walking. */
 static volatile uint32_t active_mask;
+
+/* Output checksum, for proving that something outside the audio path did not
+ * change what the audio path emitted.
+ *
+ * Armed rather than started: the mixer restarts track 0's voice and resets the
+ * sum in the same block, so two runs see byte-identical input and any
+ * difference in the result is genuinely the thing under test. Starting it from
+ * core 0 could not guarantee that - a block boundary could fall between the
+ * trigger and the reset. */
+static volatile uint32_t capture_arm;
+static volatile uint32_t capture_remaining;
+static volatile uint32_t capture_sum;
 static volatile uint32_t trigger_age;
 
 /* --- the mixer ------------------------------------------------------------ *
@@ -76,6 +88,21 @@ static volatile uint32_t trigger_age;
 static void __not_in_flash_func(mix_block)(uint32_t *out) {
     int32_t accumulator[BLOCK_FRAMES];
     memset(accumulator, 0, sizeof(accumulator));
+
+    uint32_t arm = capture_arm;
+    if (arm != 0) {
+        for (uint32_t v = 0; v < VOICE_COUNT; v++) {
+            voices[v].data = NULL;
+        }
+        voices[0].frames = tracks[0].frames;
+        voices[0].phase = 0;
+        voices[0].step = tracks[0].step;
+        voices[0].gain = tracks[0].gain;
+        voices[0].data = tracks[0].data;
+        capture_sum = 0;
+        capture_remaining = arm;
+        capture_arm = 0;
+    }
 
     int32_t master = master_gain;
     uint32_t active = 0;
@@ -129,6 +156,9 @@ static void __not_in_flash_func(mix_block)(uint32_t *out) {
         stat_peak_active = active;
     }
 
+    uint32_t sum = capture_sum;
+    bool capturing = capture_remaining != 0;
+
     for (uint32_t f = 0; f < BLOCK_FRAMES; f++) {
         int32_t s = (accumulator[f] * master) >> 15;
         /* Clip rather than wrap. A wrapped sum is a full-scale discontinuity -
@@ -141,6 +171,16 @@ static void __not_in_flash_func(mix_block)(uint32_t *out) {
         }
         uint32_t word = (uint32_t)(uint16_t)(int16_t)s;
         out[f] = (word << 16) | word;
+        if (capturing) {
+            /* Order-sensitive, so a repeated or reordered block cannot cancel
+             * out into a matching sum. */
+            sum = (sum * 31u) + word;
+        }
+    }
+
+    if (capturing) {
+        capture_sum = sum;
+        capture_remaining--;
     }
 }
 
@@ -393,4 +433,17 @@ uint32_t audio_peak_voices(void) {
 
 uint32_t audio_active_mask(void) {
     return active_mask;
+}
+
+void audio_capture_arm(uint32_t blocks) {
+    capture_remaining = 0;
+    capture_arm = blocks;
+}
+
+bool audio_capture_done(void) {
+    return capture_arm == 0 && capture_remaining == 0;
+}
+
+uint32_t audio_capture_sum(void) {
+    return capture_sum;
 }

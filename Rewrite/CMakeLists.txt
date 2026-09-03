@@ -73,3 +73,25 @@ target_link_libraries(rt_latency
 pico_enable_stdio_usb(rt_latency 1)
 pico_enable_stdio_uart(rt_latency 0)
 pico_add_extra_outputs(rt_latency)
+
+# --- criterion 6: the null test, against the shipped mixer and driver -------
+add_executable(rt_null
+    measure/measure_null.c
+    src/audio.c
+    src/console.c
+    src/display.c
+)
+target_include_directories(rt_null PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+pico_generate_pio_header(rt_null ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)
+target_link_libraries(rt_null
+    pico_stdlib
+    pico_multicore
+    hardware_clocks
+    hardware_dma
+    hardware_i2c
+    hardware_pio
+    hardware_watchdog
+)
+pico_enable_stdio_usb(rt_null 1)
+pico_enable_stdio_uart(rt_null 0)
+pico_add_extra_outputs(rt_null)

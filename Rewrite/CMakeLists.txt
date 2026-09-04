@@ -29,6 +29,7 @@ add_executable(rt
     src/kit.c
     src/input.c
     src/display.c
+    src/font.c
     src/song.c
     src/seq.c
     src/msgpack.c
@@ -85,6 +86,7 @@ add_executable(rt_null
     src/audio.c
     src/console.c
     src/display.c
+    src/font.c
 )
 target_include_directories(rt_null PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 pico_generate_pio_header(rt_null ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)

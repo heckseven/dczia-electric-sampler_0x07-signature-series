@@ -29,6 +29,7 @@
 
 #include "board.h"
 #include "display.h"
+#include "font.h"
 
 #define PAGES (OLED_HEIGHT / 8)
 
@@ -171,4 +172,46 @@ uint32_t display_flush(void) {
         written++;
     }
     return written;
+}
+
+/* --- text ------------------------------------------------------------------ *
+ *
+ * A glyph is stored as columns with the least significant bit at the top, which
+ * is the order the SSD1306 stores a page in - so this is a copy rather than a
+ * transpose, and the framebuffer's own layout does the work.
+ */
+
+uint32_t display_text(uint32_t x, uint32_t y, const char *text, bool on) {
+    while (*text != '\0') {
+        unsigned char c = (unsigned char)*text++;
+        if (c < FONT_FIRST || c > FONT_LAST) {
+            /* Anything outside the table becomes a question mark rather than
+             * being skipped: a name with one odd byte should still be
+             * recognisable, and a silently shorter string is harder to explain
+             * than a visible substitution. */
+            c = '?';
+        }
+        const uint8_t *glyph = FONT_6X8[c - FONT_FIRST];
+        for (uint32_t column = 0; column < FONT_WIDTH; column++) {
+            uint8_t bits = glyph[column];
+            for (uint32_t row = 0; row < FONT_HEIGHT; row++) {
+                if (bits & (1u << row)) {
+                    display_pixel(x + column, y + row, on);
+                }
+            }
+        }
+        x += FONT_WIDTH;
+        if (x >= OLED_WIDTH) {
+            break; /* clip rather than wrap - a long name is cut, not folded */
+        }
+    }
+    return x;
+}
+
+uint32_t display_text_width(const char *text) {
+    uint32_t n = 0;
+    while (text[n] != '\0') {
+        n++;
+    }
+    return n * FONT_WIDTH;
 }

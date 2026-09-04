@@ -27,6 +27,11 @@ enum menu_screen {
     MENU_SONGS,   /* pick a song to load */
     MENU_TRACKS,  /* pick which track to give a sample to */
     MENU_SAMPLES, /* pick the sample */
+    /* Reserved. Saving under a chosen name needs somewhere to choose it, and
+     * with twelve keys that is a character-picker rather than a keyboard - a
+     * list like every other screen here, which is why it fits this structure
+     * rather than needing a different one. */
+    MENU_NAME,
 };
 
 /* What the main loop is being asked to do. The menu decides what was chosen;
@@ -37,13 +42,24 @@ enum menu_action {
     MENU_ACTION_LOAD_SONG,
     MENU_ACTION_SAVE_SONG,
     MENU_ACTION_SET_SAMPLE,
-    MENU_ACTION_CLOSED,
+};
+
+/* How deep the screens nest. Four is more than the current tree needs and is
+ * there so adding a level is a data change rather than a structural one. */
+#define MENU_DEPTH 4
+
+struct menu_level {
+    enum menu_screen screen;
+    uint32_t index; /* selected item, remembered while deeper in */
+    uint32_t count;
 };
 
 struct menu {
-    enum menu_screen screen;
-    uint32_t index; /* selected item */
-    uint32_t count; /* items on this screen */
+    /* A stack, so going back returns to where you were rather than to the top.
+     * The first version hard-coded which screen each one returned to, which
+     * works for a tree of three and stops working the moment it is four. */
+    struct menu_level stack[MENU_DEPTH];
+    uint32_t depth; /* 0 means closed */
 
     /* The window actually on screen, re-read only when it moves - a list
      * rescanned every frame would re-walk the directory thirty times a second
@@ -64,13 +80,15 @@ bool menu_is_open(const struct menu *menu);
 
 void menu_turn(struct menu *menu, int32_t delta);
 
-/* Click the Select knob. Returns what the caller should do about it. */
-enum menu_action menu_click(struct menu *menu);
+/* Enter: take the selected item. Play, on the badge - Function is back, which
+ * is the arrangement the player asked for and the one the rest of the firmware
+ * already implies, since Function is the modifier everywhere else. */
+enum menu_action menu_enter(struct menu *menu);
 
 /* Back one screen, or out of the menu from the root. */
 void menu_back(struct menu *menu);
 
 /* Draw into the framebuffer. The caller flushes. */
-void menu_draw(const struct menu *menu, uint8_t selected_track);
+void menu_draw(const struct menu *menu);
 
 #endif /* MENU_H */

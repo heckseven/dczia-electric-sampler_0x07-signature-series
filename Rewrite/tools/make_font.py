@@ -1,137 +1,90 @@
-"""Generate a 5x7 bitmap font as C source.
+"""Bake the X11 6x9 bitmap font into a C glyph table.
 
-Hand-encoding a font is 96 glyphs of hex that a reader cannot check and an
-author gets subtly wrong - a bad pixel in a rarely-used character survives
-until somebody types it. Rendering from a real typeface and committing the
-result means the source of truth is a font file and this script, both of which
-can be re-run and diffed.
+Three typefaces were tried before this one. Liberation Mono and DejaVu Sans Mono
+had to be rendered grey and thresholded, which at six pixels turns thin
+diagonals into nothing and thick ones into blocks - the M came out
+indistinguishable from a filled rectangle, and three glyphs had to be redrawn by
+hand to be legible at all. Departure Mono is a real pixel font and looks
+excellent, but only at its native 11 px, which is too tall for a 32-pixel panel.
 
-Committed as generated source rather than built at compile time: the firmware
-build should not depend on PIL being installed, and a font that changes only
-when somebody deliberately regenerates it is one fewer thing that can drift.
+The X11 misc fonts are hand-drawn on exactly this kind of grid. 6x9 has a proper
+crossbar on the A, a real V in the M and W, and true descenders - no threshold
+involved anywhere, because every pixel is where somebody put it.
+
+Nine rows, drawn at an eight-pixel pitch, so four lines still fit. Descenders
+overhang into the blank top row of the line below; the only glyphs using that
+row are $%?{}, none of which appear in a filename. The bottom line's descenders
+clip against the edge of the panel by one pixel, which is the price of the
+fourth row.
+
+Columns are 16-bit. Nine rows do not fit in a byte, and the previous attempt at
+a taller font truncated silently - 382 became 126 - which would have shipped a
+corrupted table rather than an obviously wrong one.
 
 Usage: python3 tools/make_font.py > src/font.c
 """
 
 import sys
 
-from PIL import Image, ImageDraw, ImageFont
+sys.path.insert(0, "tools")
+import pcf  # noqa: E402
 
-WIDTH = 6
-HEIGHT = 8
+SOURCE = "/usr/share/fonts/X11/misc/6x9-ISO8859-1.pcf.gz"
 FIRST = 0x20
 LAST = 0x7E
 
 
-# A few glyphs no scalable face renders legibly in six pixels. Their diagonals
-# fall below any useful threshold and come out as solid blocks - an "M" that is
-# indistinguishable from a filled rectangle is worse than one drawn by hand.
-#
-# Three exceptions, each checkable by eye, rather than hand-entering all 95 and
-# hoping. Rows top to bottom, six wide.
-OVERRIDES = {
-    "A": ["..##..",
-          ".#..#.",
-          "#....#",
-          "#....#",
-          "######",
-          "#....#",
-          "#....#",
-          "......"],
-    "M": ["#....#",
-          "##..##",
-          "#.##.#",
-          "#....#",
-          "#....#",
-          "#....#",
-          "#....#",
-          "......"],
-    "W": ["#....#",
-          "#....#",
-          "#....#",
-          "#....#",
-          "#.##.#",
-          "##..##",
-          "#....#",
-          "......"],
-}
-
-# Liberation Mono at 10 px, thresholded at 96, was the clearest of the faces and
-# sizes tried for a 6x8 cell - and 6 px is what the badge already assumes:
-# prefs.py bounds its display text at 21 characters, which is 128 pixels wide
-# divided by six.
-FONT_SIZE = 10
-THRESHOLD = 96
-Y_OFFSET = -1
-
-
-def find_font():
-    candidates = [
-        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    ]
-    for path in candidates:
-        try:
-            return ImageFont.truetype(path, FONT_SIZE), path
-        except OSError:
-            continue
-    return ImageFont.load_default(), "PIL default"
-
-
-def glyph(font, character):
-    """One character as WIDTH columns of HEIGHT bits, LSB at the top."""
-    if character in OVERRIDES:
-        rows = OVERRIDES[character]
-        return [
-            sum(1 << y for y in range(HEIGHT) if rows[y][x] == "#")
-            for x in range(WIDTH)
-        ]
-
-    image = Image.new("L", (WIDTH + 6, HEIGHT + 6), 0)
-    draw = ImageDraw.Draw(image)
-    # Rendered into a larger box and then measured, because a small face's own
-    # origin is not where a 6x8 cell wants it.
-    draw.text((0, Y_OFFSET), character, font=font, fill=255)
-
-    pixels = image.load()
-    columns = []
-    for x in range(WIDTH):
-        bits = 0
-        for y in range(HEIGHT):
-            if pixels[x + 1, y + 1] > THRESHOLD:
-                bits |= 1 << y
-        columns.append(bits)
-    return columns
-
-
 def main():
-    font, source = find_font()
+    bitmaps, metrics, encodings = pcf.load(SOURCE)
+
+    width = height = 0
+    glyphs = {}
+    for code in range(FIRST, LAST + 1):
+        index = encodings.get(code)
+        if index is None:
+            glyphs[code] = None
+            continue
+        rows, _ = pcf.glyph(bitmaps, metrics, index)
+        glyphs[code] = rows
+        height = max(height, len(rows))
+        width = max(width, len(rows[0]) if rows else 0)
 
     out = sys.stdout.write
     out("/* Generated by tools/make_font.py - do not edit by hand.\n")
     out(" *\n")
-    out(" * A %dx%d font, %d glyphs from 0x%02X to 0x%02X, one byte per column\n"
-        % (WIDTH, HEIGHT, LAST - FIRST + 1, FIRST, LAST))
-    out(" * with the least significant bit at the top - which is the order the\n")
-    out(" * SSD1306 wants, so a glyph is copied into the framebuffer rather than\n")
-    out(" * transposed into it.\n")
+    out(" * The X11 misc 6x9 bitmap font: hand-drawn on this exact grid, so there\n")
+    out(" * is no rasterisation or threshold anywhere and every pixel is where\n")
+    out(" * somebody put it. %d glyphs, 0x%02X to 0x%02X, in a %dx%d cell.\n"
+        % (LAST - FIRST + 1, FIRST, LAST, width, height))
     out(" *\n")
-    out(" * Rendered from %s. Generated rather than hand-entered: 95 glyphs of\n"
-        % source)
-    out(" * hex is a lot of places for a wrong pixel to hide until somebody\n")
-    out(" * types the character it belongs to.\n")
+    out(" * One 16-bit word per column, least significant bit at the top - the\n")
+    out(" * order the SSD1306 stores a page, so drawing is a copy rather than a\n")
+    out(" * transpose. Sixteen bits because nine rows do not fit in eight, and a\n")
+    out(" * previous taller font truncated silently rather than failing.\n")
+    out(" *\n")
+    out(" * Source: %s\n" % SOURCE)
     out(" */\n\n")
     out('#include "font.h"\n\n')
-    out("const uint8_t FONT_6X8[FONT_GLYPHS][FONT_WIDTH] = {\n")
+    out("const uint16_t FONT_GLYPH[FONT_GLYPHS][FONT_WIDTH] = {\n")
 
     for code in range(FIRST, LAST + 1):
+        rows = glyphs[code]
+        columns = []
+        for x in range(width):
+            bits = 0
+            if rows is not None:
+                for y in range(min(height, len(rows))):
+                    if x < len(rows[y]) and rows[y][x]:
+                        bits |= 1 << y
+            columns.append(bits)
         character = chr(code)
-        columns = glyph(font, character)
-        shown = character if character not in ('\\', '*', '/') else "0x%02X" % code
+        label = character if character not in ("\\", "*", "/") else "0x%02X" % code
         out("    {%s},  /* %s */\n"
-            % (", ".join("0x%02X" % c for c in columns), shown))
+            % (", ".join("0x%04X" % c for c in columns), label))
 
     out("};\n")
+    sys.stderr.write("cell %dx%d, %d glyphs from %s\n"
+                     % (width, height, LAST - FIRST + 1, SOURCE))
 
 
 if __name__ == "__main__":

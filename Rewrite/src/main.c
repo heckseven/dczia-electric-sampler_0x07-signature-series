@@ -74,6 +74,38 @@ static void keep_time(void) {
 static char song_path[PREFS_NAME_MAX + 24];
 static struct menu menu;
 
+static void build_song_path(void);
+
+/* What a track plays when the song has no opinion. sequencer.py's default kit,
+ * at the paths the CircuitPython firmware keeps them. */
+static const char *const DEFAULT_KIT[] = {
+    "/samples/kick_crater.wav",
+    "/samples/snare_kraken-head_1.wav",
+    "/samples/hh_hats-closed_1.wav",
+    "/samples/hh_hats-open_1.wav",
+};
+
+/* Until when the screen shows a result, and which result.
+ *
+ * A timestamp rather than a sleep: blocking the loop for a flash would make
+ * sequenced hits late for the sake of an animation, and that is the one thing
+ * this design spent four bugs getting right.
+ *
+ * Two lines, because "something happened" is only half an answer - a save that
+ * says SAVED and names the file tells the player which thing happened, which is
+ * the difference between feedback and a light coming on. */
+static absolute_time_t flash_until;
+static bool flash_ok;
+static char message[2][22];
+static int16_t master = 0x2000;
+
+static void say(bool ok, uint32_t ms, const char *first, const char *second) {
+    flash_ok = ok;
+    snprintf(message[0], sizeof(message[0]), "%s", first);
+    snprintf(message[1], sizeof(message[1]), "%s", second ? second : "");
+    flash_until = make_timeout_time_ms(ms);
+}
+
 /* Reload every track from the song's kit.
  *
  * The arena is a bump allocator, so one track's sample cannot be swapped in
@@ -81,8 +113,9 @@ static struct menu menu;
  * reloading all eight costs about a tenth of a second and is the honest
  * operation; anything cleverer would be a general allocator, which is the thing
  * this design exists without. */
-static uint32_t reload_kit(struct song *song, const char *const *fallback,
-                           uint32_t fallback_count) {
+static uint32_t reload_kit(struct song *song) {
+    const char *const *fallback = DEFAULT_KIT;
+    uint32_t fallback_count = count_of(DEFAULT_KIT);
     audio_arena_reset();
     uint32_t loaded = 0;
     for (uint8_t t = 0; t < TRACK_COUNT; t++) {
@@ -100,6 +133,65 @@ static uint32_t reload_kit(struct song *song, const char *const *fallback,
         }
     }
     return loaded;
+}
+
+/* Act on what the menu chose.
+ *
+ * A function rather than a block inside the event switch: the menu returns the
+ * same actions whichever key triggered them, and Play and a future gesture
+ * should not each carry their own copy of what LOAD SONG means. */
+static void handle_menu_action(enum menu_action action) {
+    char path[FAT_NAME_MAX + 24];
+
+    switch (action) {
+    case MENU_ACTION_LOAD_SONG: {
+        strcpy(path, SONG_DIR);
+        strcat(path, "/");
+        strncat(path, menu.chosen, FAT_NAME_MAX - 1);
+        enum songfile_result r = songfile_load(path, &song);
+        if (r == SONGFILE_OK) {
+            /* Remember it, so the next boot opens what was just chosen rather
+             * than whatever was open before. */
+            strncpy(prefs.song, menu.chosen, PREFS_NAME_MAX - 1);
+            prefs.song[PREFS_NAME_MAX - 1] = '\0';
+            char *dot = strrchr(prefs.song, '.');
+            if (dot != NULL) {
+                *dot = '\0';
+            }
+            build_song_path();
+            prefs_save(&prefs);
+            reload_kit(&song);
+        }
+        say(r == SONGFILE_OK, 1200,
+            r == SONGFILE_OK ? "LOADED" : "LOAD FAILED", menu.chosen);
+        break;
+    }
+
+    case MENU_ACTION_SAVE_SONG: {
+        enum songfile_result r = songfile_save(song_path, &song);
+        if (r == SONGFILE_OK) {
+            prefs.volume = master;
+            prefs_save(&prefs);
+        }
+        say(r == SONGFILE_OK, 900, r == SONGFILE_OK ? "SAVED" : "SAVE FAILED",
+            prefs.song[0] ? prefs.song : "session");
+        break;
+    }
+
+    case MENU_ACTION_SET_SAMPLE: {
+        strcpy(path, "/samples/");
+        strncat(path, menu.chosen, FAT_NAME_MAX - 1);
+        song_set_kit_path(&song, menu.track, path);
+        uint32_t loaded = reload_kit(&song);
+        char which[16];
+        snprintf(which, sizeof(which), "TRACK %u", menu.track + 1);
+        say(loaded > 0, 1200, which, menu.chosen);
+        break;
+    }
+
+    default:
+        break;
+    }
 }
 
 static void build_song_path(void) {
@@ -134,12 +226,6 @@ int main(void) {
     /* The card, if it is there. The default kit is the one sequencer.py
      * settles on, and the paths are where the CircuitPython firmware keeps
      * them - so this reads the player's actual samples, not a copy. */
-    static const char *DEFAULT_KIT[] = {
-        "/samples/kick_crater.wav",
-        "/samples/snare_kraken-head_1.wav",
-        "/samples/hh_hats-closed_1.wav",
-        "/samples/hh_hats-open_1.wav",
-    };
 
     /* Keep the sequencer scheduling while the card is busy - see the note on
      * sd_set_idle_hook. Set before the first card operation, so even the kit
@@ -253,20 +339,6 @@ int main(void) {
      * reason: Function held is a modifier (Function + pad selects a track),
      * Function tapped is a command. A press that did something else while it
      * was down was a modifier, whatever its duration. */
-    /* Until when the screen shows the result of a save, and which result.
-     *
-     * Saving with no feedback at all means a missed button press and a failed
-     * write look exactly the same from the outside - which is precisely the
-     * position a player was left in. A timestamp rather than a sleep, because
-     * blocking the loop for a flash would make sequenced hits late for the
-     * sake of an animation. */
-    absolute_time_t flash_until = get_absolute_time();
-    bool flash_ok = false;
-    /* Two lines of it, because "something happened" is only half an answer.
-     * A save that says SAVED and a boot that names the song and tempo tell the
-     * player which thing happened, which is the difference between feedback
-     * and a light coming on. */
-    char message[2][22] = {{0}, {0}};
 
     bool seq_mode = false;
     uint32_t function_down_ms = 0;
@@ -282,7 +354,7 @@ int main(void) {
         pitch[t] = PITCH_UNITY;
         audio_set_pitch((uint8_t)t, PITCH_UNITY);
     }
-    int16_t master = TEST_MASTER;
+    master = TEST_MASTER;
     audio_set_master(master);
 
     /* Say so at boot when a song came off the card.
@@ -317,6 +389,13 @@ int main(void) {
                 printf("RESULT case=key down=%u fn_held=%d\n", event.key,
                        input_held(KEY_FUNCTION) ? 1 : 0);
                 if (event.key == KEY_FUNCTION) {
+                    if (menu_is_open(&menu)) {
+                        /* Back. Function is the modifier everywhere else, so it
+                         * is the key that already means "not the main thing" -
+                         * which is what back is. */
+                        menu_back(&menu);
+                        break;
+                    }
                     function_down_ms = to_ms_since_boot(get_absolute_time());
                     function_used = false;
                 } else if (input_held(KEY_FUNCTION)) {
@@ -365,9 +444,7 @@ int main(void) {
                     }
                 } else if (event.key == KEY_PLAY) {
                     if (menu_is_open(&menu)) {
-                        /* Back, not transport. A menu that could be left only
-                         * by choosing something is a trap. */
-                        menu_back(&menu);
+                        handle_menu_action(menu_enter(&menu));
                         break;
                     }
                     seq_toggle(&seq);
@@ -375,72 +452,7 @@ int main(void) {
                            seq.running ? 1 : 0, song.bpm,
                            song_division_name(&song));
                 } else if (event.key == KEY_SELECT_PUSH) {
-                    if (menu_is_open(&menu)) {
-                        char path[FAT_NAME_MAX + 24];
-                        switch (menu_click(&menu)) {
-                        case MENU_ACTION_LOAD_SONG: {
-                            strcpy(path, SONG_DIR);
-                            strcat(path, "/");
-                            strncat(path, menu.chosen, FAT_NAME_MAX - 1);
-                            enum songfile_result r =
-                                songfile_load(path, &song);
-                            if (r == SONGFILE_OK) {
-                                /* Remember it, so the next boot opens what the
-                                 * player just chose rather than what they had
-                                 * open before. */
-                                strncpy(prefs.song, menu.chosen,
-                                        PREFS_NAME_MAX - 1);
-                                prefs.song[PREFS_NAME_MAX - 1] = '\0';
-                                char *dot = strrchr(prefs.song, '.');
-                                if (dot != NULL) {
-                                    *dot = '\0';
-                                }
-                                build_song_path();
-                                prefs_save(&prefs);
-                                reload_kit(&song, DEFAULT_KIT,
-                                           count_of(DEFAULT_KIT));
-                            }
-                            snprintf(message[0], sizeof(message[0]), "%s",
-                                     r == SONGFILE_OK ? "LOADED" : "LOAD FAILED");
-                            snprintf(message[1], sizeof(message[1]), "%s",
-                                     menu.chosen);
-                            flash_ok = (r == SONGFILE_OK);
-                            flash_until = make_timeout_time_ms(1200);
-                            break;
-                        }
-                        case MENU_ACTION_SAVE_SONG: {
-                            enum songfile_result r =
-                                songfile_save(song_path, &song);
-                            if (r == SONGFILE_OK) {
-                                prefs.volume = master;
-                                prefs_save(&prefs);
-                            }
-                            snprintf(message[0], sizeof(message[0]), "%s",
-                                     r == SONGFILE_OK ? "SAVED" : "SAVE FAILED");
-                            snprintf(message[1], sizeof(message[1]), "%s",
-                                     prefs.song[0] ? prefs.song : "session");
-                            flash_ok = (r == SONGFILE_OK);
-                            flash_until = make_timeout_time_ms(900);
-                            break;
-                        }
-                        case MENU_ACTION_SET_SAMPLE: {
-                            strcpy(path, "/samples/");
-                            strncat(path, menu.chosen, FAT_NAME_MAX - 1);
-                            song_set_kit_path(&song, menu.track, path);
-                            uint32_t loaded = reload_kit(&song, DEFAULT_KIT,
-                                                         count_of(DEFAULT_KIT));
-                            snprintf(message[0], sizeof(message[0]),
-                                     "TRACK %u", menu.track + 1);
-                            snprintf(message[1], sizeof(message[1]), "%s",
-                                     menu.chosen);
-                            flash_ok = loaded > 0;
-                            flash_until = make_timeout_time_ms(1200);
-                            break;
-                        }
-                        default:
-                            break;
-                        }
-                    } else {
+                    if (!menu_is_open(&menu)) {
                         menu_open(&menu);
                     }
                 }
@@ -532,7 +544,7 @@ int main(void) {
             }
 
             if (menu_is_open(&menu)) {
-                menu_draw(&menu, selected);
+                menu_draw(&menu);
                 pages_written += display_flush();
                 next_frame = make_timeout_time_ms(33);
                 continue;

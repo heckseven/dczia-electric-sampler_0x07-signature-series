@@ -191,9 +191,9 @@ uint32_t display_text(uint32_t x, uint32_t y, const char *text, bool on) {
              * than a visible substitution. */
             c = '?';
         }
-        const uint8_t *glyph = FONT_6X8[c - FONT_FIRST];
+        const uint16_t *glyph = FONT_GLYPH[c - FONT_FIRST];
         for (uint32_t column = 0; column < FONT_WIDTH; column++) {
-            uint8_t bits = glyph[column];
+            uint16_t bits = glyph[column];
             for (uint32_t row = 0; row < FONT_HEIGHT; row++) {
                 if (bits & (1u << row)) {
                     display_pixel(x + column, y + row, on);

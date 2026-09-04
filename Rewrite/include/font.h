@@ -24,14 +24,19 @@
 #include <stdint.h>
 
 #define FONT_WIDTH 6
-#define FONT_HEIGHT 8
+#define FONT_HEIGHT 9
+
+/* Lines are drawn eight pixels apart, not nine, so four fit on a 32-pixel
+ * panel. Descenders overhang into the blank top row of the line below - the
+ * only glyphs using that row are $%?{}, none of which occur in a filename. */
+#define FONT_PITCH 8
 #define FONT_FIRST 0x20
 #define FONT_LAST 0x7E
 #define FONT_GLYPHS (FONT_LAST - FONT_FIRST + 1)
 
 /* One byte per column, least significant bit at the top - the order the
  * SSD1306 stores a page in, so drawing is a copy rather than a transpose. */
-extern const uint8_t FONT_6X8[FONT_GLYPHS][FONT_WIDTH];
+extern const uint16_t FONT_GLYPH[FONT_GLYPHS][FONT_WIDTH];
 
 /* Draw text at a pixel position. Returns the x it finished at, so callers can
  * chain without measuring. Clips rather than wrapping: a name too long for the

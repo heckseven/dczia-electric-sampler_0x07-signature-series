@@ -76,6 +76,39 @@ static struct menu menu;
 
 static void build_song_path(void);
 
+/* --- what the knobs mean right now ----------------------------------------- *
+ *
+ * engine/controls.py resolves this rather than nesting conditions at each use,
+ * and it is worth copying: the badge has two knobs and far more than two
+ * things to adjust, so what a knob does depends entirely on what is being held.
+ * Holding something scopes the knobs to it - a pad is a step in SEQ and a track
+ * in LIVE, Function is the selected track, Play is the whole pattern.
+ *
+ * Written as one place that answers "what does turning this mean" so the
+ * answer cannot drift between the two knobs.
+ */
+enum knob_target {
+    KNOB_BPM = 0,      /* nothing held */
+    KNOB_TRACK_PITCH,  /* Function */
+    KNOB_TRACK_VOLUME, /* Function, volume knob */
+    KNOB_LENGTH,       /* Play */
+    KNOB_STEP_VELOCITY,/* a pad, in SEQ */
+    KNOB_MASTER,       /* nothing held, volume knob */
+    KNOB_NONE,
+};
+
+/* The lowest-numbered pad being held, or -1. Lowest rather than most recent
+ * because two pads held at once is a chord the player did not mean as a
+ * gesture, and picking the same one every time is at least predictable. */
+static int32_t held_pad(void) {
+    for (uint8_t key = KEY_PAD_FIRST; key <= KEY_PAD_LAST; key++) {
+        if (input_held(key)) {
+            return key;
+        }
+    }
+    return -1;
+}
+
 /* What a track plays when the song has no opinion. sequencer.py's default kit,
  * at the paths the CircuitPython firmware keeps them. */
 static const char *const DEFAULT_KIT[] = {
@@ -343,6 +376,15 @@ int main(void) {
     bool seq_mode = false;
     uint32_t function_down_ms = 0;
     bool function_used = false;
+    /* Play is a modifier as well as the transport button, so like Function it
+     * acts on release and only if nothing was pressed against it. The cost is
+     * the length of a tap before the transport moves, which engine/controls.py
+     * names as a deliberate trade - the alternative is that holding Play to
+     * erase or change pages also starts the song. */
+    bool play_used = false;
+    /* Recording arm. Quantise strength lives on the transport, because it is
+     * applied when a hit is scheduled rather than when it is captured. */
+    bool armed = false;
 
     uint8_t page = 0;
     uint8_t selected = 0;
@@ -404,6 +446,20 @@ int main(void) {
                     function_used = true;
                     if (event.key <= KEY_PAD_LAST) {
                         selected = event.key;
+                    } else if (event.key == KEY_PLAY) {
+                        play_used = true;
+                        armed = !armed;
+                        say(true, 700, armed ? "RECORD ARMED" : "RECORD OFF",
+                            armed ? "PLAY PADS TO RECORD" : "");
+                        printf("RESULT case=arm armed=%d\n", armed ? 1 : 0);
+                    } else if (event.key == KEY_VOLUME_PUSH) {
+                        for (uint32_t i = 0; i < MAX_STEPS; i++) {
+                            song_clear_step(&song, selected, i);
+                        }
+                        char line[22];
+                        snprintf(line, sizeof(line), "TRACK %u", selected + 1);
+                        say(true, 700, "CLEARED", line);
+                        printf("RESULT case=clear track=%u\n", selected);
                     } else if (event.key == KEY_SELECT_PUSH && mounted) {
                         /* Save. Deliberately a gesture engine/controls.py does
                          * not assign, because saving belongs in the menu and
@@ -432,34 +488,102 @@ int main(void) {
                                song_path, songfile_result_name(r));
                     }
                 } else if (event.key <= KEY_PAD_LAST) {
-                    if (seq_mode) {
+                    if (input_held(KEY_PLAY)) {
+                        play_used = true;
+                    }
+                    if (input_held(KEY_PLAY) && seq_mode) {
+                        /* Play held turns the pads into page buttons, which is
+                         * the only way to reach step 64 on eight pads. */
+                        uint32_t pages = (song_length(&song) +
+                                          STEPS_PER_PAGE - 1) / STEPS_PER_PAGE;
+                        if (event.key < pages) {
+                            page = event.key;
+                            char line[22];
+                            snprintf(line, sizeof(line), "%u OF %lu", page + 1,
+                                     (unsigned long)pages);
+                            say(true, 500, "PAGE", line);
+                        }
+                    } else if (seq_mode) {
                         uint32_t step = page * STEPS_PER_PAGE + event.key;
                         bool on = song_toggle_step(&song, selected, step);
                         printf("RESULT case=edit track=%u step=%lu on=%d\n",
                                selected, (unsigned long)step, on ? 1 : 0);
+                    } else if (input_held(KEY_PLAY)) {
+                        /* Play held in LIVE is erase, not trigger. Nothing
+                         * happens on the press itself - the clearing is done
+                         * in the loop below, as the playhead reaches each
+                         * step, so it erases what is passing rather than the
+                         * whole track at once. */
                     } else {
-                        /* LIVE: the pad plays, transport running or not. */
-                        audio_trigger(event.key);
-                        hits++;
+                        /* LIVE: the pad plays, transport running or not. It
+                         * sounds first and is written down second - a hit the
+                         * player hears late because the write went first is a
+                         * worse trade than a step recorded a few microseconds
+                         * after it sounded. */
+                        if (!song.muted[event.key]) {
+                            audio_trigger(event.key);
+                            hits++;
+                        }
+
+                        uint32_t step;
+                        int32_t offset;
+                        if (armed && seq_now(&seq, event.key, &step, &offset)) {
+                            /* Stored as played. Quantise is applied on the way
+                             * back out, in seq_effective_offset, so the knob
+                             * can be turned down again afterwards and the feel
+                             * is still there to recover. */
+                            int32_t limit = song_max_offset(&song);
+                            if (offset > limit) {
+                                offset = limit;
+                            }
+                            if (offset < -limit) {
+                                offset = -limit;
+                            }
+                            song_set_step(&song, event.key, step,
+                                          VELOCITY_DEFAULT, offset);
+                            printf("RESULT case=record track=%u step=%lu "
+                                   "offset=%ld\n",
+                                   event.key, (unsigned long)step, (long)offset);
+                        }
                     }
                 } else if (event.key == KEY_PLAY) {
                     if (menu_is_open(&menu)) {
+                        /* Marked used, not just guarded on release: entering a
+                         * menu item can close the menu, and the release would
+                         * then find no menu open and start the song. */
+                        play_used = true;
                         handle_menu_action(menu_enter(&menu));
                         break;
                     }
-                    seq_toggle(&seq);
-                    printf("RESULT case=transport running=%d bpm=%u div=%s\n",
-                           seq.running ? 1 : 0, song.bpm,
-                           song_division_name(&song));
+                    /* The transport moves on release - see play_used. */
+                    play_used = false;
                 } else if (event.key == KEY_SELECT_PUSH) {
                     if (!menu_is_open(&menu)) {
                         menu_open(&menu);
                     }
+                } else if (event.key == KEY_VOLUME_PUSH) {
+                    /* Mute lives on the song, and each thing that triggers
+                     * honours it: seq_update skips booking a muted track, and
+                     * the live pad below refuses to sound one. Not a mixer
+                     * flag, because the sequencer's version also saves it the
+                     * work of reserving a voice for silence. */
+                    song.muted[selected] = !song.muted[selected];
+                    char line[22];
+                    snprintf(line, sizeof(line), "TRACK %u", selected + 1);
+                    say(true, 600, song.muted[selected] ? "MUTED" : "UNMUTED",
+                        line);
                 }
                 break;
 
             case INPUT_KEY_UP:
                 printf("RESULT case=key up=%u\n", event.key);
+                if (event.key == KEY_PLAY && !play_used &&
+                    !menu_is_open(&menu)) {
+                    seq_toggle(&seq);
+                    printf("RESULT case=transport running=%d bpm=%u div=%s\n",
+                           seq.running ? 1 : 0, song.bpm,
+                           song_division_name(&song));
+                }
                 if (event.key == KEY_FUNCTION && !function_used) {
                     uint32_t held =
                         to_ms_since_boot(get_absolute_time()) - function_down_ms;
@@ -471,57 +595,169 @@ int main(void) {
                 }
                 break;
 
-            case INPUT_SELECT_TURN:
+            case INPUT_SELECT_TURN: {
                 if (menu_is_open(&menu)) {
                     menu_turn(&menu, event.delta);
                     break;
                 }
-                if (seq.running) {
-                    /* Tempo while it plays, pitch while it does not - the knob
-                     * means whatever the badge is currently doing. */
+                int32_t pad = held_pad();
+                if (input_held(KEY_FUNCTION)) {
+                    /* The selected track's pitch, a semitone a click, as
+                     * 1090/1029 rather than a table: 2^(1/12) to five decimal
+                     * places in integers this chip multiplies unaided. */
+                    function_used = true;
+                    int32_t steps = event.delta;
+                    uint32_t p = pitch[selected];
+                    while (steps > 0 && p < PITCH_UNITY * 4) {
+                        p = (uint32_t)(((uint64_t)p * 1090u) / 1029u);
+                        steps--;
+                    }
+                    while (steps < 0 && p > PITCH_UNITY / 4) {
+                        p = (uint32_t)(((uint64_t)p * 1029u) / 1090u);
+                        steps++;
+                    }
+                    pitch[selected] = p;
+                    audio_set_pitch(selected, p);
+                    char line[22];
+                    snprintf(line, sizeof(line), "T%u  %lu%%", selected + 1,
+                             (unsigned long)((uint64_t)p * 100u / PITCH_UNITY));
+                    say(true, 700, "PITCH", line);
+                } else if (input_held(KEY_PLAY)) {
+                    play_used = true;
+                    /* The selected track's length, which is what makes tracks
+                     * of different lengths a polyrhythm rather than a bug. */
+                    int32_t length = (int32_t)song.lengths[selected] + event.delta;
+                    song_set_length(&song, selected, (uint32_t)(length < 1 ? 1 : length));
+                    char line[22];
+                    snprintf(line, sizeof(line), "T%u  %u STEPS", selected + 1,
+                             song.lengths[selected]);
+                    say(true, 700, "LENGTH", line);
+                } else if (pad >= 0) {
+                    /* engine/controls.py gives this "pitch: of that step in
+                     * SEQ, that track in LIVE" - but per-step pitch does not
+                     * exist in the song model, in either firmware, and the
+                     * Python's own sequencer notes it as not yet done. So both
+                     * modes move the track's pitch, which is the half that is
+                     * actually implementable, and nothing here pretends
+                     * otherwise. */
+                    uint32_t p = pitch[pad];
+                    int32_t steps = event.delta;
+                    while (steps > 0 && p < PITCH_UNITY * 4) {
+                        p = (uint32_t)(((uint64_t)p * 1090u) / 1029u);
+                        steps--;
+                    }
+                    while (steps < 0 && p > PITCH_UNITY / 4) {
+                        p = (uint32_t)(((uint64_t)p * 1029u) / 1090u);
+                        steps++;
+                    }
+                    pitch[pad] = p;
+                    audio_set_pitch((uint8_t)pad, p);
+                    char line[22];
+                    snprintf(line, sizeof(line), "T%ld  %lu%%", (long)pad + 1,
+                             (unsigned long)((uint64_t)p * 100u / PITCH_UNITY));
+                    say(true, 700, "PITCH", line);
+                } else {
                     song_set_bpm(&song, song.bpm + event.delta);
-                    printf("RESULT case=bpm bpm=%u\n", song.bpm);
-                    break;
+                    char line[22];
+                    snprintf(line, sizeof(line), "%u", song.bpm);
+                    say(true, 600, "TEMPO", line);
                 }
-                {
-                /* A semitone a click, as a ratio rather than a table: 2^(1/12)
-                 * is 1.0595, and 1090/1029 is that to five decimal places in
-                 * integers a Cortex-M0+ can multiply without help. */
-                int32_t steps = event.delta;
-                uint32_t p = pitch[selected];
-                while (steps > 0 && p < PITCH_UNITY * 4) {
-                    p = (uint32_t)(((uint64_t)p * 1090u) / 1029u);
-                    steps--;
-                }
-                while (steps < 0 && p > PITCH_UNITY / 4) {
-                    p = (uint32_t)(((uint64_t)p * 1029u) / 1090u);
-                    steps++;
-                }
-                pitch[selected] = p;
-                audio_set_pitch(selected, p);
-                printf("RESULT case=pitch track=%u rate_q16=%lu "
-                       "percent=%lu\n",
-                       selected, (unsigned long)p,
-                       (unsigned long)((uint64_t)p * 100u / PITCH_UNITY));
                 break;
             }
 
             case INPUT_VOLUME_TURN: {
-                int32_t next = master + event.delta * 0x0400;
-                if (next > 0x7FFF) {
-                    next = 0x7FFF;
+                if (menu_is_open(&menu)) {
+                    break;
                 }
-                if (next < 0) {
-                    next = 0;
+                int32_t pad = held_pad();
+                if (input_held(KEY_FUNCTION) || (pad >= 0 && !seq_mode)) {
+                    /* A track's own level: Function scopes to the selected
+                     * track, a held pad in LIVE to that one. */
+                    uint8_t track = input_held(KEY_FUNCTION) ? selected
+                                                             : (uint8_t)pad;
+                    if (input_held(KEY_FUNCTION)) {
+                        function_used = true;
+                    }
+                    int32_t level = (int32_t)song.volume_q12[track] +
+                                    event.delta * 256;
+                    if (level < 0) {
+                        level = 0;
+                    }
+                    if (level > 8192) {
+                        level = 8192; /* 2.0, the Python's ceiling */
+                    }
+                    song.volume_q12[track] = (uint16_t)level;
+                    audio_set_gain(track, (int16_t)((level * 0x7FFF) / 8192));
+                    char line[22];
+                    snprintf(line, sizeof(line), "T%u  %ld%%", track + 1,
+                             (long)(level * 100 / 4096));
+                    say(true, 700, "LEVEL", line);
+                } else if (input_held(KEY_PLAY)) {
+                    play_used = true;
+                    int32_t q = (int32_t)seq.strength + event.delta;
+                    seq.strength =
+                        (uint8_t)(q < 0 ? 0 : (q > STRENGTH_MAX ? STRENGTH_MAX
+                                                                : q));
+                    char line[22];
+                    snprintf(line, sizeof(line), "%u%%",
+                             seq.strength * 100u / STRENGTH_MAX);
+                    say(true, 700, "QUANTIZE", line);
+                } else if (pad >= 0 && seq_mode) {
+                    /* That step's velocity. Deliberately not its offset: no
+                     * gesture in either firmware edits an offset by hand, and
+                     * that is what makes a default quantise strength of 100%
+                     * coherent - offsets are a record of how the pattern was
+                     * played, and the knob decides how much of that to keep.
+                     * An offset the player dialled in would be snapped away by
+                     * the same setting, which is a trap. */
+                    uint32_t step = page * STEPS_PER_PAGE + (uint32_t)pad;
+                    int32_t v = song_velocity(&song, selected, step) +
+                                event.delta;
+                    if (v > VELOCITY_MAX) {
+                        v = VELOCITY_MAX;
+                    }
+                    if (v < VELOCITY_OFF) {
+                        v = VELOCITY_OFF;
+                    }
+                    song_set_step(&song, selected, step, (uint8_t)v,
+                                  song_offset(&song, selected, step));
+                    char line[22];
+                    snprintf(line, sizeof(line), "S%lu  VEL %ld",
+                             (unsigned long)(step + 1), (long)v);
+                    say(true, 700, "STEP", line);
+                } else {
+                    int32_t next = master + event.delta * 0x0400;
+                    if (next > 0x7FFF) {
+                        next = 0x7FFF;
+                    }
+                    if (next < 0) {
+                        next = 0;
+                    }
+                    master = (int16_t)next;
+                    audio_set_master(master);
+                    char line[22];
+                    snprintf(line, sizeof(line), "%ld%%",
+                             (long)((int32_t)master * 100 / 0x7FFF));
+                    say(true, 600, "VOLUME", line);
                 }
-                master = (int16_t)next;
-                audio_set_master(master);
-                printf("RESULT case=volume master=%d\n", master);
                 break;
             }
 
             default:
                 break;
+            }
+        }
+
+        /* Live erase: while Play and a pad are both held in LIVE, the step
+         * under that track's playhead is cleared as it goes by. Held down over
+         * a bar it wipes the track; tapped, it takes out just what was
+         * sounding - which is the point, and why this is not a clear button. */
+        if (!menu_is_open(&menu) && !seq_mode && seq.running &&
+            input_held(KEY_PLAY)) {
+            for (uint8_t t = KEY_PAD_FIRST; t <= KEY_PAD_LAST; t++) {
+                if (input_held(t)) {
+                    song_clear_step(&song, t, seq_step_of(&seq, t));
+                }
             }
         }
 
@@ -576,6 +812,25 @@ int main(void) {
                 if (!seq_mode && t == selected) {
                     display_fill_rect(x + 7, 5, 2, 6, !lit);
                 }
+                /* A muted track is struck through. Not dimmed - the panel has
+                 * one bit a pixel and no dim to give - and not blank, because
+                 * blank is what an empty track already looks like and the two
+                 * mean very different things. */
+                if (song.muted[t]) {
+                    display_fill_rect(x + 3, 7, 10, 2, !lit);
+                }
+            }
+
+            /* Armed to record: a blinking mark in the strip between the pitch
+             * and level bars, which is the only space left. Blinking because a
+             * static dot on a panel this dense reads as part of the furniture,
+             * and arming is a state that must not be forgotten. */
+            if (armed && (to_ms_since_boot(get_absolute_time()) / 400u) % 2u) {
+                /* No label beside it: the band between the two bars is four
+                 * pixels tall and the type is nine, so a word here would run
+                 * straight through the level bar. A blinking dot in a fixed
+                 * place is the one indicator that needs no legend. */
+                display_fill_rect(0, 22, 4, 4, true);
             }
 
             /* Pitch of the selected track, as a bar centred on unity: left of

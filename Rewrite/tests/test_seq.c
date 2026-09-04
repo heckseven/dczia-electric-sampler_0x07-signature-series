@@ -155,6 +155,11 @@ static void test_offsets_move_hits(void) {
     song_set_step(&song, 0, 2, VELOCITY_DEFAULT, -2);  /* early */
     song_set_step(&song, 0, 3, VELOCITY_DEFAULT, 0);
     seq_init(&seq, &song);
+    /* Offsets only reach the scheduler at less than full quantise strength -
+     * which is the default, since an offset is a record of how a hit was
+     * played and the knob decides how much of that survives. This test is
+     * about the transport honouring an offset, so it turns the knob off. */
+    seq.strength = 0;
 
     check(song_max_offset(&song) == 2, "1/16 allows two ticks either way");
 
@@ -218,12 +223,115 @@ static void test_division_changes_clamp_offsets(void) {
     check(song_offset(&song, 0, 0) == 1, "the old offset is clamped, not kept");
 }
 
+static void test_recording_finds_the_nearest_step(void) {
+    /* Recording asks where the transport is *audibly*, which is behind where it
+     * has already booked. These are the cases that decide whether a hit lands
+     * on the beat the player heard or the one after it.
+     *
+     * At 125 BPM a tick is exactly 320 frames (16000 * 60 / (125 * 24)), so the
+     * arithmetic here is not itself rounding and the test measures seq_now
+     * rather than its own constants. */
+    struct song song;
+    song_init(&song);
+    song_set_bpm(&song, 125); /* 1/16 -> 6 ticks a step, 320 frames a tick */
+    struct seq seq;
+    seq_init(&seq, &song);
+
+    fake_frames = 0;
+    seq_start(&seq);
+
+    const uint64_t frames_per_tick = 320;
+    uint32_t step = 99;
+    int32_t offset = 99;
+
+    /* Dead on step 3. */
+    fake_frames = seq.start_frame + 18 * frames_per_tick;
+    check(seq_now(&seq, 0, &step, &offset), "a running transport has a now");
+    check(step == 3, "on the boundary of step 3");
+    check(offset == 0, "and no offset");
+
+    /* Two ticks late. */
+    fake_frames = seq.start_frame + 20 * frames_per_tick;
+    seq_now(&seq, 0, &step, &offset);
+    check(step == 3, "two ticks late still belongs to step 3");
+    check(offset == 2, "recorded as two ticks late");
+
+    /* Two ticks early - the nearest step, not the one just passed. */
+    fake_frames = seq.start_frame + 16 * frames_per_tick;
+    seq_now(&seq, 0, &step, &offset);
+    check(step == 3, "two ticks early belongs to step 3, not step 2");
+    check(offset == -2, "recorded as two ticks early");
+
+    /* Past halfway it is the next step, early, rather than this one very
+     * late - which is the whole reason for rounding rather than truncating. */
+    fake_frames = seq.start_frame + 21 * frames_per_tick;
+    seq_now(&seq, 0, &step, &offset);
+    check(step == 4, "past halfway it rounds up to step 4");
+    check(offset == -3, "as three ticks early");
+
+    /* Half a tick late still counts as on the beat: an offset is a whole
+     * number of ticks, so the nearest one is the only answer available. */
+    fake_frames = seq.start_frame + 18 * frames_per_tick + 159;
+    seq_now(&seq, 0, &step, &offset);
+    check(step == 3 && offset == 0, "just under half a tick rounds to the beat");
+
+    /* And it wraps on the track's own length rather than running off. */
+    fake_frames = seq.start_frame + 48 * frames_per_tick;
+    seq_now(&seq, 0, &step, &offset);
+    check(step == 0, "step 8 of an eight-step track wraps to 0");
+
+    seq_stop(&seq);
+    check(!seq_now(&seq, 0, &step, &offset), "a stopped transport has no now");
+}
+
+static void test_quantize_strength_is_applied_on_playback(void) {
+    /* The offset in the song is what the player did; strength decides how much
+     * of it survives to the scheduler. Numbers checked against
+     * engine/quantize.py's effective_offset, which this reproduces. */
+    check(seq_effective_offset(5, STRENGTH_MAX) == 0, "full strength snaps");
+    check(seq_effective_offset(5, 0) == 5, "zero strength plays as performed");
+    check(seq_effective_offset(5, 10) == 3, "half of 5 rounds up to 3");
+    check(seq_effective_offset(-5, 10) == -3, "and symmetrically the other way");
+    check(seq_effective_offset(0, 0) == 0, "no offset stays no offset");
+    check(seq_effective_offset(2, 15) == 1, "a quarter of 2 rounds to 1");
+    check(seq_effective_offset(1, 19) == 0, "a twentieth of 1 rounds to none");
+
+    /* And the transport actually uses it: the same song, unmodified, schedules
+     * its hit at two different frames under two strengths. */
+    struct song song;
+    song_init(&song);
+    song_set_length(&song, 0, 1);
+    song_set_step(&song, 0, 0, VELOCITY_DEFAULT, 2); /* two ticks late */
+    for (uint32_t t = 1; t < TRACK_COUNT; t++) {
+        song.lengths[t] = 0;
+    }
+
+    struct seq seq;
+    seq_init(&seq, &song);
+    check(seq.strength == STRENGTH_DEFAULT, "starts fully quantised");
+
+    run_steps(&seq, 4);
+    check(log_count > 0, "the pattern fires at full strength");
+    uint64_t snapped = log[0].frame;
+
+    seq_stop(&seq);
+    seq.strength = 0;
+    run_steps(&seq, 4);
+    check(log_count > 0, "and at zero strength");
+    uint64_t as_played = log[0].frame;
+
+    check(as_played > snapped, "at zero strength the hit keeps its late offset");
+    check(song_offset(&song, 0, 0) == 2, "and the song itself never changed");
+}
+
 int main(void) {
     test_every_step_fires_once();
     test_polyrhythm();
     test_offsets_move_hits();
     test_mute_and_velocity();
     test_division_changes_clamp_offsets();
+    test_recording_finds_the_nearest_step();
+    test_quantize_strength_is_applied_on_playback();
 
     if (failures == 0) {
         printf("ok - all sequencer tests passed\n");

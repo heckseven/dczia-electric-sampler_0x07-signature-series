@@ -58,6 +58,26 @@ void seq_init(struct seq *seq, struct song *song) {
     memset(seq, 0, sizeof(*seq));
     seq->song = song;
     seq->running = false;
+    seq->strength = STRENGTH_DEFAULT;
+}
+
+int32_t seq_effective_offset(int32_t offset, uint8_t strength) {
+    if (offset == 0 || strength >= STRENGTH_MAX) {
+        return 0;
+    }
+    /* offset * (1 - strength), in twentieths, rounded to nearest and
+     * symmetrically about zero. A tick is the finest thing that can be played,
+     * so a residue under half a tick really is on the grid.
+     *
+     * Worth knowing: at fine divisions an offset spans only a couple of ticks,
+     * so the knob has correspondingly few distinguishable settings there and
+     * more at coarse ones. That is the resolution the model has rather than a
+     * fault in the rounding. */
+    int32_t remaining = offset * (int32_t)(STRENGTH_MAX - strength);
+    if (remaining > 0) {
+        return (remaining + STRENGTH_MAX / 2) / STRENGTH_MAX;
+    }
+    return -((-remaining + STRENGTH_MAX / 2) / STRENGTH_MAX);
 }
 
 void seq_start(struct seq *seq) {
@@ -181,7 +201,13 @@ void seq_update(struct seq *seq) {
                 if (!song_is_on(song, (uint8_t)t, step)) {
                     continue;
                 }
-                int32_t offset = song_offset(song, (uint8_t)t, step);
+                /* A track carrying its own strength ignores the global knob,
+                 * which is how one track swings while the rest stay straight. */
+                int8_t override = song->track_strength[t];
+                uint8_t strength =
+                    (override < 0) ? seq->strength : (uint8_t)override;
+                int32_t offset = seq_effective_offset(
+                    song_offset(song, (uint8_t)t, step), strength);
                 int32_t fires_at =
                     (int32_t)(step * ticks_per_step) + offset;
                 /* Wrap into the cycle: a step 0 nudged early fires at the very
@@ -212,4 +238,51 @@ void seq_update(struct seq *seq) {
 
 uint32_t seq_step_of(const struct seq *seq, uint8_t track) {
     return track < TRACK_COUNT ? seq->position[track] : 0;
+}
+
+bool seq_now(const struct seq *seq, uint8_t track, uint32_t *step_out,
+             int32_t *offset_out) {
+    if (!seq->running) {
+        return false;
+    }
+    uint64_t now = audio_frames();
+    if (now <= seq->start_frame) {
+        *step_out = 0;
+        *offset_out = 0;
+        return true;
+    }
+
+    /* Frames since the downbeat, converted to ticks.
+     *
+     * Not via frames_per_tick_q32: dividing by a 32.32 figure means shifting
+     * the frame count up by 32 first, which overflows 64 bits after 2^32
+     * frames - 27 hours - and silently records into the wrong bar rather than
+     * failing. Multiplying by bpm * PPQN and dividing by rate * 60 is the same
+     * arithmetic the other way round, exact, and does not overflow for
+     * centuries.
+     *
+     * Rounded, not truncated. An offset is a whole number of ticks, so the
+     * nearest tick is the honest answer, and truncating puts a hit that landed
+     * a hair inside the boundary one tick early every time. */
+    uint64_t elapsed = now - seq->start_frame;
+    uint64_t denominator = (uint64_t)SAMPLE_RATE * 60u;
+    uint64_t ticks = (elapsed * seq->song->bpm * PPQN + denominator / 2) /
+                     denominator;
+
+    uint32_t per_step = song_ticks_per_step(seq->song);
+    uint32_t length = seq->song->lengths[track];
+    if (length < 1) {
+        length = 1;
+    }
+
+    /* Round to the nearest step rather than the one just passed: a hit landing
+     * a hair early is the player being early for the *next* beat, not very late
+     * for the last one, and truncating would file it under the wrong step and
+     * give it an offset nearly a whole step long. */
+    uint64_t step = (ticks + per_step / 2) / per_step;
+    int32_t offset = (int32_t)(int64_t)(ticks - step * per_step);
+
+    *step_out = (uint32_t)(step % length);
+    *offset_out = offset;
+    return true;
 }

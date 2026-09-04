@@ -28,6 +28,16 @@
  * msgpack carries and what the Python writes. */
 #define OFFSET_BIAS 128
 
+/* Quantise strength, in twentieths - engine/quantize.py's STRENGTH_STEP is
+ * 0.05, so twenty positions is exactly the resolution the knob already had, and
+ * in integers it needs no float anywhere in the scheduling path.
+ *
+ * Here rather than in seq.h because a track can carry its own strength and that
+ * is song data, saved with the pattern. The transport holds only the global
+ * one. */
+#define STRENGTH_MAX 20
+#define STRENGTH_DEFAULT STRENGTH_MAX /* fully quantised until asked otherwise */
+
 #define LENGTH_MIN 1
 #define LENGTH_DEFAULT 8
 
@@ -68,6 +78,18 @@ struct song {
      * and the ceiling is 8192 - integers, because nothing in the audio path
      * should need a float to decide how loud something is. */
     uint16_t volume_q12[TRACK_COUNT];
+
+    /* Two settings this firmware does not act on yet but must not destroy.
+     *
+     * The Python's loader reads every key with a default, so a key this writer
+     * omits does not fail to load - it silently resets. Anything the player set
+     * over there and cannot see over here would quietly disappear the first
+     * time they saved from the badge, which is the worst kind of data loss:
+     * one that looks like nothing happened. So both are carried through. */
+    uint16_t kit_volume_q12[TRACK_COUNT];
+    /* Per-track quantise override, in twentieths. -1 follows the global knob,
+     * which is what None means in engine/song.py. */
+    int8_t track_strength[TRACK_COUNT];
     uint8_t division;
     uint16_t bpm;
 

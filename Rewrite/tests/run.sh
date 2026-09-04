@@ -30,5 +30,6 @@ run() {
 run seq     tests/test_seq.c     src/song.c src/seq.c
 run msgpack tests/test_msgpack.c src/msgpack.c
 run menu    tests/test_menu.c    src/menu.c
+run songfile tests/test_songfile.c src/song.c src/songfile.c src/msgpack.c
 
 exit $fail

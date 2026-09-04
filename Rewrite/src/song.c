@@ -20,6 +20,8 @@ void song_init(struct song *song) {
     for (uint32_t t = 0; t < TRACK_COUNT; t++) {
         song->lengths[t] = LENGTH_DEFAULT;
         song->volume_q12[t] = 4096; /* 1.0 */
+        song->kit_volume_q12[t] = 4096;
+        song->track_strength[t] = -1; /* follows the global knob */
         for (uint32_t s = 0; s < MAX_STEPS; s++) {
             song->offsets[t][s] = OFFSET_BIAS;
         }

@@ -24,6 +24,7 @@
 #include "song.h"
 #include "prefs.h"
 #include "songfile.h"
+#include "sync.h"
 #include "sd.h"
 
 /* -30 dBFS at the sample, and the master starts at -12 dB, so the badge makes a
@@ -75,6 +76,14 @@ static char song_path[PREFS_NAME_MAX + 24];
 static struct menu menu;
 
 static void build_song_path(void);
+
+/* Typed commands, for measuring things that need the badge doing something but
+ * do not need a person doing it. */
+static volatile char console_command;
+
+static void on_console_command(char c) {
+    console_command = c;
+}
 
 /* --- what the knobs mean right now ----------------------------------------- *
  *
@@ -349,6 +358,8 @@ int main(void) {
 
     display_init();
     input_init();
+    sync_init();
+    console_set_command_hook(on_console_command);
     menu_close(&menu);
     printf("RESULT case=input note=pads 0-7 play, Function+pad selects, "
            "Select click opens the menu, Play enters, Function backs out\n");
@@ -428,7 +439,37 @@ int main(void) {
 
     while (true) {
         console_pump();
+        char typed = console_command;
+        if (typed != '\0') {
+            console_command = '\0';
+            if (typed == 'p') {
+                seq_toggle(&seq);
+                printf("RESULT case=transport running=%d bpm=%u\n",
+                       seq.running ? 1 : 0, song.bpm);
+            } else if (typed == 'r') {
+                /* Put something on the grid to hear, so a headless timing run
+                 * is measuring a pattern rather than silence. */
+                for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+                    song_set_length(&song, (uint8_t)t, 8);
+                    for (uint32_t st = 0; st < 8; st += 4) {
+                        song_set_step(&song, (uint8_t)t, st + t % 4,
+                                      VELOCITY_DEFAULT, 0);
+                    }
+                }
+                printf("RESULT case=pattern filled\n");
+            }
+        }
+
         input_poll();
+
+        /* Drain the sync input before scheduling, so a pulse that arrived
+         * during the last pass has already moved the clock by the time this
+         * pass books ticks against it. */
+        uint32_t pulse_us;
+        while (sync_take_pulse(&pulse_us)) {
+            seq_external_pulse(&seq, pulse_us);
+        }
+
         seq_update(&seq);
 
         struct input_event event;
@@ -880,7 +921,9 @@ int main(void) {
         if (time_reached(next_report)) {
             printf("RESULT case=stats blocks=%lu underruns=%lu "
                    "worst_cycles=%lu peak=%lu hits=%lu selected=%u "
-                   "pages=%lu run=%d mode=%s tick=%lu seqhits=%lu\n",
+                   "pages=%lu run=%d mode=%s tick=%lu seqhits=%lu "
+                   "clock=%s bpm=%lu syncin=%lu syncbad=%lu "
+                   "syncout=%lu syncerr=%lu syncmiss=%lu\n",
                    (unsigned long)audio_blocks(),
                    (unsigned long)audio_underruns(),
                    (unsigned long)audio_worst_cycles(),
@@ -888,7 +931,14 @@ int main(void) {
                    (unsigned long)hits, selected,
                    (unsigned long)pages_written, seq.running ? 1 : 0,
                    seq_mode ? "SEQ" : "LIVE",
-                   (unsigned long)seq.tick, (unsigned long)seq.hits);
+                   (unsigned long)seq.tick, (unsigned long)seq.hits,
+                   seq.external ? "ext" : "int",
+                   (unsigned long)seq_effective_bpm(&seq),
+                   (unsigned long)sync_pulses_in(),
+                   (unsigned long)sync_pulses_rejected(),
+                   (unsigned long)sync_pulses_out(),
+                   (unsigned long)sync_out_worst_error_us(),
+                   (unsigned long)sync_pulses_missed());
             next_report = make_timeout_time_ms(2000);
         }
     }

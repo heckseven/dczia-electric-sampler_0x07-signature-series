@@ -26,6 +26,38 @@ struct seq {
      * finding it was thrown away at capture. */
     uint8_t strength;
 
+    /* How many sync pulses go out per quarter note. 2 is the Volca and Pocket
+     * Operator convention and the default; 24 matches MIDI clock and DIN sync.
+     * Every value divides PPQN exactly, so no rate drifts against the beat. */
+    uint8_t sync_ppqn;
+
+    /* --- the external clock ------------------------------------------------
+     *
+     * Latched by the first incoming pulse and held until the transport stops,
+     * which is engine/clock.py's rule. While external, the tick period comes
+     * from the gap between pulses instead of from the tempo, and the phase is
+     * pulled onto each arriving pulse.
+     *
+     * If pulses stop the clock does not stall: it free-runs at the last period
+     * it measured and re-synchronises when they come back, so a master that
+     * pauses or a cable that blinks does not halt the badge mid-pattern. */
+    bool external;
+    uint64_t ext_per_tick_q32; /* frames per internal tick, while external */
+
+    /* The last few gaps between pulses, in microseconds, averaged to a period.
+     *
+     * Averaged even though the timestamps are good: a master's own jitter is
+     * real, and it is what is left once the measurement stops being the
+     * problem. Four is enough for that - engine/clock.py needs up to eight
+     * because it is averaging away millisecond quantisation as well. */
+    uint32_t gaps[4];
+    uint8_t gap_count;
+    uint8_t gap_next;
+    uint32_t last_pulse_us;
+
+    uint32_t ext_pulses;   /* accepted */
+    uint32_t ext_rejected; /* outside the range a tempo can be */
+
     /* The frame the transport started on. Every step boundary is measured from
      * here, so nothing accumulates rounding. */
     uint64_t start_frame;
@@ -54,7 +86,27 @@ struct seq {
     uint64_t last_hit_frame;
 };
 
+/* The sync rates the jack can speak, from engine/clock.py's SYNC_RATES. */
+#define SYNC_PPQN_DEFAULT 2
+
 void seq_init(struct seq *seq, struct song *song);
+bool seq_set_sync_ppqn(struct seq *seq, uint32_t ppqn);
+
+/* Gaps outside this range are noise or a master that stopped and restarted,
+ * not a tempo - engine/clock.py's MIN_PULSE_MS and MAX_PULSE_MS. */
+#define EXT_MIN_GAP_US 2000u
+#define EXT_MAX_GAP_US 3000000u
+
+/* One pulse arrived on the sync input, timestamped in its own interrupt.
+ *
+ * Latches the clock to external, measures the period, and pulls the phase onto
+ * the pulse. Starts the transport if it was stopped, which is what a master
+ * sending clock means. */
+void seq_external_pulse(struct seq *seq, uint32_t at_us);
+
+/* The tempo actually being played, which is the song's while internal and the
+ * measured one while external. Whole BPM, for the display. */
+uint32_t seq_effective_bpm(const struct seq *seq);
 
 /* How far from its grid line a hit actually plays, once strength is applied.
  * Exposed so it can be tested on its own, and so anything drawing a step can

@@ -43,6 +43,25 @@ void audio_trigger_at_frame(uint8_t track, uint64_t at_frame,
 
 void audio_stop_all(void) {}
 
+/* The sync jack, stubbed: what matters here is which ticks ask for a pulse and
+ * what frame they name, not what the pin does with it. */
+static uint64_t sync_at[512];
+static uint32_t sync_count;
+
+/* The frame/time mapping, faked as an exact one: the badge's is exact too,
+ * being 62.5 us a frame at 16 kHz, and the only thing this stub leaves out is
+ * the block-quantised epoch the real one carries. */
+bool audio_frame_at_time_us(uint32_t when_us, uint64_t *frame_out) {
+    *frame_out = ((uint64_t)when_us * 2u) / 125u;
+    return true;
+}
+
+void sync_pulse_at_frame(uint64_t frame) {
+    if (sync_count < 512) {
+        sync_at[sync_count++] = frame;
+    }
+}
+
 /* --- harness -------------------------------------------------------------- */
 
 static int failures;
@@ -324,6 +343,168 @@ static void test_quantize_strength_is_applied_on_playback(void) {
     check(song_offset(&song, 0, 0) == 2, "and the song itself never changed");
 }
 
+static void test_sync_out_lands_on_the_right_ticks(void) {
+    /* A pulse has to sit on a tick the sequencer actually visits, and it has to
+     * name the frame the tick is *heard* on rather than the moment it was
+     * booked - the sequencer runs a lookahead ahead of the audio, so those are
+     * sixteen milliseconds apart. */
+    struct song song;
+    song_init(&song);
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        song.lengths[t] = 0; /* nothing playing; this is about the clock */
+    }
+    struct seq seq;
+    seq_init(&seq, &song);
+    check(seq.sync_ppqn == SYNC_PPQN_DEFAULT, "defaults to the Volca rate");
+
+    /* Four beats at 2 PPQN is eight pulses, one every twelve ticks. */
+    sync_count = 0;
+    run_steps(&seq, 16); /* 16 sixteenths = 4 beats */
+    check(sync_count == 8, "two pulses a beat at the default rate");
+
+    /* The first is on the downbeat, and that is the transport's start frame -
+     * not the frame the main loop happened to call seq_update on. */
+    check(sync_at[0] == seq.start_frame, "the first pulse is the downbeat");
+    check(sync_at[0] > 0, "which is ahead of where the audio already was");
+
+    /* Evenly spaced, at exactly the half-beat. */
+    uint64_t gap = sync_at[1] - sync_at[0];
+    for (uint32_t i = 2; i < sync_count; i++) {
+        uint64_t this_gap = sync_at[i] - sync_at[i - 1];
+        /* A frame either way: a tick boundary is 333.33 frames at 120 BPM and
+         * the whole part alternates. */
+        int64_t drift = (int64_t)this_gap - (int64_t)gap;
+        check(drift <= 1 && drift >= -1, "pulses are evenly spaced");
+    }
+
+    /* 24 PPQN is a pulse a tick - MIDI clock and DIN sync. */
+    seq_stop(&seq);
+    check(seq_set_sync_ppqn(&seq, 24), "24 is a rate the jack speaks");
+    sync_count = 0;
+    run_steps(&seq, 4); /* 4 sixteenths = 24 ticks */
+    check(sync_count == 24, "one pulse a tick at 24 PPQN");
+
+    /* And a rate that does not divide PPQN is refused rather than accepted and
+     * quietly rounded - every fifth pulse would land 4.8 ticks along, which is
+     * somewhere the sequencer never visits. */
+    check(!seq_set_sync_ppqn(&seq, 5), "5 does not divide 24, so it is refused");
+    check(seq.sync_ppqn == 24, "and the old rate is kept");
+}
+
+/* Microseconds between sync pulses at a given tempo and rate. */
+static uint32_t pulse_gap_us(uint32_t bpm, uint32_t ppqn) {
+    return (uint32_t)(60000000ull / ((uint64_t)bpm * ppqn));
+}
+
+static void test_external_sync_takes_the_tempo(void) {
+    struct song song;
+    song_init(&song); /* 120 BPM internally */
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        song.lengths[t] = 0;
+    }
+    struct seq seq;
+    seq_init(&seq, &song);
+    check(!seq.external, "starts on its own clock");
+    check(seq_effective_bpm(&seq) == 120, "and its own tempo");
+
+    /* A master at 100 BPM, 2 PPQN - the Volca rate. */
+    fake_frames = 0;
+    seq_start(&seq);
+    uint32_t gap = pulse_gap_us(100, 2);
+    uint32_t at = 1000000;
+    for (uint32_t i = 0; i < 8; i++) {
+        seq_external_pulse(&seq, at);
+        at += gap;
+        fake_frames = ((uint64_t)at * 2u) / 125u;
+    }
+    check(seq.external, "one pulse latches it to external");
+    uint32_t measured = seq_effective_bpm(&seq);
+    check(measured >= 99 && measured <= 101, "and it plays the master's tempo");
+    check(song.bpm == 120, "without changing the song's own tempo");
+
+    /* The song's tempo is ignored while synced - that is what synced means. */
+    song_set_bpm(&song, 200);
+    check(seq_effective_bpm(&seq) == measured, "the song's tempo is overridden");
+
+    /* Stopping lets go, which is engine/clock.py's rule. */
+    seq_stop(&seq);
+    check(!seq.external, "stopping returns to the internal clock");
+    check(seq_effective_bpm(&seq) == 200, "and to the song's tempo");
+}
+
+static void test_external_sync_survives_a_bad_cable(void) {
+    struct song song;
+    song_init(&song);
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        song.lengths[t] = 0;
+    }
+    struct seq seq;
+    seq_init(&seq, &song);
+
+    fake_frames = 0;
+    seq_start(&seq);
+    uint32_t gap = pulse_gap_us(120, 2);
+    uint32_t at = 1000000;
+    for (uint32_t i = 0; i < 8; i++) {
+        seq_external_pulse(&seq, at);
+        at += gap;
+        fake_frames = ((uint64_t)at * 2u) / 125u;
+    }
+    uint32_t settled = seq_effective_bpm(&seq);
+    check(settled >= 119 && settled <= 121, "settled on the master");
+
+    /* A glitch: two edges a hair apart. Rejected as noise rather than read as
+     * a tempo of several thousand BPM. */
+    uint32_t before = seq.ext_rejected;
+    seq_external_pulse(&seq, at);
+    seq_external_pulse(&seq, at + 500); /* half a millisecond later */
+    check(seq.ext_rejected > before, "a gap too short to be music is refused");
+    check(seq_effective_bpm(&seq) >= 119 && seq_effective_bpm(&seq) <= 121,
+          "and the tempo already measured is kept");
+
+    /* The master pauses for two and a half seconds, then comes back. That is
+     * inside the range a gap may take, so it is not noise - but it is a
+     * restart, not a master that slowed to 12 BPM. The tempo already measured
+     * has to survive it. */
+    at += 2500000;
+    fake_frames = ((uint64_t)at * 2u) / 125u;
+    seq_external_pulse(&seq, at);
+    check(seq_effective_bpm(&seq) >= 119 && seq_effective_bpm(&seq) <= 121,
+          "a pause is a restart, not a tempo of 12 BPM");
+    check(seq.running, "and the transport is still running");
+
+    /* A gap beyond the outer bound is refused outright. */
+    before = seq.ext_rejected;
+    at += 4000000;
+    fake_frames = ((uint64_t)at * 2u) / 125u;
+    seq_external_pulse(&seq, at);
+    check(seq.ext_rejected > before, "a gap past the outer bound is refused");
+
+    /* Back to normal, and it re-synchronises. */
+    for (uint32_t i = 0; i < 8; i++) {
+        at += gap;
+        fake_frames = ((uint64_t)at * 2u) / 125u;
+        seq_external_pulse(&seq, at);
+    }
+    uint32_t again = seq_effective_bpm(&seq);
+    check(again >= 119 && again <= 121, "and picks the master back up");
+}
+
+static void test_a_pulse_starts_a_stopped_transport(void) {
+    struct song song;
+    song_init(&song);
+    for (uint32_t t = 0; t < TRACK_COUNT; t++) {
+        song.lengths[t] = 0;
+    }
+    struct seq seq;
+    seq_init(&seq, &song);
+    fake_frames = 1000;
+    check(!seq.running, "stopped to begin with");
+    seq_external_pulse(&seq, 1000000);
+    check(seq.running, "a master sending clock starts the transport");
+    check(seq.external, "on the external clock");
+}
+
 int main(void) {
     test_every_step_fires_once();
     test_polyrhythm();
@@ -332,6 +513,10 @@ int main(void) {
     test_division_changes_clamp_offsets();
     test_recording_finds_the_nearest_step();
     test_quantize_strength_is_applied_on_playback();
+    test_sync_out_lands_on_the_right_ticks();
+    test_external_sync_takes_the_tempo();
+    test_external_sync_survives_a_bad_cable();
+    test_a_pulse_starts_a_stopped_transport();
 
     if (failures == 0) {
         printf("ok - all sequencer tests passed\n");

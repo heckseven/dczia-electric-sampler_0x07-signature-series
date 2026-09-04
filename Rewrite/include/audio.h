@@ -105,6 +105,22 @@ void audio_trigger_at_frame(uint8_t track, uint64_t at_frame,
  * apart, and this is a crystal rather than a main loop. */
 uint64_t audio_frames(void);
 
+/* When a frame reaches the pin, on the hardware microsecond timer.
+ *
+ * Not when it was mixed - audio_frames counts frames the mixer has produced,
+ * and the DAC is a block or two behind that. Anything that has to line up with
+ * what is *heard* needs this instead: the sync jack, and anything else later
+ * that leaves the badge alongside the audio.
+ *
+ * False before the first block has played, when there is no mapping yet. The
+ * answer may be in the past for a frame already gone. */
+bool audio_frame_time_us(uint64_t frame, uint32_t *when_us);
+
+/* And back the other way: which frame was leaving the pin at a given moment.
+ * For timestamps captured in an interrupt - a sync edge - which need placing on
+ * the same timeline the sequencer schedules against. */
+bool audio_frame_at_time_us(uint32_t when_us, uint64_t *frame_out);
+
 void audio_stop(uint8_t track);
 void audio_stop_all(void);
 

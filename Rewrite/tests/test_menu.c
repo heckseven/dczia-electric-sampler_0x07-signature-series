@@ -233,28 +233,28 @@ static void test_name_entry(void) {
     check(menu_enter(&menu) == MENU_ACTION_NONE,
           "saving opens the name screen rather than saving straight away");
 
-    /* Select walks the name, Volume changes the letter under it. */
-    menu_turn(&menu, -7);
-    check(menu.cursor == 0, "select moves the cursor and stops at the start");
-    menu_turn(&menu, -5);
+    /* Select picks the letter, Volume walks the name. */
+    menu_turn_volume(&menu, -7);
+    check(menu.cursor == 0, "volume moves the cursor and stops at the start");
+    menu_turn_volume(&menu, -5);
     check(menu.cursor == 0, "and does not run off it");
-    menu_turn(&menu, 99);
+    menu_turn_volume(&menu, 99);
     check(menu.cursor == MENU_NAME_MAX - 1, "nor off the other end");
 
-    menu_turn(&menu, -(MENU_NAME_MAX - 1));
-    menu_turn_volume(&menu, 1); /* S -> T */
-    check(menu.name[0] == 'T', "volume moves through the character set");
-    menu_turn_volume(&menu, -1);
+    menu_turn_volume(&menu, -(MENU_NAME_MAX - 1));
+    menu_turn(&menu, 1); /* S -> T */
+    check(menu.name[0] == 'T', "select moves through the character set");
+    menu_turn(&menu, -1);
     check(menu.name[0] == 'S', "and back");
 
-    /* The set wraps: stopping at the end would mean turning back thirty-eight
-     * clicks to reach a space. */
+    /* The letters wrap: stopping at the end would mean turning back
+     * thirty-eight clicks to reach a space. The cursor does not. */
     menu_set_name(&menu, " ");
     check(menu.name[0] == ' ', "a name can start empty");
-    menu_turn(&menu, -MENU_NAME_MAX);
-    menu_turn_volume(&menu, -1);
+    menu_turn_volume(&menu, -MENU_NAME_MAX);
+    menu_turn(&menu, -1);
     check(menu.name[0] == '_', "turning back from a space wraps to the end");
-    menu_turn_volume(&menu, 1);
+    menu_turn(&menu, 1);
     check(menu.name[0] == ' ', "and forward again wraps home");
 
     /* Accepting trims the padding on both sides. */

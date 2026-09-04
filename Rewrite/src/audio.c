@@ -6,6 +6,7 @@
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 #include "hardware/structs/systick.h"
+#include "hardware/timer.h"
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
 
@@ -90,6 +91,26 @@ static volatile uint32_t trigger_age;
 /* Frames emitted. 64-bit because 32 would wrap after 74 hours at 16 kHz, and a
  * sequencer that stops after three days is a bug somebody eventually finds. */
 static volatile uint64_t frames_emitted;
+
+/* When a known frame actually reaches the pin.
+ *
+ * frames_emitted counts frames *mixed*, and the mixer runs a block or two ahead
+ * of the DAC - that is the whole point of a ping-pong buffer. Anything that has
+ * to line up with what is heard, rather than with what has been computed, needs
+ * the output's own clock. The sync jack is the first such thing: a pulse handed
+ * to a Volca has to arrive when the beat does, not when core 1 got round to
+ * mixing it.
+ *
+ * Captured in serve(), at the moment the just-finished channel is re-armed. At
+ * that instant the other channel is beginning to play, and its first frame is
+ * the one at `frames_emitted` minus a block.
+ *
+ * Read from the other core, so a generation counter rather than a lock: the
+ * writer is an audio path that must not block, and the reader can simply try
+ * again. Odd generation means a write is in progress. */
+static volatile uint32_t output_gen;
+static volatile uint64_t output_epoch_frame;
+static volatile uint32_t output_epoch_us;
 
 /* --- the mixer ------------------------------------------------------------ *
  *
@@ -261,6 +282,15 @@ static void __not_in_flash_func(serve)(int just_finished, uint32_t *buffer,
         stat_worst_cycles = elapsed;
     }
     stat_blocks++;
+    /* The block that has just started playing begins at the frame one block
+     * behind what has been mixed - see the note on output_epoch_frame. */
+    output_gen++;
+    __asm volatile("dmb" ::: "memory");
+    output_epoch_us = timer_hw->timerawl;
+    output_epoch_frame = frames_emitted - BLOCK_FRAMES;
+    __asm volatile("dmb" ::: "memory");
+    output_gen++;
+
     frames_emitted += BLOCK_FRAMES;
 }
 
@@ -508,4 +538,57 @@ uint32_t audio_capture_sum(void) {
 
 uint64_t audio_frames(void) {
     return frames_emitted;
+}
+
+/* Both directions share one read of the epoch pair, because reading it twice
+ * could straddle a write and answer from two different mappings. */
+static bool output_epoch(uint64_t *frame_out, uint32_t *us_out) {
+    for (uint32_t tries = 0; tries < 8; tries++) {
+        uint32_t before = output_gen;
+        if (before & 1u) {
+            continue;
+        }
+        __asm volatile("dmb" ::: "memory");
+        uint32_t us = output_epoch_us;
+        uint64_t frame = output_epoch_frame;
+        __asm volatile("dmb" ::: "memory");
+        if (output_gen != before) {
+            continue;
+        }
+        if (us == 0 && frame == 0) {
+            return false; /* nothing has played yet */
+        }
+        *frame_out = frame;
+        *us_out = us;
+        return true;
+    }
+    return false;
+}
+
+bool audio_frame_at_time_us(uint32_t when_us, uint64_t *frame_out) {
+    uint64_t epoch_frame;
+    uint32_t epoch_us;
+    if (!output_epoch(&epoch_frame, &epoch_us)) {
+        return false;
+    }
+    /* Signed, so a timestamp from before the epoch - an edge captured while the
+     * previous block was playing, which is the common case - answers with the
+     * frame that was leaving the pin then rather than one far in the future. */
+    int32_t since = (int32_t)(when_us - epoch_us);
+    *frame_out = (uint64_t)((int64_t)epoch_frame + ((int64_t)since * 2) / 125);
+    return true;
+}
+
+bool audio_frame_time_us(uint64_t frame, uint32_t *when_us) {
+    uint64_t epoch_frame;
+    uint32_t epoch_us;
+    if (!output_epoch(&epoch_frame, &epoch_us)) {
+        return false;
+    }
+    /* 16 kHz makes a frame exactly 62.5 us, which is 125/2 and needs neither a
+     * float nor a rounding step. Signed, so a frame already played answers with
+     * a time in the past rather than an enormous one in the future. */
+    int64_t ahead = (int64_t)(frame - epoch_frame);
+    *when_us = epoch_us + (uint32_t)((ahead * 125) / 2);
+    return true;
 }

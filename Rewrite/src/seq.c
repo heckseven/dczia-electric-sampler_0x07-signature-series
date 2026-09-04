@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "audio.h"
+#include "sync.h"
 #include "seq.h"
 
 /* How far ahead hits are booked.
@@ -59,6 +60,172 @@ void seq_init(struct seq *seq, struct song *song) {
     seq->song = song;
     seq->running = false;
     seq->strength = STRENGTH_DEFAULT;
+    seq->sync_ppqn = SYNC_PPQN_DEFAULT;
+}
+
+uint32_t seq_effective_bpm(const struct seq *seq) {
+    if (!seq->external || seq->ext_per_tick_q32 == 0) {
+        return seq->song->bpm;
+    }
+    /* frames per tick -> BPM, inverting frames_per_tick_q32. Rounded, so a
+     * measured 119.6 shows as 120 rather than 119. */
+    uint64_t numerator = ((uint64_t)SAMPLE_RATE * 60u << 32) * 2u;
+    uint64_t bpm = numerator / (seq->ext_per_tick_q32 * PPQN);
+    return (uint32_t)((bpm + 1) / 2);
+}
+
+void seq_external_pulse(struct seq *seq, uint32_t at_us) {
+    uint32_t ppqn = seq->sync_ppqn ? seq->sync_ppqn : 1;
+    uint32_t per_pulse = PPQN / ppqn; /* internal ticks between pulses */
+
+    uint32_t gap = at_us - seq->last_pulse_us;
+    bool had_previous = (seq->last_pulse_us != 0);
+    seq->last_pulse_us = at_us;
+
+    if (had_previous && (gap < EXT_MIN_GAP_US || gap > EXT_MAX_GAP_US)) {
+        /* Not a tempo at all. Keep the period already measured and start the
+         * history again, rather than believing a gap that cannot be music. */
+        seq->gap_count = 0;
+        seq->gap_next = 0;
+        seq->ext_rejected++;
+        return;
+    }
+
+    /* A gap several times the established period is a master that paused and
+     * came back, not a master that slowed down.
+     *
+     * engine/clock.py has no such case: the gap goes into the average and the
+     * result is clamped to MIN_BPM, so a two second pause drops the badge to
+     * 20 BPM and it climbs back over the next few pulses. That contradicts its
+     * own docstring - "it keeps running at the last tempo it measured, and
+     * re-synchronises when pulses return" - and this is what that sentence
+     * describes. The history is discarded, the tempo is kept, and the phase is
+     * still pulled onto the pulse below, so the badge lines up with the master
+     * again immediately instead of audibly winding back up to speed. */
+    /* Keyed on the measured period, not on the history: a glitch just before
+     * the pause clears the history but not the tempo, and that combination -
+     * bad cable, then a pause - is exactly when this matters most. */
+    if (had_previous && seq->ext_per_tick_q32 != 0) {
+        uint64_t established =
+            (seq->ext_per_tick_q32 >> 32) * per_pulse * 125u / 2u; /* us */
+        if (established > 0 && gap > established * 4u) {
+            seq->gap_count = 0;
+            seq->gap_next = 0;
+            had_previous = false;
+        }
+    }
+
+    if (had_previous) {
+        seq->gaps[seq->gap_next] = gap;
+        seq->gap_next = (uint8_t)((seq->gap_next + 1u) %
+                                  (sizeof(seq->gaps) / sizeof(seq->gaps[0])));
+        if (seq->gap_count < sizeof(seq->gaps) / sizeof(seq->gaps[0])) {
+            seq->gap_count++;
+        }
+
+        uint64_t total = 0;
+        for (uint32_t i = 0; i < seq->gap_count; i++) {
+            total += seq->gaps[i];
+        }
+        uint32_t average_us = (uint32_t)(total / seq->gap_count);
+
+        /* Microseconds to frames per internal tick, in 32.32. At 16 kHz a
+         * frame is 62.5 us, so frames = us * 2 / 125, and the whole division
+         * is done once here rather than per tick. */
+        uint64_t pulse_frames_q32 =
+            (((uint64_t)average_us * 2u) << 32) / 125u;
+        uint64_t measured = pulse_frames_q32 / per_pulse;
+
+        /* Held inside the tempo range the song model allows. A period outside
+         * it is not a tempo this instrument can play, and letting it through
+         * would put the sequencer somewhere its own arithmetic never goes. */
+        uint64_t slowest = ((uint64_t)SAMPLE_RATE * 60u << 32) /
+                           ((uint64_t)BPM_MIN * PPQN);
+        uint64_t fastest = ((uint64_t)SAMPLE_RATE * 60u << 32) /
+                           ((uint64_t)BPM_MAX * PPQN);
+        if (measured > slowest) {
+            measured = slowest;
+        }
+        if (measured < fastest) {
+            measured = fastest;
+        }
+        seq->ext_per_tick_q32 = measured;
+    }
+
+    seq->ext_pulses++;
+
+    /* A master sending clock to a stopped transport means start. */
+    if (!seq->running) {
+        seq_start(seq);
+        seq->external = true;
+        return;
+    }
+    seq->external = true;
+    if (seq->ext_per_tick_q32 == 0) {
+        return; /* first pulse: latched, but no period measured yet */
+    }
+
+    /* --- pull the phase onto the pulse ---------------------------------- */
+
+    uint64_t pulse_frame;
+    if (!audio_frame_at_time_us(at_us, &pulse_frame)) {
+        return;
+    }
+
+    /* Which tick the schedule would have been on when that frame played.
+     * next_frame is where next_tick is due, so stepping back from there says
+     * where the pulse fell relative to the grid. */
+    int64_t from_next = (int64_t)pulse_frame - (int64_t)seq->next_frame;
+    int64_t per_tick_frames = (int64_t)(seq->ext_per_tick_q32 >> 32);
+    if (per_tick_frames <= 0) {
+        return;
+    }
+    int64_t ticks_from_next = from_next / per_tick_frames;
+    int64_t tick_at_pulse = (int64_t)seq->next_tick + ticks_from_next;
+
+    /* Snap to the nearest pulse boundary. The clock free-runs at the measured
+     * period between pulses, so this is a correction of a tick or two rather
+     * than an audible jump. */
+    int64_t remainder = tick_at_pulse % (int64_t)per_pulse;
+    if (remainder < 0) {
+        remainder += per_pulse;
+    }
+    int64_t snapped = tick_at_pulse - remainder;
+    if (remainder * 2 >= (int64_t)per_pulse) {
+        snapped += per_pulse;
+    }
+
+    /* Re-anchor so that `snapped` sits exactly on the pulse, and next_tick
+     * follows from it. Only the schedule ahead moves: ticks already resolved
+     * have had their hits handed to the mixer on frames that cannot be taken
+     * back, which is why this adjusts next_frame rather than start_frame. */
+    int64_t ahead = (int64_t)seq->next_tick - snapped;
+    int64_t anchored = (int64_t)pulse_frame + ahead * per_tick_frames;
+
+    /* A correction larger than a whole pulse is not a correction. It means the
+     * measurement or the master jumped, and following it would fire a burst of
+     * catch-up ticks or stall for one. Take the tempo and leave the phase. */
+    int64_t move = anchored - (int64_t)seq->next_frame;
+    int64_t limit = per_tick_frames * (int64_t)per_pulse;
+    if (move > limit || move < -limit) {
+        return;
+    }
+    if (anchored < 0) {
+        return;
+    }
+    seq->next_frame = (uint64_t)anchored;
+    seq->next_frac = 0;
+}
+
+bool seq_set_sync_ppqn(struct seq *seq, uint32_t ppqn) {
+    /* Only rates that divide PPQN, so a pulse always lands on a tick. 24/5 is
+     * 4.8 ticks and every fifth pulse would sit somewhere the sequencer never
+     * visits. */
+    if (ppqn == 1 || ppqn == 2 || ppqn == 4 || ppqn == 24) {
+        seq->sync_ppqn = (uint8_t)ppqn;
+        return true;
+    }
+    return false;
 }
 
 int32_t seq_effective_offset(int32_t offset, uint8_t strength) {
@@ -107,6 +274,14 @@ void seq_start(struct seq *seq) {
 }
 
 void seq_stop(struct seq *seq) {
+    /* Back to the song's own tempo. engine/clock.py latches to external on the
+     * first pulse and holds it "until the transport stops" - so this is where
+     * it lets go, and the badge plays at its own tempo again rather than at
+     * whatever a master that has since been unplugged was doing. */
+    seq->external = false;
+    seq->last_pulse_us = 0;
+    seq->gap_count = 0;
+    seq->gap_next = 0;
     seq->running = false;
     audio_stop_all();
 }
@@ -135,7 +310,10 @@ void seq_update(struct seq *seq) {
 
     const struct song *song = seq->song;
     uint64_t now = audio_frames();
-    uint64_t per_tick = frames_per_tick_q32(song);
+    /* While externally synced the period is measured, not derived from the
+     * song's tempo - that is the whole of what being synced means. */
+    uint64_t per_tick = seq->external ? seq->ext_per_tick_q32
+                                      : frames_per_tick_q32(song);
     uint32_t whole_per_tick = (uint32_t)(per_tick >> 32);
     uint32_t frac_per_tick = (uint32_t)per_tick;
     uint32_t ticks_per_step = song_ticks_per_step(song);
@@ -152,6 +330,16 @@ void seq_update(struct seq *seq) {
         uint64_t tick = seq->next_tick;
         seq->tick = tick;
         seq->next_tick++;
+
+        /* Sync out, scheduled for when this tick is *heard* rather than sent
+         * now. `tick_frame` is up to a lookahead in the future - that is what
+         * lets the mixer place a hit on an exact frame - and a pulse sent at
+         * this moment would arrive sixteen milliseconds before the beat it is
+         * supposed to mark. */
+        uint32_t per_pulse = PPQN / (seq->sync_ppqn ? seq->sync_ppqn : 1);
+        if (tick % per_pulse == 0) {
+            sync_pulse_at_frame(tick_frame);
+        }
 
         /* Accumulate the next boundary rather than multiplying out to it.
          *

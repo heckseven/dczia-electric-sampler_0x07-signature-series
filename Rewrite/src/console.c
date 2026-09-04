@@ -38,12 +38,20 @@ void console_begin(const char *name) {
     watchdog_enable(CONSOLE_WATCHDOG_MS, false);
 }
 
+static void (*command_hook)(char);
+
+void console_set_command_hook(void (*hook)(char)) {
+    command_hook = hook;
+}
+
 void console_pump(void) {
     watchdog_update();
     int c = getchar_timeout_us(0);
     while (c != PICO_ERROR_TIMEOUT) {
         if (c == 'B') {
             reset_usb_boot(0, 0);
+        } else if (command_hook != NULL) {
+            command_hook((char)c);
         }
         c = getchar_timeout_us(0);
     }

@@ -150,14 +150,19 @@ void menu_turn(struct menu *menu, int32_t delta) {
         return;
     }
     if (level->screen == MENU_NAME) {
-        int32_t next = (int32_t)menu->cursor + delta;
-        if (next < 0) {
-            next = 0;
+        /* Select picks the character, which is what it picks on every other
+         * screen here and what engine/naming.py's single knob picks too.
+         *
+         * Wraps, unlike a list. There is no "how far through am I" to lose,
+         * and stopping at Z would mean turning back thirty-eight clicks to
+         * reach a space. */
+        int32_t index =
+            (int32_t)charset_index(menu->name[menu->cursor]) + delta;
+        index %= (int32_t)CHARSET_COUNT;
+        if (index < 0) {
+            index += (int32_t)CHARSET_COUNT;
         }
-        if (next >= MENU_NAME_MAX) {
-            next = MENU_NAME_MAX - 1;
-        }
-        menu->cursor = (uint8_t)next;
+        menu->name[menu->cursor] = CHARSET[index];
         return;
     }
     if (level->count == 0) {
@@ -196,15 +201,17 @@ void menu_turn_volume(struct menu *menu, int32_t delta) {
     if (level == NULL || level->screen != MENU_NAME) {
         return;
     }
-    /* Wraps, unlike a list. There is no "how far through the alphabet am I"
-     * to lose, and stopping at Z would mean turning back thirty-eight clicks
-     * to reach a space. */
-    int32_t index = (int32_t)charset_index(menu->name[menu->cursor]) + delta;
-    index %= (int32_t)CHARSET_COUNT;
-    if (index < 0) {
-        index += (int32_t)CHARSET_COUNT;
+    /* Moves the cursor, and stops at both ends rather than wrapping. A name
+     * has real ends and running off one to arrive at the other loses the
+     * player's place in a way a ring of letters does not. */
+    int32_t next = (int32_t)menu->cursor + delta;
+    if (next < 0) {
+        next = 0;
     }
-    menu->name[menu->cursor] = CHARSET[index];
+    if (next >= MENU_NAME_MAX) {
+        next = MENU_NAME_MAX - 1;
+    }
+    menu->cursor = (uint8_t)next;
 }
 
 void menu_set_name(struct menu *menu, const char *name) {

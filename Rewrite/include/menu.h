@@ -6,9 +6,14 @@
  *
  * One screen is not a list. Saving under a new name genuinely needs characters
  * that are not already on the card, and the two knobs turn out to be enough
- * without a character-picker list: Select moves along the name, Volume changes
- * the letter under the cursor. Two knobs, two axes, and Play and Function keep
+ * without a character-picker list: Select picks the letter, Volume moves the
+ * cursor along the name. Two knobs, two axes, and Play and Function keep
  * meaning what they mean everywhere else.
+ *
+ * Select picks the letter rather than moving the cursor because that is what
+ * Select does on every other screen here, and what engine/naming.py's single
+ * knob does too. The cursor is the addition; it goes on the knob that was
+ * otherwise idle.
  *
  * Lists come from the card as they are drawn rather than being read into
  * memory. /samples holds 85 files and could hold hundreds; a menu that loaded
@@ -92,9 +97,9 @@ bool menu_is_open(const struct menu *menu);
 
 void menu_turn(struct menu *menu, int32_t delta);
 
-/* The other knob. Only the name screen uses it - on a list there is nothing for
- * a second axis to mean, and giving it one would be a control the player has to
- * discover is inert everywhere else. */
+/* The other knob: moves the cursor on the name screen, and nothing anywhere
+ * else - on a list there is no second axis to mean anything, and giving it one
+ * would be a control the player has to discover is inert. */
 void menu_turn_volume(struct menu *menu, int32_t delta);
 
 /* Seed the name screen, so re-saving an already-named song is a click rather

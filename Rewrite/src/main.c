@@ -24,6 +24,8 @@
 #include "song.h"
 #include "prefs.h"
 #include "songfile.h"
+#include "anim.h"
+#include "pixels.h"
 #include "sync.h"
 #include "sd.h"
 
@@ -80,6 +82,11 @@ static void build_song_path(void);
 /* Typed commands, for measuring things that need the badge doing something but
  * do not need a person doing it. */
 static volatile char console_command;
+
+/* Which animation the strip falls back to when nothing is happening. At file
+ * scope because the menu picks it and the render loop reads it, and those are
+ * two different functions. */
+static enum anim idle_anim = ANIM_PULSE;
 
 static void on_console_command(char c) {
     console_command = c;
@@ -227,6 +234,14 @@ static void handle_menu_action(enum menu_action action) {
         break;
     }
 
+    case MENU_ACTION_SET_ANIM:
+        /* Set by handle_menu_action, read by the render below - which is why
+         * idle_anim is a file-scope variable rather than a local: the menu
+         * hands back a choice and cannot reach into the loop that draws. */
+        idle_anim = (enum anim)menu.anim;
+        say(true, 700, "LIGHTS", anim_name(idle_anim));
+        break;
+
     case MENU_ACTION_SET_SAMPLE: {
         strcpy(path, "/samples/");
         strncat(path, menu.chosen, FAT_NAME_MAX - 1);
@@ -359,6 +374,7 @@ int main(void) {
     display_init();
     input_init();
     sync_init();
+    pixels_init();
     console_set_command_hook(on_console_command);
     menu_close(&menu);
     printf("RESULT case=input note=pads 0-7 play, Function+pad selects, "
@@ -916,6 +932,56 @@ int main(void) {
 
             pages_written += display_flush();
             next_frame = make_timeout_time_ms(33);
+
+            /* --- the strip -------------------------------------------------
+             *
+             * Two things to show and only ten pixels, so they take turns: the
+             * pads say what the instrument is doing whenever it is doing
+             * something, and the animation has the strip the rest of the time.
+             * Showing both at once would mean neither read clearly. */
+            struct rgb strip[NEOPIXEL_COUNT];
+            bool busy = seq.running || sounding != 0 || held_pad() >= 0 ||
+                        input_held(KEY_FUNCTION) || input_held(KEY_PLAY);
+            if (busy) {
+                anim_render(ANIM_OFF, 0, 0, strip);
+                for (uint8_t t = 0; t < TRACK_COUNT; t++) {
+                    struct rgb c = {0, 0, 0};
+                    if (seq_mode) {
+                        uint32_t step = page * STEPS_PER_PAGE + t;
+                        if (seq.running && seq_step_of(&seq, selected) == step) {
+                            c = (struct rgb){255, 0, 255}; /* PLAYHEAD */
+                        } else if (song_is_on(&song, selected, step)) {
+                            c = (struct rgb){28, 28, 28}; /* STEP_ON */
+                        }
+                    } else if ((sounding >> t) & 1u) {
+                        c = (struct rgb){255, 255, 255}; /* TRACK_FLASH */
+                    } else if (song.muted[t]) {
+                        c = (struct rgb){40, 0, 0}; /* TRACK_MUTED */
+                    } else if (t == selected) {
+                        c = (struct rgb){255, 0, 255}; /* TRACK_SELECTED */
+                    } else if (song.kit[t][0] != '\0') {
+                        c = (struct rgb){28, 0, 28}; /* TRACK_LOADED */
+                    }
+                    strip[PIXEL_FOR_PAD[t]] = c;
+                }
+                /* Play: what the transport is doing. Function: which view, or
+                 * that the clock is somebody else's. */
+                strip[PIXEL_PLAY] = seq.running ? (struct rgb){0, 120, 0}
+                                                : (struct rgb){255, 0, 255};
+                if (armed) {
+                    strip[PIXEL_PLAY] = (struct rgb){255, 0, 0};
+                }
+                strip[PIXEL_FUNCTION] =
+                    seq.external ? (struct rgb){60, 0, 60}
+                                 : (seq_mode ? (struct rgb){255, 255, 255}
+                                             : (struct rgb){255, 0, 255});
+            } else {
+                anim_render(idle_anim, seq_display_tick(&seq), 255, strip);
+            }
+            for (uint32_t i = 0; i < NEOPIXEL_COUNT; i++) {
+                pixels_set(i, strip[i].r, strip[i].g, strip[i].b);
+            }
+            pixels_show();
         }
 
         if (time_reached(next_report)) {
@@ -923,7 +989,7 @@ int main(void) {
                    "worst_cycles=%lu peak=%lu hits=%lu selected=%u "
                    "pages=%lu run=%d mode=%s tick=%lu seqhits=%lu "
                    "clock=%s bpm=%lu syncin=%lu syncbad=%lu "
-                   "syncout=%lu syncerr=%lu syncmiss=%lu\n",
+                   "syncout=%lu syncerr=%lu syncmiss=%lu pixframes=%lu\n",
                    (unsigned long)audio_blocks(),
                    (unsigned long)audio_underruns(),
                    (unsigned long)audio_worst_cycles(),
@@ -938,7 +1004,8 @@ int main(void) {
                    (unsigned long)sync_pulses_rejected(),
                    (unsigned long)sync_pulses_out(),
                    (unsigned long)sync_out_worst_error_us(),
-                   (unsigned long)sync_pulses_missed());
+                   (unsigned long)sync_pulses_missed(),
+                   (unsigned long)pixels_frames_sent());
             next_report = make_timeout_time_ms(2000);
         }
     }

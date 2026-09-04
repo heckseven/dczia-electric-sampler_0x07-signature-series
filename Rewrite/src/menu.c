@@ -6,6 +6,7 @@
 #include "display.h"
 #include "font.h"
 #include "menu.h"
+#include "anim.h"
 #include "songfile.h"
 
 #define SAMPLE_DIR "/samples"
@@ -33,6 +34,7 @@ static const char *const ROOT_ITEMS[] = {
     "LOAD SONG",
     "SAVE SONG",
     "TRACK SAMPLE",
+    "LIGHTS",
 };
 #define ROOT_COUNT (sizeof(ROOT_ITEMS) / sizeof(ROOT_ITEMS[0]))
 
@@ -106,6 +108,8 @@ static uint32_t items_on(enum menu_screen screen) {
     switch (screen) {
     case MENU_ROOT:
         return ROOT_COUNT;
+    case MENU_ANIM:
+        return ANIM_COUNT;
     case MENU_TRACKS:
         return TRACK_COUNT;
     default:
@@ -242,8 +246,10 @@ enum menu_action menu_enter(struct menu *menu) {
             push(menu, MENU_SONGS);
         } else if (level->index == 1) {
             push(menu, MENU_NAME);
-        } else {
+        } else if (level->index == 2) {
             push(menu, MENU_TRACKS);
+        } else {
+            push(menu, MENU_ANIM);
         }
         return MENU_ACTION_NONE;
 
@@ -259,6 +265,11 @@ enum menu_action menu_enter(struct menu *menu) {
         menu->track = (uint8_t)level->index;
         push(menu, MENU_SAMPLES);
         return MENU_ACTION_NONE;
+
+    case MENU_ANIM:
+        menu->anim = (uint8_t)level->index;
+        menu_close(menu);
+        return MENU_ACTION_SET_ANIM;
 
     case MENU_SAMPLES:
         if (nth_file(SAMPLE_DIR, level->index, menu->chosen,
@@ -308,6 +319,10 @@ static void label_for(enum menu_screen screen, uint32_t index, char *out,
     case MENU_TRACKS:
         snprintf(out, out_size, "TRACK %lu", (unsigned long)(index + 1));
         return;
+    case MENU_ANIM:
+        strncpy(out, anim_name((enum anim)index), out_size - 1);
+        out[out_size - 1] = '\0';
+        return;
     default: {
         const char *directory = screen_directory(screen);
         if (directory == NULL || !nth_file(directory, index, out, out_size)) {
@@ -328,6 +343,8 @@ static const char *title_for(enum menu_screen screen) {
         return "WHICH TRACK";
     case MENU_SAMPLES:
         return "SAMPLE";
+    case MENU_ANIM:
+        return "LIGHTS";
     default:
         return "";
     }

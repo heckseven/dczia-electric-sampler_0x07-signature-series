@@ -38,6 +38,7 @@ enum menu_screen {
     MENU_TRACKS,  /* pick which track to give a sample to */
     MENU_SAMPLES, /* pick the sample */
     MENU_NAME,    /* type a name for the song being saved */
+    MENU_ANIM,    /* pick what the light strip does when nothing is happening */
 };
 
 /* Long enough for a name worth typing on two knobs, and short enough that the
@@ -52,6 +53,7 @@ enum menu_action {
     MENU_ACTION_LOAD_SONG,
     MENU_ACTION_SAVE_SONG,
     MENU_ACTION_SET_SAMPLE,
+    MENU_ACTION_SET_ANIM,
 };
 
 /* How deep the screens nest. Four is more than the current tree needs and is
@@ -79,6 +81,7 @@ struct menu {
     bool window_valid;
 
     uint8_t track; /* which track a sample is being chosen for */
+    uint8_t anim;  /* which animation was picked */
 
     /* The name being typed, and where the cursor sits in it. Held padded with
      * spaces to its full width rather than NUL-terminated early: the cursor has

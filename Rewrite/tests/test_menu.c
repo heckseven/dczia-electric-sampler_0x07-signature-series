@@ -73,7 +73,7 @@ static void test_root_and_back(void) {
     menu_open(&menu);
     check(menu_is_open(&menu), "opens");
     check(menu.stack[menu.depth-1].screen == MENU_ROOT, "starts at the root");
-    check(menu.stack[menu.depth-1].count == 3, "root has three items");
+    check(menu.stack[menu.depth-1].count == 4, "root has four items");
 
     menu_back(&menu);
     check(!menu_is_open(&menu), "back from the root closes it");

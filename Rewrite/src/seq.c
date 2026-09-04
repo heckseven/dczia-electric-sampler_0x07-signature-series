@@ -63,6 +63,21 @@ void seq_init(struct seq *seq, struct song *song) {
     seq->sync_ppqn = SYNC_PPQN_DEFAULT;
 }
 
+uint64_t seq_display_tick(const struct seq *seq) {
+    if (seq->running) {
+        return seq->tick;
+    }
+    /* From the frame counter, at whatever tempo is current. The same
+     * arithmetic as seq_now, and for the same reason: multiplying by
+     * bpm * PPQN and dividing by rate * 60 cannot overflow, where dividing by
+     * the 32.32 period would after 27 hours. */
+    uint64_t bpm = seq_effective_bpm(seq);
+    if (bpm == 0) {
+        bpm = BPM_DEFAULT;
+    }
+    return (audio_frames() * bpm * PPQN) / ((uint64_t)SAMPLE_RATE * 60u);
+}
+
 uint32_t seq_effective_bpm(const struct seq *seq) {
     if (!seq->external || seq->ext_per_tick_q32 == 0) {
         return seq->song->bpm;

@@ -108,6 +108,16 @@ void seq_external_pulse(struct seq *seq, uint32_t at_us);
  * measured one while external. Whole BPM, for the display. */
 uint32_t seq_effective_bpm(const struct seq *seq);
 
+/* A tick for anything that should move with the music but must not stop when
+ * the music does - the light strip.
+ *
+ * The transport's own tick while it is running, and a free-running one at the
+ * current tempo otherwise. engine/animation.py's whole point is that the
+ * animations are a function of the tick rather than of a wall clock; keeping
+ * that true while stopped means the strip is still at the tempo when the
+ * transport starts, rather than jumping to catch up. */
+uint64_t seq_display_tick(const struct seq *seq);
+
 /* How far from its grid line a hit actually plays, once strength is applied.
  * Exposed so it can be tested on its own, and so anything drawing a step can
  * show where it will sound rather than where it was struck. */

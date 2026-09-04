@@ -37,9 +37,12 @@ add_executable(rt
     src/songfile.c
     src/prefs.c
     src/sync.c
+    src/pixels.c
+    src/anim.c
 )
 target_include_directories(rt PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 pico_generate_pio_header(rt ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)
+pico_generate_pio_header(rt ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio)
 target_link_libraries(rt
     pico_stdlib
     pico_multicore

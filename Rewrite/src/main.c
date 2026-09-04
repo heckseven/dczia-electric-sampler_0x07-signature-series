@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "hardware/clocks.h"
+#include "pico/bootrom.h"
 #include "pico/stdlib.h"
 
 #include "audio.h"
@@ -374,6 +375,21 @@ int main(void) {
 
     display_init();
     input_init();
+
+    /* The way back, which must not depend on USB.
+     *
+     * Everything else about recovering this badge - flash.py's enter_bootsel,
+     * the console's 'B' - goes down the CDC serial port. That is fine until the
+     * thing being changed is the USB descriptor itself, at which point a
+     * mistake costs a device that runs, ignores the host, and cannot be told to
+     * do anything about it.
+     *
+     * Holding Function at power-on goes straight to the bootloader instead. No
+     * USB, no console, no firmware: just a pin read and a jump. */
+    if (input_read_key_now(KEY_FUNCTION)) {
+        reset_usb_boot(0, 0);
+    }
+
     sync_init();
     pixels_init();
     midi_init();

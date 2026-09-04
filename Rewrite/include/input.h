@@ -38,6 +38,13 @@
  * deliberate double-tap still reads as two hits. */
 #define KEY_LOCKOUT_MS 8
 
+/* Is this key held right now, read directly rather than through the queue.
+ *
+ * For the one question that has to be answered before the firmware is properly
+ * running: whether to go straight back to the bootloader. See the note at its
+ * only caller. */
+bool input_read_key_now(uint8_t key);
+
 enum input_event_kind {
     INPUT_NONE = 0,
     INPUT_KEY_DOWN,

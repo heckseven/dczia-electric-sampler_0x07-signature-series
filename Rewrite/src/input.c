@@ -97,6 +97,19 @@ void input_init(void) {
     encoder_init(&volume_enc);
 }
 
+bool input_read_key_now(uint8_t key) {
+    if (key >= KEY_COUNT) {
+        return false;
+    }
+    uint32_t row = key / KEY_COLS;
+    uint32_t col = key % KEY_COLS;
+    gpio_put(PIN_KEY_ROWS[row], 1);
+    busy_wait_us(3);
+    bool pressed = gpio_get(PIN_KEY_COLS[col]);
+    gpio_put(PIN_KEY_ROWS[row], 0);
+    return pressed;
+}
+
 void input_poll(void) {
     uint32_t now = timer_hw->timerawl / 1000u; /* milliseconds */
 

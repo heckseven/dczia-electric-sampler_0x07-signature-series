@@ -56,6 +56,20 @@ bool audio_frame_at_time_us(uint32_t when_us, uint64_t *frame_out) {
     return true;
 }
 
+static uint32_t midi_notes_sent;
+static uint32_t midi_clocks;
+
+void midi_send_note_on(uint8_t note, uint8_t velocity) {
+    (void)note;
+    (void)velocity;
+    midi_notes_sent++;
+}
+
+void midi_clock_at_frame(uint64_t frame) {
+    (void)frame;
+    midi_clocks++;
+}
+
 void sync_pulse_at_frame(uint64_t frame) {
     if (sync_count < 512) {
         sync_at[sync_count++] = frame;
@@ -413,7 +427,7 @@ static void test_external_sync_takes_the_tempo(void) {
     uint32_t gap = pulse_gap_us(100, 2);
     uint32_t at = 1000000;
     for (uint32_t i = 0; i < 8; i++) {
-        seq_external_pulse(&seq, at);
+        seq_external_pulse(&seq, at, 2);
         at += gap;
         fake_frames = ((uint64_t)at * 2u) / 125u;
     }
@@ -446,7 +460,7 @@ static void test_external_sync_survives_a_bad_cable(void) {
     uint32_t gap = pulse_gap_us(120, 2);
     uint32_t at = 1000000;
     for (uint32_t i = 0; i < 8; i++) {
-        seq_external_pulse(&seq, at);
+        seq_external_pulse(&seq, at, 2);
         at += gap;
         fake_frames = ((uint64_t)at * 2u) / 125u;
     }
@@ -456,8 +470,8 @@ static void test_external_sync_survives_a_bad_cable(void) {
     /* A glitch: two edges a hair apart. Rejected as noise rather than read as
      * a tempo of several thousand BPM. */
     uint32_t before = seq.ext_rejected;
-    seq_external_pulse(&seq, at);
-    seq_external_pulse(&seq, at + 500); /* half a millisecond later */
+    seq_external_pulse(&seq, at, 2);
+    seq_external_pulse(&seq, at + 500, 2); /* half a millisecond later */
     check(seq.ext_rejected > before, "a gap too short to be music is refused");
     check(seq_effective_bpm(&seq) >= 119 && seq_effective_bpm(&seq) <= 121,
           "and the tempo already measured is kept");
@@ -468,7 +482,7 @@ static void test_external_sync_survives_a_bad_cable(void) {
      * has to survive it. */
     at += 2500000;
     fake_frames = ((uint64_t)at * 2u) / 125u;
-    seq_external_pulse(&seq, at);
+    seq_external_pulse(&seq, at, 2);
     check(seq_effective_bpm(&seq) >= 119 && seq_effective_bpm(&seq) <= 121,
           "a pause is a restart, not a tempo of 12 BPM");
     check(seq.running, "and the transport is still running");
@@ -477,14 +491,14 @@ static void test_external_sync_survives_a_bad_cable(void) {
     before = seq.ext_rejected;
     at += 4000000;
     fake_frames = ((uint64_t)at * 2u) / 125u;
-    seq_external_pulse(&seq, at);
+    seq_external_pulse(&seq, at, 2);
     check(seq.ext_rejected > before, "a gap past the outer bound is refused");
 
     /* Back to normal, and it re-synchronises. */
     for (uint32_t i = 0; i < 8; i++) {
         at += gap;
         fake_frames = ((uint64_t)at * 2u) / 125u;
-        seq_external_pulse(&seq, at);
+        seq_external_pulse(&seq, at, 2);
     }
     uint32_t again = seq_effective_bpm(&seq);
     check(again >= 119 && again <= 121, "and picks the master back up");
@@ -500,7 +514,7 @@ static void test_a_pulse_starts_a_stopped_transport(void) {
     seq_init(&seq, &song);
     fake_frames = 1000;
     check(!seq.running, "stopped to begin with");
-    seq_external_pulse(&seq, 1000000);
+    seq_external_pulse(&seq, 1000000, 2);
     check(seq.running, "a master sending clock starts the transport");
     check(seq.external, "on the external clock");
 }

@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "audio.h"
+#include "midi.h"
 #include "sync.h"
 #include "seq.h"
 
@@ -89,9 +90,24 @@ uint32_t seq_effective_bpm(const struct seq *seq) {
     return (uint32_t)((bpm + 1) / 2);
 }
 
-void seq_external_pulse(struct seq *seq, uint32_t at_us) {
-    uint32_t ppqn = seq->sync_ppqn ? seq->sync_ppqn : 1;
+void seq_external_pulse(struct seq *seq, uint32_t at_us, uint32_t ppqn) {
+    if (ppqn == 0) {
+        ppqn = 1;
+    }
     uint32_t per_pulse = PPQN / ppqn; /* internal ticks between pulses */
+    if (per_pulse == 0) {
+        per_pulse = 1;
+    }
+
+    /* A different master, or the first pulse from this one. The history was
+     * measured against another rate and means nothing now. */
+    if (seq->ext_ppqn != ppqn) {
+        seq->ext_ppqn = (uint8_t)ppqn;
+        seq->gap_count = 0;
+        seq->gap_next = 0;
+        seq->last_pulse_us = 0;
+        seq->ext_per_tick_q32 = 0;
+    }
 
     uint32_t gap = at_us - seq->last_pulse_us;
     bool had_previous = (seq->last_pulse_us != 0);
@@ -297,6 +313,7 @@ void seq_stop(struct seq *seq) {
     seq->last_pulse_us = 0;
     seq->gap_count = 0;
     seq->gap_next = 0;
+    seq->ext_ppqn = 0;
     seq->running = false;
     audio_stop_all();
 }
@@ -354,6 +371,14 @@ void seq_update(struct seq *seq) {
         uint32_t per_pulse = PPQN / (seq->sync_ppqn ? seq->sync_ppqn : 1);
         if (tick % per_pulse == 0) {
             sync_pulse_at_frame(tick_frame);
+        }
+
+        /* MIDI clock is 24 a quarter note, which is exactly this tick rate -
+         * so every tick is a clock byte. Scheduled by frame for the same
+         * reason the sync pulse is. Not sent while following someone else's
+         * clock: echoing a master back at itself is how a loop starts. */
+        if (!seq->external) {
+            midi_clock_at_frame(tick_frame);
         }
 
         /* Accumulate the next boundary rather than multiplying out to it.
@@ -431,6 +456,13 @@ void seq_update(struct seq *seq) {
                 }
 
                 audio_trigger_at_frame((uint8_t)t, tick_frame, (int16_t)gain);
+                /* 36 + track, the General MIDI drum range kick upward, as
+                 * sequencer.py's _send_midi. Sent now rather than scheduled:
+                 * a note is a thing another instrument will play at its own
+                 * latency anyway, and the lookahead is inside the slop any
+                 * two devices have between them. */
+                midi_send_note_on((uint8_t)(MIDI_NOTE_BASE + t),
+                                  (uint8_t)velocity);
                 seq->position[t] = step;
                 seq->last_hit_frame = tick_frame;
                 seq->hits++;

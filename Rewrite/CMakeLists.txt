@@ -39,6 +39,8 @@ add_executable(rt
     src/sync.c
     src/pixels.c
     src/anim.c
+    src/midi.c
+    src/midi_port.c
 )
 target_include_directories(rt PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 pico_generate_pio_header(rt ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)
@@ -52,6 +54,7 @@ target_link_libraries(rt
     hardware_i2c
     hardware_spi
     hardware_watchdog
+    hardware_uart
 )
 # CDC only. The badge's UART pins are the MIDI jack, and stdio on them would put
 # debug text down a MIDI cable.

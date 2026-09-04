@@ -55,6 +55,13 @@ struct seq {
     uint8_t gap_next;
     uint32_t last_pulse_us;
 
+    /* The rate the *current* master is sending at, which is not always the
+     * jack's setting: MIDI clock is fixed at 24 by the standard while the
+     * analog input is whatever the player selected. Held separately so both
+     * can drive the same clock without either knowing about the other, and so
+     * a change of master throws away a history measured against the old rate. */
+    uint8_t ext_ppqn;
+
     uint32_t ext_pulses;   /* accepted */
     uint32_t ext_rejected; /* outside the range a tempo can be */
 
@@ -102,7 +109,7 @@ bool seq_set_sync_ppqn(struct seq *seq, uint32_t ppqn);
  * Latches the clock to external, measures the period, and pulls the phase onto
  * the pulse. Starts the transport if it was stopped, which is what a master
  * sending clock means. */
-void seq_external_pulse(struct seq *seq, uint32_t at_us);
+void seq_external_pulse(struct seq *seq, uint32_t at_us, uint32_t ppqn);
 
 /* The tempo actually being played, which is the song's while internal and the
  * measured one while external. Whole BPM, for the display. */

@@ -20,6 +20,7 @@
 #include "input.h"
 #include "kit.h"
 #include "menu.h"
+#include "midi.h"
 #include "seq.h"
 #include "song.h"
 #include "prefs.h"
@@ -375,6 +376,7 @@ int main(void) {
     input_init();
     sync_init();
     pixels_init();
+    midi_init();
     console_set_command_hook(on_console_command);
     menu_close(&menu);
     printf("RESULT case=input note=pads 0-7 play, Function+pad selects, "
@@ -483,7 +485,50 @@ int main(void) {
          * pass books ticks against it. */
         uint32_t pulse_us;
         while (sync_take_pulse(&pulse_us)) {
-            seq_external_pulse(&seq, pulse_us);
+            seq_external_pulse(&seq, pulse_us, seq.sync_ppqn);
+        }
+
+        midi_pump();
+
+        /* And MIDI, which is a clock too - at 24 a quarter note, told to the
+         * transport explicitly because the jack's rate and the standard's can
+         * differ and only one of them is a cable. */
+        struct midi_message incoming;
+        while (midi_receive(&incoming)) {
+            switch (incoming.kind) {
+            case MIDI_CLOCK:
+                seq_external_pulse(&seq, time_us_32(), MIDI_CLOCK_PPQN);
+                break;
+            case MIDI_START:
+                if (!seq.running) {
+                    seq_start(&seq);
+                }
+                break;
+            case MIDI_CONTINUE:
+                if (!seq.running) {
+                    seq_start(&seq);
+                }
+                break;
+            case MIDI_STOP:
+                if (seq.running) {
+                    seq_stop(&seq);
+                }
+                break;
+            case MIDI_NOTE_ON: {
+                /* 36 + track, the range this firmware sends on. Anything
+                 * outside it belongs to another instrument on the same
+                 * cable. */
+                int32_t track = (int32_t)incoming.data1 - MIDI_NOTE_BASE;
+                if (track >= 0 && track < TRACK_COUNT &&
+                    !song.muted[track]) {
+                    audio_trigger((uint8_t)track);
+                    hits++;
+                }
+                break;
+            }
+            default:
+                break;
+            }
         }
 
         seq_update(&seq);
@@ -586,6 +631,9 @@ int main(void) {
                          * after it sounded. */
                         if (!song.muted[event.key]) {
                             audio_trigger(event.key);
+                            midi_send_note_on(
+                                (uint8_t)(MIDI_NOTE_BASE + event.key),
+                                VELOCITY_DEFAULT);
                             hits++;
                         }
 
@@ -651,6 +699,16 @@ int main(void) {
                 if (event.key == KEY_PLAY && !play_used &&
                     !menu_is_open(&menu)) {
                     seq_toggle(&seq);
+                    /* Tell whatever else is on the cable. Only when this badge
+                     * is the one keeping time - a slave echoing start and stop
+                     * back at its master is how a loop starts. */
+                    if (!seq.external) {
+                        if (seq.running) {
+                            midi_send_start();
+                        } else {
+                            midi_send_stop();
+                        }
+                    }
                     printf("RESULT case=transport running=%d bpm=%u div=%s\n",
                            seq.running ? 1 : 0, song.bpm,
                            song_division_name(&song));
@@ -989,7 +1047,8 @@ int main(void) {
                    "worst_cycles=%lu peak=%lu hits=%lu selected=%u "
                    "pages=%lu run=%d mode=%s tick=%lu seqhits=%lu "
                    "clock=%s bpm=%lu syncin=%lu syncbad=%lu "
-                   "syncout=%lu syncerr=%lu syncmiss=%lu pixframes=%lu\n",
+                   "syncout=%lu syncerr=%lu syncmiss=%lu pixframes=%lu "
+                   "midiin=%lu midiout=%lu midiclk=%lu mididrop=%lu\n",
                    (unsigned long)audio_blocks(),
                    (unsigned long)audio_underruns(),
                    (unsigned long)audio_worst_cycles(),
@@ -1005,7 +1064,11 @@ int main(void) {
                    (unsigned long)sync_pulses_out(),
                    (unsigned long)sync_out_worst_error_us(),
                    (unsigned long)sync_pulses_missed(),
-                   (unsigned long)pixels_frames_sent());
+                   (unsigned long)pixels_frames_sent(),
+                   (unsigned long)midi_bytes_in(),
+                   (unsigned long)midi_bytes_out(),
+                   (unsigned long)midi_clocks_sent(),
+                   (unsigned long)midi_clocks_dropped());
             next_report = make_timeout_time_ms(2000);
         }
     }

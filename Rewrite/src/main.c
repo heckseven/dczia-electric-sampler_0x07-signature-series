@@ -311,7 +311,7 @@ int main(void) {
     input_init();
     menu_close(&menu);
     printf("RESULT case=input note=pads 0-7 play, Function+pad selects, "
-           "Select click opens the menu, Play backs out\n");
+           "Select click opens the menu, Play enters, Function backs out\n");
 
 
     /* Something to hear on the first press of Play, when the card had nothing. A four-on-the-floor kick

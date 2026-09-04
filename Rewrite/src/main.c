@@ -19,6 +19,7 @@
 #include "fat.h"
 #include "input.h"
 #include "kit.h"
+#include "menu.h"
 #include "seq.h"
 #include "song.h"
 #include "prefs.h"
@@ -71,6 +72,35 @@ static void keep_time(void) {
  * player has a song open from the Python it is that one, because the name comes
  * out of the settings file both firmwares share. */
 static char song_path[PREFS_NAME_MAX + 24];
+static struct menu menu;
+
+/* Reload every track from the song's kit.
+ *
+ * The arena is a bump allocator, so one track's sample cannot be swapped in
+ * isolation - the space the old one held is not returnable. Resetting and
+ * reloading all eight costs about a tenth of a second and is the honest
+ * operation; anything cleverer would be a general allocator, which is the thing
+ * this design exists without. */
+static uint32_t reload_kit(struct song *song, const char *const *fallback,
+                           uint32_t fallback_count) {
+    audio_arena_reset();
+    uint32_t loaded = 0;
+    for (uint8_t t = 0; t < TRACK_COUNT; t++) {
+        const char *path = song->kit[t][0] ? song->kit[t] : NULL;
+        if (path == NULL && t < fallback_count) {
+            path = fallback[t];
+        }
+        if (path == NULL) {
+            continue;
+        }
+        uint32_t frames_loaded = 0;
+        if (kit_load_track(t, path, &frames_loaded) == KIT_OK) {
+            loaded++;
+            song_set_kit_path(song, t, path);
+        }
+    }
+    return loaded;
+}
 
 static void build_song_path(void) {
     const char *name = prefs.song[0] ? prefs.song : "session";
@@ -193,8 +223,9 @@ int main(void) {
 
     display_init();
     input_init();
+    menu_close(&menu);
     printf("RESULT case=input note=pads 0-7 play, Function+pad selects, "
-           "Select turns pitch, Volume turns level\n");
+           "Select click opens the menu, Play backs out\n");
 
 
     /* Something to hear on the first press of Play, when the card had nothing. A four-on-the-floor kick
@@ -333,15 +364,85 @@ int main(void) {
                         hits++;
                     }
                 } else if (event.key == KEY_PLAY) {
+                    if (menu_is_open(&menu)) {
+                        /* Back, not transport. A menu that could be left only
+                         * by choosing something is a trap. */
+                        menu_back(&menu);
+                        break;
+                    }
                     seq_toggle(&seq);
                     printf("RESULT case=transport running=%d bpm=%u div=%s\n",
                            seq.running ? 1 : 0, song.bpm,
                            song_division_name(&song));
                 } else if (event.key == KEY_SELECT_PUSH) {
-                    uint32_t pages =
-                        (song_length(&song) + STEPS_PER_PAGE - 1) /
-                        STEPS_PER_PAGE;
-                    page = (uint8_t)((page + 1) % (pages ? pages : 1));
+                    if (menu_is_open(&menu)) {
+                        char path[FAT_NAME_MAX + 24];
+                        switch (menu_click(&menu)) {
+                        case MENU_ACTION_LOAD_SONG: {
+                            strcpy(path, SONG_DIR);
+                            strcat(path, "/");
+                            strncat(path, menu.chosen, FAT_NAME_MAX - 1);
+                            enum songfile_result r =
+                                songfile_load(path, &song);
+                            if (r == SONGFILE_OK) {
+                                /* Remember it, so the next boot opens what the
+                                 * player just chose rather than what they had
+                                 * open before. */
+                                strncpy(prefs.song, menu.chosen,
+                                        PREFS_NAME_MAX - 1);
+                                prefs.song[PREFS_NAME_MAX - 1] = '\0';
+                                char *dot = strrchr(prefs.song, '.');
+                                if (dot != NULL) {
+                                    *dot = '\0';
+                                }
+                                build_song_path();
+                                prefs_save(&prefs);
+                                reload_kit(&song, DEFAULT_KIT,
+                                           count_of(DEFAULT_KIT));
+                            }
+                            snprintf(message[0], sizeof(message[0]), "%s",
+                                     r == SONGFILE_OK ? "LOADED" : "LOAD FAILED");
+                            snprintf(message[1], sizeof(message[1]), "%s",
+                                     menu.chosen);
+                            flash_ok = (r == SONGFILE_OK);
+                            flash_until = make_timeout_time_ms(1200);
+                            break;
+                        }
+                        case MENU_ACTION_SAVE_SONG: {
+                            enum songfile_result r =
+                                songfile_save(song_path, &song);
+                            if (r == SONGFILE_OK) {
+                                prefs.volume = master;
+                                prefs_save(&prefs);
+                            }
+                            snprintf(message[0], sizeof(message[0]), "%s",
+                                     r == SONGFILE_OK ? "SAVED" : "SAVE FAILED");
+                            snprintf(message[1], sizeof(message[1]), "%s",
+                                     prefs.song[0] ? prefs.song : "session");
+                            flash_ok = (r == SONGFILE_OK);
+                            flash_until = make_timeout_time_ms(900);
+                            break;
+                        }
+                        case MENU_ACTION_SET_SAMPLE: {
+                            strcpy(path, "/samples/");
+                            strncat(path, menu.chosen, FAT_NAME_MAX - 1);
+                            song_set_kit_path(&song, menu.track, path);
+                            uint32_t loaded = reload_kit(&song, DEFAULT_KIT,
+                                                         count_of(DEFAULT_KIT));
+                            snprintf(message[0], sizeof(message[0]),
+                                     "TRACK %u", menu.track + 1);
+                            snprintf(message[1], sizeof(message[1]), "%s",
+                                     menu.chosen);
+                            flash_ok = loaded > 0;
+                            flash_until = make_timeout_time_ms(1200);
+                            break;
+                        }
+                        default:
+                            break;
+                        }
+                    } else {
+                        menu_open(&menu);
+                    }
                 }
                 break;
 
@@ -359,6 +460,10 @@ int main(void) {
                 break;
 
             case INPUT_SELECT_TURN:
+                if (menu_is_open(&menu)) {
+                    menu_turn(&menu, event.delta);
+                    break;
+                }
                 if (seq.running) {
                     /* Tempo while it plays, pitch while it does not - the knob
                      * means whatever the badge is currently doing. */
@@ -421,6 +526,13 @@ int main(void) {
                 }
                 display_text(2, 1, message[0], !flash_ok);
                 display_text(2, FONT_HEIGHT + 5, message[1], true);
+                pages_written += display_flush();
+                next_frame = make_timeout_time_ms(33);
+                continue;
+            }
+
+            if (menu_is_open(&menu)) {
+                menu_draw(&menu, selected);
                 pages_written += display_flush();
                 next_frame = make_timeout_time_ms(33);
                 continue;

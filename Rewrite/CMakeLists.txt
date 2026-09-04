@@ -30,6 +30,7 @@ add_executable(rt
     src/input.c
     src/display.c
     src/font.c
+    src/menu.c
     src/song.c
     src/seq.c
     src/msgpack.c

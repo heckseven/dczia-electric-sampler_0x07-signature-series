@@ -221,6 +221,16 @@ int main(void) {
      * reason: Function held is a modifier (Function + pad selects a track),
      * Function tapped is a command. A press that did something else while it
      * was down was a modifier, whatever its duration. */
+    /* Until when the screen shows the result of a save, and which result.
+     *
+     * Saving with no feedback at all means a missed button press and a failed
+     * write look exactly the same from the outside - which is precisely the
+     * position a player was left in. A timestamp rather than a sleep, because
+     * blocking the loop for a flash would make sequenced hits late for the
+     * sake of an animation. */
+    absolute_time_t flash_until = get_absolute_time();
+    bool flash_ok = false;
+
     bool seq_mode = false;
     uint32_t function_down_ms = 0;
     bool function_used = false;
@@ -238,6 +248,18 @@ int main(void) {
     int16_t master = TEST_MASTER;
     audio_set_master(master);
 
+    /* Say so at boot when a song came off the card.
+     *
+     * Loading works and always did, but the badge starts in LIVE mode where the
+     * grid shows pad activity rather than the pattern - so a song that loaded
+     * perfectly looked exactly like one that had not. The player had no way to
+     * tell the difference, and asked the right question about it. */
+    if (loaded_song) {
+        flash_ok = true;
+        flash_until = make_timeout_time_ms(600);
+        printf("RESULT case=song loaded and showing\n");
+    }
+
     absolute_time_t next_report = make_timeout_time_ms(2000);
     absolute_time_t next_frame = make_timeout_time_ms(33);
     uint32_t pages_written = 0;
@@ -251,6 +273,8 @@ int main(void) {
         while (input_next(&event)) {
             switch (event.kind) {
             case INPUT_KEY_DOWN:
+                printf("RESULT case=key down=%u fn_held=%d\n", event.key,
+                       input_held(KEY_FUNCTION) ? 1 : 0);
                 if (event.key == KEY_FUNCTION) {
                     function_down_ms = to_ms_since_boot(get_absolute_time());
                     function_used = false;
@@ -276,6 +300,8 @@ int main(void) {
                             prefs.volume = master;
                             prefs_save(&prefs);
                         }
+                        flash_ok = (r == SONGFILE_OK);
+                        flash_until = make_timeout_time_ms(400);
                         printf("RESULT case=save path=%s result=%s\n",
                                song_path, songfile_result_name(r));
                     }
@@ -304,6 +330,7 @@ int main(void) {
                 break;
 
             case INPUT_KEY_UP:
+                printf("RESULT case=key up=%u\n", event.key);
                 if (event.key == KEY_FUNCTION && !function_used) {
                     uint32_t held =
                         to_ms_since_boot(get_absolute_time()) - function_down_ms;
@@ -369,6 +396,23 @@ int main(void) {
          * the flush only touches pages that actually changed - so a frame where
          * nothing happened costs nothing on the bus. */
         if (time_reached(next_frame)) {
+            if (!time_reached(flash_until)) {
+                /* A saved song fills the screen; a failed one shows bars, so
+                 * the two cannot be mistaken for each other or for nothing
+                 * happening at all. */
+                display_clear();
+                if (flash_ok) {
+                    display_fill_rect(0, 0, OLED_WIDTH, OLED_HEIGHT, true);
+                } else {
+                    for (uint32_t y = 0; y < OLED_HEIGHT; y += 4) {
+                        display_fill_rect(0, y, OLED_WIDTH, 2, true);
+                    }
+                }
+                pages_written += display_flush();
+                next_frame = make_timeout_time_ms(33);
+                continue;
+            }
+
             uint32_t sounding = audio_active_mask();
             for (uint32_t t = 0; t < TRACK_COUNT; t++) {
                 uint32_t x = t * 16;

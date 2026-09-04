@@ -201,13 +201,20 @@ static void handle_menu_action(enum menu_action action) {
     }
 
     case MENU_ACTION_SAVE_SONG: {
+        /* The name came from the name screen, so this may be a save-as onto a
+         * file that does not exist yet. Point prefs at it first: the path is
+         * built from prefs.song, and the next boot should open what was just
+         * written rather than what was open before it. */
+        strncpy(prefs.song, menu.chosen, PREFS_NAME_MAX - 1);
+        prefs.song[PREFS_NAME_MAX - 1] = '\0';
+        build_song_path();
         enum songfile_result r = songfile_save(song_path, &song);
         if (r == SONGFILE_OK) {
             prefs.volume = master;
             prefs_save(&prefs);
         }
         say(r == SONGFILE_OK, 900, r == SONGFILE_OK ? "SAVED" : "SAVE FAILED",
-            prefs.song[0] ? prefs.song : "session");
+            prefs.song);
         break;
     }
 
@@ -560,6 +567,13 @@ int main(void) {
                 } else if (event.key == KEY_SELECT_PUSH) {
                     if (!menu_is_open(&menu)) {
                         menu_open(&menu);
+                        /* After opening, not before: menu_open clears the
+                         * name along with the rest of the state. Seeded with
+                         * whatever is currently open, so re-saving under the
+                         * same name is two clicks rather than sixteen turns
+                         * of a knob. */
+                        menu_set_name(&menu, prefs.song[0] ? prefs.song
+                                                           : "SESSION");
                     }
                 } else if (event.key == KEY_VOLUME_PUSH) {
                     /* Mute lives on the song, and each thing that triggers
@@ -667,6 +681,7 @@ int main(void) {
 
             case INPUT_VOLUME_TURN: {
                 if (menu_is_open(&menu)) {
+                    menu_turn_volume(&menu, event.delta);
                     break;
                 }
                 int32_t pad = held_pad();

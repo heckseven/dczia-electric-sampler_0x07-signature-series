@@ -217,6 +217,66 @@ static void test_back_remembers_where_you_were(void) {
     check(menu.depth == 1, "one level left");
 }
 
+static void test_name_entry(void) {
+    struct menu menu;
+    memset(&menu, 0, sizeof(menu));
+
+    menu_open(&menu);
+    /* After opening, not before - menu_open clears the name with everything
+     * else, and seeding it first silently did nothing. */
+    menu_set_name(&menu, "session");
+    check(strncmp(menu.name, "SESSION         ", MENU_NAME_MAX) == 0,
+          "a seeded name is upper-cased and padded");
+    check(menu.cursor == 7, "the cursor lands after the last character");
+
+    menu_turn(&menu, 1); /* to SAVE SONG */
+    check(menu_enter(&menu) == MENU_ACTION_NONE,
+          "saving opens the name screen rather than saving straight away");
+
+    /* Select walks the name, Volume changes the letter under it. */
+    menu_turn(&menu, -7);
+    check(menu.cursor == 0, "select moves the cursor and stops at the start");
+    menu_turn(&menu, -5);
+    check(menu.cursor == 0, "and does not run off it");
+    menu_turn(&menu, 99);
+    check(menu.cursor == MENU_NAME_MAX - 1, "nor off the other end");
+
+    menu_turn(&menu, -(MENU_NAME_MAX - 1));
+    menu_turn_volume(&menu, 1); /* S -> T */
+    check(menu.name[0] == 'T', "volume moves through the character set");
+    menu_turn_volume(&menu, -1);
+    check(menu.name[0] == 'S', "and back");
+
+    /* The set wraps: stopping at the end would mean turning back thirty-eight
+     * clicks to reach a space. */
+    menu_set_name(&menu, " ");
+    check(menu.name[0] == ' ', "a name can start empty");
+    menu_turn(&menu, -MENU_NAME_MAX);
+    menu_turn_volume(&menu, -1);
+    check(menu.name[0] == '_', "turning back from a space wraps to the end");
+    menu_turn_volume(&menu, 1);
+    check(menu.name[0] == ' ', "and forward again wraps home");
+
+    /* Accepting trims the padding on both sides. */
+    menu_set_name(&menu, "KIT");
+    check(menu_enter(&menu) == MENU_ACTION_SAVE_SONG, "play saves");
+    check(strcmp(menu.chosen, "KIT") == 0, "with the padding trimmed off");
+    check(!menu_is_open(&menu), "and the menu closes");
+
+    /* An empty name is refused, not saved: it would write a file the song list
+     * cannot show, and the player would have no way to load it back. */
+    menu_open(&menu);
+    menu_turn(&menu, 1);
+    menu_enter(&menu);
+    menu_set_name(&menu, "");
+    check(menu_enter(&menu) == MENU_ACTION_NONE, "an empty name is refused");
+    check(menu_is_open(&menu), "and the screen stays up to fix it");
+
+    /* Back leaves the name screen for the root rather than out of the menu. */
+    menu_back(&menu);
+    check(menu_is_open(&menu), "back from the name screen returns to the root");
+}
+
 int main(void) {
     test_root_and_back();
     test_selection_stops_at_the_ends();
@@ -226,6 +286,7 @@ int main(void) {
     test_an_empty_directory();
     test_window_scrolls_with_a_long_list();
     test_back_remembers_where_you_were();
+    test_name_entry();
 
     if (failures == 0) {
         printf("ok - all menu tests passed\n");

@@ -124,7 +124,33 @@ Two states needed showing and there were four spare pixel rows to show them in.
   beside it: that band is four pixels tall and the type is nine, so a word there
   would run straight through the level bar.
 
+## Naming a saved song
+
+`MENU_NAME` was reserved on the assumption that twelve keys means a name has to
+be chosen from a list rather than typed. That turned out to be wrong in a useful
+way: there are **two** knobs, and two knobs are two axes. Select moves along the
+name, Volume changes the character under the cursor, and Play and Function keep
+meaning save and back exactly as they do on every other screen.
+
+The character set is space, A-Z, 0-9, `-` and `_`. No lower case, because FAT
+upper-cases a short name anyway and offering a distinction the card does not
+keep produces two names that look different and are the same file. The set
+wraps, unlike a list - there is no "how far through am I" to lose, and stopping
+at Z would mean turning back thirty-eight clicks to reach a space.
+
+The cursor is a rule under the character rather than an inverted block. Every
+other screen uses an inverted block for the selected item, and two different
+things should not look the same.
+
+Two things the tests caught that a knob would have found slowly:
+
+- `menu_open` memsets the whole struct, so seeding the name **before** opening
+  silently did nothing - which is exactly what the first wiring did. The name is
+  now explicitly blanked on open and seeded after it.
+- An empty name is refused rather than saved. It would write a file the song
+  list cannot show, leaving the player no way to load their own work back.
+
 ## Still missing
 
 MIDI, HID, animation, and the sync jacks. Per-step pitch, which neither firmware
-has. Text entry for naming saved songs - `MENU_NAME` is reserved for it.
+has.

@@ -10,6 +10,25 @@
 
 #define SAMPLE_DIR "/samples"
 
+/* What the Volume knob cycles through, in the order it cycles.
+ *
+ * Space first so a fresh name reads as empty rather than as a row of As, then
+ * letters, then digits, then the two punctuation marks that survive an 8.3
+ * filesystem without being mangled. No lower case: FAT stores a short name
+ * upper-cased anyway, and offering a distinction the card does not keep would
+ * produce two names that look different and are the same file. */
+static const char CHARSET[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+#define CHARSET_COUNT (sizeof(CHARSET) - 1)
+
+static uint32_t charset_index(char c) {
+    for (uint32_t i = 0; i < CHARSET_COUNT; i++) {
+        if (CHARSET[i] == c) {
+            return i;
+        }
+    }
+    return 0; /* anything unrepresentable reads as a space */
+}
+
 static const char *const ROOT_ITEMS[] = {
     "LOAD SONG",
     "SAVE SONG",
@@ -109,6 +128,10 @@ static void push(struct menu *menu, enum menu_screen screen) {
 
 void menu_open(struct menu *menu) {
     memset(menu, 0, sizeof(*menu));
+    /* Including the name, which is why menu_set_name has to come after this
+     * and not before. Opening on a name left over from last time would offer
+     * to overwrite a file the player is no longer looking at. */
+    memset(menu->name, ' ', MENU_NAME_MAX);
     push(menu, MENU_ROOT);
 }
 
@@ -123,7 +146,21 @@ bool menu_is_open(const struct menu *menu) {
 
 void menu_turn(struct menu *menu, int32_t delta) {
     struct menu_level *level = top(menu);
-    if (level == NULL || level->count == 0) {
+    if (level == NULL) {
+        return;
+    }
+    if (level->screen == MENU_NAME) {
+        int32_t next = (int32_t)menu->cursor + delta;
+        if (next < 0) {
+            next = 0;
+        }
+        if (next >= MENU_NAME_MAX) {
+            next = MENU_NAME_MAX - 1;
+        }
+        menu->cursor = (uint8_t)next;
+        return;
+    }
+    if (level->count == 0) {
         return;
     }
     int32_t next = (int32_t)level->index + delta;
@@ -154,6 +191,38 @@ void menu_back(struct menu *menu) {
     }
 }
 
+void menu_turn_volume(struct menu *menu, int32_t delta) {
+    struct menu_level *level = top(menu);
+    if (level == NULL || level->screen != MENU_NAME) {
+        return;
+    }
+    /* Wraps, unlike a list. There is no "how far through the alphabet am I"
+     * to lose, and stopping at Z would mean turning back thirty-eight clicks
+     * to reach a space. */
+    int32_t index = (int32_t)charset_index(menu->name[menu->cursor]) + delta;
+    index %= (int32_t)CHARSET_COUNT;
+    if (index < 0) {
+        index += (int32_t)CHARSET_COUNT;
+    }
+    menu->name[menu->cursor] = CHARSET[index];
+}
+
+void menu_set_name(struct menu *menu, const char *name) {
+    memset(menu->name, ' ', MENU_NAME_MAX);
+    menu->name[MENU_NAME_MAX] = '\0';
+    uint32_t i = 0;
+    for (; name != NULL && name[i] != '\0' && i < MENU_NAME_MAX; i++) {
+        char c = name[i];
+        if (c >= 'a' && c <= 'z') {
+            c = (char)(c - 'a' + 'A');
+        }
+        /* Anything the knob cannot reach becomes a space, so every name on
+         * screen is one the player could have typed and could type again. */
+        menu->name[i] = (charset_index(c) == 0 && c != ' ') ? ' ' : c;
+    }
+    menu->cursor = (uint8_t)(i < MENU_NAME_MAX ? i : MENU_NAME_MAX - 1);
+}
+
 enum menu_action menu_enter(struct menu *menu) {
     struct menu_level *level = top(menu);
     if (level == NULL) {
@@ -165,8 +234,7 @@ enum menu_action menu_enter(struct menu *menu) {
         if (level->index == 0) {
             push(menu, MENU_SONGS);
         } else if (level->index == 1) {
-            menu_close(menu);
-            return MENU_ACTION_SAVE_SONG;
+            push(menu, MENU_NAME);
         } else {
             push(menu, MENU_TRACKS);
         }
@@ -192,6 +260,29 @@ enum menu_action menu_enter(struct menu *menu) {
             return MENU_ACTION_SET_SAMPLE;
         }
         return MENU_ACTION_NONE;
+
+    case MENU_NAME: {
+        /* Trim the padding back off. Leading spaces go too: a name that begins
+         * with one is a file nobody can pick out of a list later. */
+        uint32_t first = 0;
+        while (first < MENU_NAME_MAX && menu->name[first] == ' ') {
+            first++;
+        }
+        uint32_t last = MENU_NAME_MAX;
+        while (last > first && menu->name[last - 1] == ' ') {
+            last--;
+        }
+        if (last == first) {
+            /* Nothing typed. Refused rather than saved as an empty name, which
+             * would produce a file the song list cannot show. */
+            return MENU_ACTION_NONE;
+        }
+        uint32_t length = last - first;
+        memcpy(menu->chosen, &menu->name[first], length);
+        menu->chosen[length] = '\0';
+        menu_close(menu);
+        return MENU_ACTION_SAVE_SONG;
+    }
 
     default:
         return MENU_ACTION_NONE;
@@ -235,12 +326,38 @@ static const char *title_for(enum menu_screen screen) {
     }
 }
 
+/* The name screen, which is the one screen that is not a list.
+ *
+ * Four rows: the heading, the name, the cursor, and what the two buttons do.
+ * The cursor is a rule under the character rather than an inverted block,
+ * because the selected item on every other screen is an inverted block and two
+ * different things should not look the same. */
+static void draw_name(const struct menu *menu) {
+    display_clear();
+    display_text(1, 0, "NAME", true);
+
+    /* Centred, so a short name does not sit against the left edge looking like
+     * it was left unfinished. Sixteen characters of 6-pixel type is 96 of the
+     * panel's 128, which leaves 16 either side. */
+    const uint32_t left = (OLED_WIDTH - MENU_NAME_MAX * FONT_WIDTH) / 2;
+    display_text(left, FONT_PITCH, menu->name, true);
+    display_fill_rect(left + menu->cursor * FONT_WIDTH, FONT_PITCH * 2 + 1,
+                      FONT_WIDTH, 1, true);
+
+    display_text(1, FONT_PITCH * 3, "PLAY SAVE  FN BACK", true);
+}
+
 void menu_draw(const struct menu *menu) {
     struct menu *mutable = (struct menu *)menu;
     if (menu->depth == 0) {
         return;
     }
     const struct menu_level *level = &menu->stack[menu->depth - 1];
+
+    if (level->screen == MENU_NAME) {
+        draw_name(menu);
+        return;
+    }
 
     /* Keep the selection in the middle where it can be, so turning the knob
      * moves the list rather than only the highlight. */

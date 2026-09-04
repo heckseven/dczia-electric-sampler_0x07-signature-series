@@ -1,9 +1,14 @@
 /* A menu, which is mostly a way of not needing a keyboard.
  *
- * The badge has twelve keys and two knobs, so anything involving a name has to
- * be chosen rather than typed. That shapes the whole design: every screen is a
- * list, the Select knob moves through it, and clicking takes the item. There is
- * no text entry anywhere and there does not need to be.
+ * The badge has twelve keys and two knobs, so anything involving a name is
+ * chosen rather than typed. That shapes the whole design: every screen is a
+ * list, the Select knob moves through it, and Play takes the item.
+ *
+ * One screen is not a list. Saving under a new name genuinely needs characters
+ * that are not already on the card, and the two knobs turn out to be enough
+ * without a character-picker list: Select moves along the name, Volume changes
+ * the letter under the cursor. Two knobs, two axes, and Play and Function keep
+ * meaning what they mean everywhere else.
  *
  * Lists come from the card as they are drawn rather than being read into
  * memory. /samples holds 85 files and could hold hundreds; a menu that loaded
@@ -27,12 +32,12 @@ enum menu_screen {
     MENU_SONGS,   /* pick a song to load */
     MENU_TRACKS,  /* pick which track to give a sample to */
     MENU_SAMPLES, /* pick the sample */
-    /* Reserved. Saving under a chosen name needs somewhere to choose it, and
-     * with twelve keys that is a character-picker rather than a keyboard - a
-     * list like every other screen here, which is why it fits this structure
-     * rather than needing a different one. */
-    MENU_NAME,
+    MENU_NAME,    /* type a name for the song being saved */
 };
+
+/* Long enough for a name worth typing on two knobs, and short enough that the
+ * whole thing fits one row of 6-pixel type across a 128-pixel panel. */
+#define MENU_NAME_MAX 16
 
 /* What the main loop is being asked to do. The menu decides what was chosen;
  * it does not load anything itself, because loading a kit means touching the
@@ -70,6 +75,13 @@ struct menu {
 
     uint8_t track; /* which track a sample is being chosen for */
 
+    /* The name being typed, and where the cursor sits in it. Held padded with
+     * spaces to its full width rather than NUL-terminated early: the cursor has
+     * to be able to move past the end of what has been typed so far, and a
+     * ragged buffer makes that a special case at every turn of the knob. */
+    char name[MENU_NAME_MAX + 1];
+    uint8_t cursor;
+
     /* Filled in when an action is returned. */
     char chosen[FAT_NAME_MAX];
 };
@@ -79,6 +91,16 @@ void menu_close(struct menu *menu);
 bool menu_is_open(const struct menu *menu);
 
 void menu_turn(struct menu *menu, int32_t delta);
+
+/* The other knob. Only the name screen uses it - on a list there is nothing for
+ * a second axis to mean, and giving it one would be a control the player has to
+ * discover is inert everywhere else. */
+void menu_turn_volume(struct menu *menu, int32_t delta);
+
+/* Seed the name screen, so re-saving an already-named song is a click rather
+ * than sixteen turns of a knob. Call it after menu_open, which clears the name
+ * along with everything else. */
+void menu_set_name(struct menu *menu, const char *name);
 
 /* Enter: take the selected item. Play, on the badge - Function is back, which
  * is the arrangement the player asked for and the one the rest of the firmware

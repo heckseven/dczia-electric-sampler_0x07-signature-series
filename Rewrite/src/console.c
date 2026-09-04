@@ -19,12 +19,17 @@
 
 #include "hardware/watchdog.h"
 #include "pico/bootrom.h"
+#include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 
 #include "console.h"
 
 void console_begin(const char *name) {
     stdio_init_all();
+    /* By hand: stdio_init_all calls this only when pico_stdio_usb was linked,
+     * and it deliberately was not - see the note in CMakeLists.txt about
+     * taking the SDK's CDC driver without its CDC-only descriptors. */
+    stdio_usb_init();
 
     absolute_time_t until = make_timeout_time_ms(CONSOLE_WINDOW_MS);
     while (!time_reached(until)) {

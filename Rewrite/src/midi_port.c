@@ -1,6 +1,8 @@
 /* The two MIDI ports. The parser they feed is in midi.c, which has no
  * hardware in it and is tested on the host - see tests/test_midi.c. */
 
+#include "tusb.h"
+
 #include "hardware/gpio.h"
 #include "hardware/uart.h"
 #include "pico/stdlib.h"
@@ -14,6 +16,7 @@
 #define MIDI_BAUD 31250
 
 static struct midi_parser uart_parser;
+static struct midi_parser usb_parser;
 static uint32_t bytes_in;
 static uint32_t bytes_out;
 
@@ -26,8 +29,34 @@ bool midi_receive(struct midi_message *out) {
             return true;
         }
     }
+
+    /* USB gets its own parser. One shared between the two ports would let a
+     * running status begun on the jack be completed by a data byte from the
+     * host, which is a note neither of them sent. */
+    while (tud_midi_mounted() && tud_midi_available()) {
+        uint8_t byte;
+        if (tud_midi_stream_read(&byte, 1) != 1) {
+            break;
+        }
+        bytes_in++;
+        if (midi_parse(&usb_parser, byte, out)) {
+            return true;
+        }
+    }
     return false;
 }
+
+/* Clock bytes that fired on the alarm and still have to reach USB.
+ *
+ * The UART byte goes out from the interrupt, straight to the register, which is
+ * what makes the jack's timing worth the alarm in the first place. TinyUSB is
+ * not safe to call from there, so USB gets a count and the main loop drains it.
+ *
+ * That is not the compromise it looks like. USB MIDI is delivered in one
+ * millisecond frames and buffered by the host at both ends, so timing finer
+ * than a main-loop pass cannot survive the journey - the precision the alarm
+ * buys is real on a DIN cable and imaginary over USB. */
+static volatile uint32_t usb_clocks_pending;
 
 static void send(const uint8_t *bytes, uint32_t length) {
     /* Non-blocking by choice. A MIDI cable with nothing on the other end still
@@ -37,10 +66,16 @@ static void send(const uint8_t *bytes, uint32_t length) {
      * underrun. */
     for (uint32_t i = 0; i < length; i++) {
         if (!uart_is_writable(MIDI_UART)) {
-            return;
+            break;
         }
         uart_putc_raw(MIDI_UART, (char)bytes[i]);
         bytes_out++;
+    }
+
+    /* And the same message to USB, if a host is listening. Written after the
+     * jack rather than before it: the cable is the one with a deadline. */
+    if (tud_midi_mounted()) {
+        tud_midi_stream_write(0, bytes, (uint8_t)length);
     }
 }
 
@@ -66,6 +101,22 @@ void midi_send_note_on(uint8_t note, uint8_t velocity) {
 }
 
 void midi_pump(void) {
+    /* Clocks the alarm could not send to USB from inside an interrupt. Capped
+     * rather than looped to exhaustion: if the host has stopped reading, the
+     * right thing is to drop clocks and keep the sequencer running, not to
+     * spend a main-loop pass catching up on a beat that has already gone. */
+    if (tud_midi_mounted()) {
+        uint32_t pending = usb_clocks_pending;
+        if (pending > 8) {
+            pending = 8;
+        }
+        for (uint32_t i = 0; i < pending; i++) {
+            uint8_t byte = 0xF8u;
+            tud_midi_stream_write(0, &byte, 1);
+        }
+    }
+    usb_clocks_pending = 0;
+
     uint32_t now = to_ms_since_boot(get_absolute_time());
     for (uint32_t t = 0; t < TRACK_COUNT; t++) {
         if (note_off_due[t] != 0 &&
@@ -108,6 +159,7 @@ static void __not_in_flash_func(clock_alarm_fired)(uint alarm) {
     } else {
         clocks_dropped++;
     }
+    usb_clocks_pending++;
     clock_tail = (clock_tail + 1u) % CLOCK_QUEUE;
     arm_next_clock();
 }

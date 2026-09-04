@@ -91,4 +91,9 @@ static const unsigned char PIN_KEY_COLS[KEY_COLS] = {20, 21, 22, 28};
 /* Two PIO cycles per bit, 32 bit clocks per stereo frame. */
 #define I2S_BITS_PER_FRAME 64
 
+/* How long a bench build waits to be enumerated before going back to the
+ * bootloader. Long enough for a host that is slow to enumerate, short enough
+ * that waiting it out is quicker than fetching the badge. */
+#define RT_USB_PROBATION_MS 15000
+
 #endif /* BOARD_H */

@@ -11,6 +11,10 @@
 
 #include "hardware/clocks.h"
 #include "pico/bootrom.h"
+#if RT_USB_PROBATION
+#include "pico/stdio_usb.h"
+#include "tusb.h"
+#endif
 #include "pico/stdlib.h"
 
 #include "audio.h"
@@ -270,6 +274,23 @@ static void build_song_path(void) {
 
 int main(void) {
     console_begin("rt-phase1");
+
+#if RT_USB_PROBATION
+    /* See RT_USB_PROBATION in CMakeLists.txt. A bench build that cannot get
+     * itself onto the bus puts itself back in the bootloader rather than
+     * sitting there playing to nobody, unreachable by every tool that talks to
+     * it over the very thing that is broken. */
+    if (!stdio_usb_connected() && !tud_mounted()) {
+        absolute_time_t give_up = make_timeout_time_ms(RT_USB_PROBATION_MS);
+        while (!tud_mounted()) {
+            if (time_reached(give_up)) {
+                reset_usb_boot(0, 0);
+            }
+            watchdog_update();
+            tight_loop_contents();
+        }
+    }
+#endif
 
     audio_init();
 

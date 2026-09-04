@@ -41,6 +41,7 @@ add_executable(rt
     src/anim.c
     src/midi.c
     src/midi_port.c
+    src/usb_descriptors.c
 )
 target_include_directories(rt PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 pico_generate_pio_header(rt ${CMAKE_CURRENT_LIST_DIR}/src/i2s.pio)
@@ -56,11 +57,80 @@ target_link_libraries(rt
     hardware_watchdog
     hardware_uart
 )
-# CDC only. The badge's UART pins are the MIDI jack, and stdio on them would put
-# debug text down a MIDI cable.
-pico_enable_stdio_usb(rt 1)
+# CDC *and* MIDI on the one USB device.
+#
+# pico_enable_stdio_usb would give CDC only: its interface library adds both
+# stdio_usb.c and stdio_usb_descriptors.c to the target unconditionally, and the
+# descriptor file has no MIDI in it and no way to opt out of it. Since the three
+# descriptor callbacks are compiled straight into the target rather than into a
+# static library, defining them here as well is a duplicate symbol rather than
+# an override.
+#
+# So the driver is taken and the descriptors are not: stdio_usb.c is added
+# directly, src/usb_descriptors.c supplies the callbacks it needs, and
+# stdio_usb_init is called by hand because stdio_init_all only knows to call it
+# when the library above was linked.
+target_sources(rt PRIVATE
+    ${PICO_SDK_PATH}/src/rp2_common/pico_stdio_usb/stdio_usb.c
+)
+# Ours first: include/tusb_config.h has to be found before the SDK's, which
+# disables itself when tinyusb_device is linked directly. See that file.
+target_include_directories(rt BEFORE PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include
+    ${PICO_SDK_PATH}/src/rp2_common/pico_stdio_usb/include
+)
+target_link_libraries(rt
+    pico_stdio
+    pico_time
+    pico_unique_id
+    pico_usb_reset
+    tinyusb_device
+)
+# Without this the device never enumerates at all, and nothing says so.
+#
+# stdio_usb_init only calls tusb_init() when PICO_STDIO_USB_ENABLE_TINYUSB_INIT
+# is set, and that defaults to 0 "if the application is not using tinyUSB
+# directly" - which linking tinyusb_device above is precisely the signal for.
+# The other branch is `assert(tud_inited())`, and asserts are compiled out of a
+# release build, so initialisation is skipped in silence: the firmware runs, the
+# audio plays, the lights move, and the host sees no device on the bus.
+#
+# Cost of finding that out the hard way: one badge recovered by holding Function
+# while plugging it in.
+#
+# Both of these default to 0 for the same reason, in the same header, four lines
+# apart: "1 if the application is not using tinyUSB directly", and linking
+# tinyusb_device is what the SDK reads as using it directly. Setting one and not
+# the other gets a device that initialises and is then never serviced - which
+# enumerates exactly as badly as one that was never initialised at all.
+target_compile_definitions(rt PRIVATE
+    PICO_STDIO_USB_ENABLE_TINYUSB_INIT=1
+    PICO_STDIO_USB_ENABLE_IRQ_BACKGROUND_TASK=1
+)
+
+# A desk-only safety net for changes to the USB configuration.
+#
+# A firmware that cannot enumerate cannot be told anything: not by flash.py,
+# not by the console, not at all. The way back is to hold Function while
+# plugging the badge in, and that costs a person walking over to it.
+#
+# With this on, a build that has not been configured by a host within
+# RT_USB_PROBATION_MS of boot returns to the bootloader by itself. That is only
+# correct when the badge is known to be plugged into a computer, which is true
+# at a bench and false on a battery at a conference - so it is off by default
+# and turned on explicitly for the build being experimented with.
+option(RT_USB_PROBATION "Reboot to BOOTSEL if USB never enumerates (bench only)" OFF)
+if (RT_USB_PROBATION)
+    target_compile_definitions(rt PRIVATE RT_USB_PROBATION=1)
+    message(STATUS "rt: USB probation ON - this build reboots to BOOTSEL if it does not enumerate")
+endif()
+# The badge's UART pins are the MIDI jack, and stdio on them would put debug
+# text down a MIDI cable.
 pico_enable_stdio_uart(rt 0)
 pico_add_extra_outputs(rt)
+# MIDI alongside the CDC console. TinyUSB defaults CFG_TUD_MIDI to 0 and the
+# SDK's tusb_config.h never mentions it, so a command-line define is what turns
+# the class on.
 target_link_options(rt PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/rt.map")
 
 # --- criterion 2: trigger-to-output, measured at the pin --------------------

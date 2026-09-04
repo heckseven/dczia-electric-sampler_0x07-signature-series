@@ -93,15 +93,80 @@ syncout=138  syncerr=16  midiclk=1648  mididrop=0
 
 8,811 cycles of the 250,000 a block has.
 
-## Not done: USB MIDI
+## USB MIDI, and what it cost
 
-The firmware is CDC only. Adding USB MIDI means a composite descriptor, which
-puts the CDC console - the path this session uses to flash the badge and read
-every measurement above - at risk if it goes wrong. It is worth doing and worth
-doing as its own step.
+The badge now enumerates as two devices at once - the CDC console and
+`0x07 Sampler MIDI 1` - and both directions are verified end to end:
+
+```
+sent 6 notes over USB   ->  hits=6, midiin=36     (12 messages x 3 bytes)
+captured from the badge ->  93 note on, 93 note off, 453 clock
+```
+
+Getting there took two failed flashes and two trips to the badge, and the
+reason is worth writing down.
+
+### The trap
+
+`pico_stdio_usb` cannot be used, because its interface library adds *both*
+`stdio_usb.c` and a CDC-only `stdio_usb_descriptors.c` to the target, with no
+way to take one without the other. Those three descriptor callbacks are
+compiled straight into the target rather than into a static library, so
+defining them here as well is a duplicate symbol, not an override.
+
+Taking the driver and leaving the descriptors means linking `tinyusb_device`
+directly - and that is the signal the SDK reads as "the application is managing
+TinyUSB itself". Two options key off it, in the same header, four lines apart:
+
+| option | default when TinyUSB is linked directly | effect |
+|---|---|---|
+| `PICO_STDIO_USB_ENABLE_TINYUSB_INIT` | 0 | `tusb_init()` never called |
+| `PICO_STDIO_USB_ENABLE_IRQ_BACKGROUND_TASK` | 0 | `tud_task()` never called |
+
+The first has `assert(tud_inited())` on its other branch, and asserts are
+compiled out of a release build. So the failure is silent and total: the
+firmware runs, the audio plays, the lights move, and the host sees no device.
+
+A third file is needed too. The SDK's `tusb_config.h` wraps its entire body in
+`#if !defined(LIB_TINYUSB_HOST) && !defined(LIB_TINYUSB_DEVICE)` - again exactly
+the case that no longer applies - so `CFG_TUD_CDC` goes undefined, `tusb.h`
+leaves out the class headers, and the build fails naming `TUD_CONFIG_DESC_LEN`
+while saying nothing about USB.
+
+### What made the second flash avoidable, and was not used
+
+Finding the first option and assuming it was the whole fault cost the second
+failed flash. A device that is initialised and never serviced fails to
+enumerate exactly as thoroughly as one that was never initialised, so the
+symptom did not change and looked like the same fault persisting.
+
+Both are checkable in the built image without flashing anything:
+
+```
+stdio_usb_init grew from 76 to 236 bytes
+low_priority_worker_irq calls tud_task_ext
+```
+
+That check now happens before a flash rather than after one.
+
+### Two things that came out of it
+
+**`tools/check_usb_descriptor.py`** parses the configuration descriptor out of
+the ELF and checks that `wTotalLength` matches the bytes present, that interface
+numbers are contiguous, and that no endpoint address is used twice. It said the
+descriptor was well formed while the badge was refusing to enumerate, which
+ruled out the obvious suspect and sent the search to the real one.
+
+**A bench-only probation timer.** `-DRT_USB_PROBATION=ON` builds a firmware that
+returns to the bootloader if it has not been enumerated within fifteen seconds.
+That is only correct when the badge is known to be plugged into a computer -
+a battery-powered badge at a conference must never do it - so it is off by
+default and turned on for the build being experimented with. Combined with the
+Function-at-power-on escape hatch, a bad USB change now costs nothing to undo.
 
 ## Not verified
 
-Nothing has been plugged into the jack. The byte counts prove the right bytes
-are being generated in the right numbers at the right times; whether a synth on
-the other end plays them is something only a cable can answer.
+Nothing has been plugged into the 5-pin jack. The byte counts prove the right
+bytes are generated in the right numbers at the right times, and USB proves the
+protocol is right; whether a synth on the DIN end plays them is something only
+a cable can answer.

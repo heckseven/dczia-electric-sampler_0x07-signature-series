@@ -73,7 +73,7 @@ static void test_root_and_back(void) {
     menu_open(&menu);
     check(menu_is_open(&menu), "opens");
     check(menu.stack[menu.depth-1].screen == MENU_ROOT, "starts at the root");
-    check(menu.stack[menu.depth-1].count == 4, "root has four items");
+    check(menu.stack[menu.depth-1].count == 5, "root has five items");
 
     menu_back(&menu);
     check(!menu_is_open(&menu), "back from the root closes it");
@@ -277,6 +277,114 @@ static void test_name_entry(void) {
     check(menu_is_open(&menu), "back from the name screen returns to the root");
 }
 
+/* Walk to a settings row and take it. Returns what the menu asked for. */
+static enum menu_action pick_setting(struct menu *menu, uint32_t row,
+                                     uint32_t choice) {
+    menu_open(menu);
+    menu_turn(menu, 4); /* root: down to SETTINGS, the last item */
+    menu_enter(menu);
+    menu_turn(menu, (int32_t)row);
+    menu_enter(menu);
+    menu_turn(menu, (int32_t)choice);
+    return menu_enter(menu);
+}
+
+static void test_settings_tree(void) {
+    struct menu menu;
+    memset(&menu, 0, sizeof(menu));
+
+    /* Every setting is reachable, and each one asks for the right thing. The
+     * failure this catches is a row wired to its neighbour's screen, which
+     * looks like nothing at all until the wrong setting moves. */
+    check(pick_setting(&menu, 0, 3) == MENU_ACTION_SET_DIVISION,
+          "the first row sets the step length");
+    check(menu.value == 3, "and hands back the division it landed on");
+
+    check(pick_setting(&menu, 1, 0) == MENU_ACTION_SET_LENGTH,
+          "the second sets the pattern length");
+    check(menu.value == 1, "the shortest offered is one step");
+
+    check(pick_setting(&menu, 1, 99) == MENU_ACTION_SET_LENGTH,
+          "turning past the end stays on the list");
+    check(menu.value == 64, "and stops at the longest, not past it");
+
+    check(pick_setting(&menu, 2, 0) == MENU_ACTION_SET_BRIGHTNESS,
+          "the third sets brightness");
+    check(menu.value == 1, "as a percentage a person would recognise");
+
+    /* The ceiling is a power limit, not a taste one - ten pixels at full white
+     * would pull about 600 mA from a rail that is also running the card and
+     * the amplifier. prefs.py caps it at 50 and says "do not raise it without
+     * measuring"; the first version of this list went to 100. */
+    for (uint32_t i = 0; i < 16; i++) {
+        pick_setting(&menu, 2, i);
+        check(menu.value >= 1 && menu.value <= 50,
+              "no brightness offered is outside what the rail can power");
+    }
+
+    check(pick_setting(&menu, 3, 0) == MENU_ACTION_SET_SYNC,
+          "the fourth sets the sync rate");
+    check(menu.value == 1, "starting at one pulse a quarter");
+    check(pick_setting(&menu, 3, 3) == MENU_ACTION_SET_SYNC, "and reaching");
+    check(menu.value == 24, "twenty-four, which is what MIDI clock is");
+
+    /* Every rate offered has to divide PPQN exactly, or a pulse lands on a
+     * tick the sequencer never visits. */
+    for (uint32_t i = 0; i < 4; i++) {
+        pick_setting(&menu, 3, i);
+        check(24u % menu.value == 0, "every sync rate divides 24 exactly");
+    }
+}
+
+static void test_settings_rows_show_their_value(void) {
+    /* The reason to have this screen rather than more gestures is that a
+     * glance answers "what is it set to now". A row that only says DIVISION
+     * answers neither question. */
+    struct menu menu;
+    memset(&menu, 0, sizeof(menu));
+    menu_open(&menu);
+
+    struct menu_context context = {
+        .division = 1, .length = 12, .brightness_pct = 25, .sync_ppqn = 4,
+    };
+    menu_set_context(&menu, &context);
+
+    menu_turn(&menu, 4);
+    menu_enter(&menu);
+    menu_draw(&menu);
+
+    check(strstr(menu.visible[0], "1/8") != NULL,
+          "the step row shows the current division");
+    check(strstr(menu.visible[1], "12") != NULL,
+          "the length row shows the current length");
+    check(strstr(menu.visible[2], "25%") != NULL,
+          "the light row shows the current brightness");
+
+    /* And a changed setting re-labels rather than showing the old value until
+     * something else happens to move the window. */
+    context.length = 32;
+    menu_set_context(&menu, &context);
+    menu_draw(&menu);
+    check(strstr(menu.visible[1], "32") != NULL,
+          "a changed setting relabels its row straight away");
+}
+
+static void test_opening_the_menu_keeps_the_context(void) {
+    /* menu_open memsets, which is what cleared the name and had to be fixed
+     * once already. The context is not menu state - it is what the instrument
+     * is set to - and clearing it would show every setting as zero until the
+     * next frame. */
+    struct menu menu;
+    memset(&menu, 0, sizeof(menu));
+    struct menu_context context = {
+        .division = 2, .length = 16, .brightness_pct = 50, .sync_ppqn = 2,
+    };
+    menu_set_context(&menu, &context);
+    menu_open(&menu);
+    check(menu.context.length == 16, "opening the menu does not forget it");
+    check(menu.context.sync_ppqn == 2, "any of it");
+}
+
 int main(void) {
     test_root_and_back();
     test_selection_stops_at_the_ends();
@@ -287,6 +395,9 @@ int main(void) {
     test_window_scrolls_with_a_long_list();
     test_back_remembers_where_you_were();
     test_name_entry();
+    test_settings_tree();
+    test_settings_rows_show_their_value();
+    test_opening_the_menu_keeps_the_context();
 
     if (failures == 0) {
         printf("ok - all menu tests passed\n");

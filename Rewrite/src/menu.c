@@ -21,6 +21,45 @@
 static const char CHARSET[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
 #define CHARSET_COUNT (sizeof(CHARSET) - 1)
 
+/* The settings screen itself: which rows it has, in order. Kept as an enum
+ * beside the labels so the two cannot drift apart. */
+enum settings_row {
+    SETTING_DIVISION = 0,
+    SETTING_LENGTH,
+    SETTING_BRIGHTNESS,
+    SETTING_SYNC,
+    SETTING_DELETE,
+    SETTING_COUNT,
+};
+
+/* Lengths worth offering. Not 1 to 64: a list that long is a minute of turning
+ * to cross, and these are the ones a pattern is actually written in. Per-track
+ * lengths - the polyrhythms - are still set by Play and the Select knob, which
+ * is where a player already reaches for them. */
+static const uint8_t LENGTHS[] = {1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 24, 32, 64};
+#define LENGTH_COUNT (sizeof(LENGTHS) / sizeof(LENGTHS[0]))
+
+/* Percentages rather than raw levels: 26 of 255 means nothing to anybody.
+ *
+ * Stopping at 50 is a power limit, not a taste one. prefs.py sets it out: ten
+ * pixels at full white is three channels of about 20 mA each, so 600 mA, from
+ * a 3V3 rail whose only source is the Pico's own regulator - with 0.6 uF of
+ * decoupling and no bulk capacitor anywhere - while that same regulator is
+ * running the Pico, the card and the amplifier. Fifty percent keeps the worst
+ * case near 300 mA, which the measured topology can stand.
+ *
+ * Its comment ends "Not a taste limit; do not raise it without measuring", and
+ * the first version of this list went to 100 because that was not read first.
+ * A brownout here is not a dim panel: it is the regulator sagging while the SD
+ * card is mid-write. */
+static const uint8_t BRIGHTNESS[] = {1, 5, 10, 25, 50};
+#define BRIGHTNESS_COUNT (sizeof(BRIGHTNESS) / sizeof(BRIGHTNESS[0]))
+
+/* The rates the jack speaks - engine/clock.py's SYNC_RATES. Every one divides
+ * PPQN exactly, so no rate drifts against the beat. */
+static const uint8_t SYNC_RATES[] = {1, 2, 4, 24};
+#define SYNC_RATE_COUNT (sizeof(SYNC_RATES) / sizeof(SYNC_RATES[0]))
+
 static uint32_t charset_index(char c) {
     for (uint32_t i = 0; i < CHARSET_COUNT; i++) {
         if (CHARSET[i] == c) {
@@ -35,6 +74,7 @@ static const char *const ROOT_ITEMS[] = {
     "SAVE SONG",
     "TRACK SAMPLE",
     "LIGHTS",
+    "SETTINGS",
 };
 #define ROOT_COUNT (sizeof(ROOT_ITEMS) / sizeof(ROOT_ITEMS[0]))
 
@@ -81,10 +121,6 @@ static bool nth_file(const char *directory, uint32_t want, char *out,
     return false;
 }
 
-static enum menu_screen current(const struct menu *menu) {
-    return menu->depth ? menu->stack[menu->depth - 1].screen : MENU_CLOSED;
-}
-
 static struct menu_level *top(struct menu *menu) {
     return menu->depth ? &menu->stack[menu->depth - 1] : NULL;
 }
@@ -92,6 +128,7 @@ static struct menu_level *top(struct menu *menu) {
 static const char *screen_directory(enum menu_screen screen) {
     switch (screen) {
     case MENU_SONGS:
+    case MENU_DELETE:
         return SONG_DIR;
     case MENU_SAMPLES:
         return SAMPLE_DIR;
@@ -110,6 +147,16 @@ static uint32_t items_on(enum menu_screen screen) {
         return ROOT_COUNT;
     case MENU_ANIM:
         return ANIM_COUNT;
+    case MENU_SETTINGS:
+        return SETTING_COUNT;
+    case MENU_DIVISION:
+        return DIVISION_COUNT;
+    case MENU_LENGTH:
+        return LENGTH_COUNT;
+    case MENU_BRIGHTNESS:
+        return BRIGHTNESS_COUNT;
+    case MENU_SYNC:
+        return SYNC_RATE_COUNT;
     case MENU_TRACKS:
         return TRACK_COUNT;
     default:
@@ -130,8 +177,20 @@ static void push(struct menu *menu, enum menu_screen screen) {
     menu->window_valid = false;
 }
 
+void menu_set_context(struct menu *menu, const struct menu_context *context) {
+    /* The window is rebuilt only when it moves, so a changed setting has to say
+     * the labels are stale or the row keeps showing the old value until the
+     * knob is turned. */
+    if (memcmp(&menu->context, context, sizeof(*context)) != 0) {
+        menu->context = *context;
+        menu->window_valid = false;
+    }
+}
+
 void menu_open(struct menu *menu) {
+    struct menu_context keep = menu->context;
     memset(menu, 0, sizeof(*menu));
+    menu->context = keep; /* what the instrument is set to did not change */
     /* Including the name, which is why menu_set_name has to come after this
      * and not before. Opening on a name left over from last time would offer
      * to overwrite a file the player is no longer looking at. */
@@ -248,8 +307,58 @@ enum menu_action menu_enter(struct menu *menu) {
             push(menu, MENU_NAME);
         } else if (level->index == 2) {
             push(menu, MENU_TRACKS);
-        } else {
+        } else if (level->index == 3) {
             push(menu, MENU_ANIM);
+        } else {
+            push(menu, MENU_SETTINGS);
+        }
+        return MENU_ACTION_NONE;
+
+    case MENU_SETTINGS:
+        switch (level->index) {
+        case SETTING_DIVISION:
+            push(menu, MENU_DIVISION);
+            break;
+        case SETTING_LENGTH:
+            push(menu, MENU_LENGTH);
+            break;
+        case SETTING_BRIGHTNESS:
+            push(menu, MENU_BRIGHTNESS);
+            break;
+        case SETTING_SYNC:
+            push(menu, MENU_SYNC);
+            break;
+        default:
+            push(menu, MENU_DELETE);
+            break;
+        }
+        return MENU_ACTION_NONE;
+
+    case MENU_DIVISION:
+        menu->value = level->index;
+        menu_close(menu);
+        return MENU_ACTION_SET_DIVISION;
+
+    case MENU_LENGTH:
+        menu->value = LENGTHS[level->index % LENGTH_COUNT];
+        menu_close(menu);
+        return MENU_ACTION_SET_LENGTH;
+
+    case MENU_BRIGHTNESS:
+        menu->value = BRIGHTNESS[level->index % BRIGHTNESS_COUNT];
+        menu_close(menu);
+        return MENU_ACTION_SET_BRIGHTNESS;
+
+    case MENU_SYNC:
+        menu->value = SYNC_RATES[level->index % SYNC_RATE_COUNT];
+        menu_close(menu);
+        return MENU_ACTION_SET_SYNC;
+
+    case MENU_DELETE:
+        if (nth_file(SONG_DIR, level->index, menu->chosen,
+                     sizeof(menu->chosen))) {
+            menu_close(menu);
+            return MENU_ACTION_DELETE_SONG;
         }
         return MENU_ACTION_NONE;
 
@@ -309,6 +418,34 @@ enum menu_action menu_enter(struct menu *menu) {
 
 /* --- drawing ---------------------------------------------------------------- */
 
+/* Rows on the settings screen carry what they are currently set to.
+ *
+ * The whole reason to have a settings list rather than a set of gestures is
+ * that a glance answers "what is it now" as well as "what could it be", and a
+ * row that only says DIVISION answers neither. */
+static void settings_label(const struct menu_context *context, uint32_t index,
+                           char *out, uint32_t out_size) {
+    switch (index) {
+    case SETTING_DIVISION:
+        snprintf(out, out_size, "STEP   %s",
+                 song_division_label(context->division));
+        return;
+    case SETTING_LENGTH:
+        snprintf(out, out_size, "LENGTH %u", context->length);
+        return;
+    case SETTING_BRIGHTNESS:
+        snprintf(out, out_size, "LIGHT  %u%%", context->brightness_pct);
+        return;
+    case SETTING_SYNC:
+        snprintf(out, out_size, "SYNC   %u PPQ", context->sync_ppqn);
+        return;
+    default:
+        strncpy(out, "DELETE SONG", out_size - 1);
+        out[out_size - 1] = '\0';
+        return;
+    }
+}
+
 static void label_for(enum menu_screen screen, uint32_t index, char *out,
                       uint32_t out_size) {
     switch (screen) {
@@ -322,6 +459,20 @@ static void label_for(enum menu_screen screen, uint32_t index, char *out,
     case MENU_ANIM:
         strncpy(out, anim_name((enum anim)index), out_size - 1);
         out[out_size - 1] = '\0';
+        return;
+    case MENU_DIVISION:
+        strncpy(out, song_division_label(index), out_size - 1);
+        out[out_size - 1] = '\0';
+        return;
+    case MENU_LENGTH:
+        snprintf(out, out_size, "%u STEPS", LENGTHS[index % LENGTH_COUNT]);
+        return;
+    case MENU_BRIGHTNESS:
+        snprintf(out, out_size, "%u%%", BRIGHTNESS[index % BRIGHTNESS_COUNT]);
+        return;
+    case MENU_SYNC:
+        snprintf(out, out_size, "%u PER QUARTER",
+                 SYNC_RATES[index % SYNC_RATE_COUNT]);
         return;
     default: {
         const char *directory = screen_directory(screen);
@@ -345,6 +496,18 @@ static const char *title_for(enum menu_screen screen) {
         return "SAMPLE";
     case MENU_ANIM:
         return "LIGHTS";
+    case MENU_SETTINGS:
+        return "SETTINGS";
+    case MENU_DIVISION:
+        return "STEP LENGTH";
+    case MENU_LENGTH:
+        return "PATTERN LENGTH";
+    case MENU_BRIGHTNESS:
+        return "BRIGHTNESS";
+    case MENU_SYNC:
+        return "SYNC RATE";
+    case MENU_DELETE:
+        return "DELETE WHICH";
     default:
         return "";
     }
@@ -398,8 +561,13 @@ void menu_draw(const struct menu *menu) {
     if (!menu->window_valid || menu->window_first != first) {
         for (uint32_t row = 0; row < MENU_VISIBLE; row++) {
             if (first + row < level->count) {
-                label_for(level->screen, first + row, mutable->visible[row],
-                          FAT_NAME_MAX);
+                if (level->screen == MENU_SETTINGS) {
+                    settings_label(&menu->context, first + row,
+                                   mutable->visible[row], FAT_NAME_MAX);
+                } else {
+                    label_for(level->screen, first + row,
+                              mutable->visible[row], FAT_NAME_MAX);
+                }
             } else {
                 mutable->visible[row][0] = '\0';
             }

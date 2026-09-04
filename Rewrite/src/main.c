@@ -94,6 +94,11 @@ static volatile char console_command;
  * two different functions. */
 static enum anim idle_anim = ANIM_PULSE;
 
+/* Kept as a percentage as well as pushed to the strip, so the settings screen
+ * can say what it is rather than reporting a level nobody chose in those
+ * units. */
+static uint8_t brightness_pct = PREFS_BRIGHTNESS_DEFAULT;
+
 static void on_console_command(char c) {
     console_command = c;
 }
@@ -240,6 +245,55 @@ static void handle_menu_action(enum menu_action action) {
         break;
     }
 
+    case MENU_ACTION_SET_DIVISION: {
+        song_set_division(&song, (int32_t)menu.value);
+        say(true, 700, "STEP", song_division_name(&song));
+        break;
+    }
+
+    case MENU_ACTION_SET_LENGTH: {
+        /* Every track, which is what makes this the pattern's length rather
+         * than one track's. A player wanting them different reaches for Play
+         * and the Select knob, where per-track length already lives. */
+        for (uint8_t t = 0; t < TRACK_COUNT; t++) {
+            song_set_length(&song, t, menu.value);
+        }
+        char line[22];
+        snprintf(line, sizeof(line), "%lu STEPS", (unsigned long)menu.value);
+        say(true, 700, "LENGTH", line);
+        break;
+    }
+
+    case MENU_ACTION_SET_BRIGHTNESS: {
+        brightness_pct = (uint8_t)menu.value;
+        pixels_set_brightness((uint8_t)((menu.value * 255u) / 100u));
+        prefs.brightness = brightness_pct;
+        prefs_save(&prefs);
+        char line[22];
+        snprintf(line, sizeof(line), "%lu%%", (unsigned long)menu.value);
+        say(true, 700, "BRIGHTNESS", line);
+        break;
+    }
+
+    case MENU_ACTION_SET_SYNC: {
+        seq_set_sync_ppqn(&seq, menu.value);
+        char line[22];
+        snprintf(line, sizeof(line), "%lu PER QUARTER",
+                 (unsigned long)menu.value);
+        say(true, 700, "SYNC", line);
+        break;
+    }
+
+    case MENU_ACTION_DELETE_SONG: {
+        strcpy(path, SONG_DIR);
+        strcat(path, "/");
+        strncat(path, menu.chosen, FAT_NAME_MAX - 1);
+        bool gone = fat_delete(path);
+        say(gone, 1200, gone ? "DELETED" : "DELETE FAILED", menu.chosen);
+        printf("RESULT case=delete path=%s ok=%d\n", path, gone ? 1 : 0);
+        break;
+    }
+
     case MENU_ACTION_SET_ANIM:
         /* Set by handle_menu_action, read by the render below - which is why
          * idle_anim is a file-scope variable rather than a local: the menu
@@ -337,13 +391,20 @@ int main(void) {
 
     if (mounted) {
         prefs_load(&prefs);
+        /* Apply it before anything can light up, so the panel never flashes at
+         * a brightness the player turned down - and, on a badge whose rail is
+         * shared with the card and the amplifier, never draws more than they
+         * asked it to even for one frame. */
+        brightness_pct = prefs.brightness;
+        pixels_set_brightness((uint8_t)((brightness_pct * 255u) / 100u));
         build_song_path();
         enum songfile_result r = songfile_load(song_path, &song);
         printf("RESULT case=song path=%s result=%s bpm=%u div=%s empty=%d "
-               "prefs=%d volume=%ld\n",
+               "prefs=%d volume=%ld bright=%u\n",
                song_path, songfile_result_name(r), song.bpm,
                song_division_name(&song), song_is_empty(&song) ? 1 : 0,
-               prefs.loaded ? 1 : 0, (long)prefs.volume);
+               prefs.loaded ? 1 : 0, (long)prefs.volume,
+               prefs.brightness);
         if (r == SONGFILE_OK) {
             loaded_song = true;
         } else {
@@ -947,6 +1008,17 @@ int main(void) {
             }
 
             if (menu_is_open(&menu)) {
+                /* Refreshed every frame rather than on each change: it is four
+                 * bytes and a compare, and the alternative is remembering to
+                 * do it at every place a setting can move - including the
+                 * gestures, which do not go through the menu at all. */
+                struct menu_context context = {
+                    .division = song.division,
+                    .length = song.lengths[selected],
+                    .brightness_pct = brightness_pct,
+                    .sync_ppqn = seq.sync_ppqn,
+                };
+                menu_set_context(&menu, &context);
                 menu_draw(&menu);
                 pages_written += display_flush();
                 next_frame = make_timeout_time_ms(33);

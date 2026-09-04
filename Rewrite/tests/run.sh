@@ -29,9 +29,10 @@ run() {
 
 run seq     tests/test_seq.c     src/song.c src/seq.c
 run msgpack tests/test_msgpack.c src/msgpack.c
-run menu    tests/test_menu.c    src/menu.c src/anim.c
+run menu    tests/test_menu.c    src/menu.c src/anim.c src/song.c
 run songfile tests/test_songfile.c src/song.c src/songfile.c src/msgpack.c
 run anim    tests/test_anim.c    src/anim.c
 run midi    tests/test_midi.c    src/midi.c
+run prefs   tests/test_prefs.c   src/prefs.c src/msgpack.c
 
 exit $fail

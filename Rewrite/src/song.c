@@ -35,6 +35,10 @@ uint32_t song_ticks_per_step(const struct song *song) {
                                                  : DIVISION_DEFAULT];
 }
 
+const char *song_division_label(uint32_t division) {
+    return NAMES[division < DIVISION_COUNT ? division : DIVISION_DEFAULT];
+}
+
 const char *song_division_name(const struct song *song) {
     return NAMES[song->division < DIVISION_COUNT ? song->division
                                                  : DIVISION_DEFAULT];

@@ -39,6 +39,17 @@ enum menu_screen {
     MENU_SAMPLES, /* pick the sample */
     MENU_NAME,    /* type a name for the song being saved */
     MENU_ANIM,    /* pick what the light strip does when nothing is happening */
+
+    /* Settings. Each one is its own list of choices, which is the same shape
+     * every other screen here already has - a setting with three or six legal
+     * values is a list, and giving it a bespoke editor would be a second
+     * interaction to learn for no gain. */
+    MENU_SETTINGS,
+    MENU_DIVISION,   /* how long a step is */
+    MENU_LENGTH,     /* pattern length, applied to every track */
+    MENU_BRIGHTNESS, /* the light strip */
+    MENU_SYNC,       /* pulses per quarter note on the sync jack */
+    MENU_DELETE,     /* remove a saved song */
 };
 
 /* Long enough for a name worth typing on two knobs, and short enough that the
@@ -54,11 +65,33 @@ enum menu_action {
     MENU_ACTION_SAVE_SONG,
     MENU_ACTION_SET_SAMPLE,
     MENU_ACTION_SET_ANIM,
+    MENU_ACTION_SET_DIVISION,
+    MENU_ACTION_SET_LENGTH,
+    MENU_ACTION_SET_BRIGHTNESS,
+    MENU_ACTION_SET_SYNC,
+    MENU_ACTION_DELETE_SONG,
 };
 
 /* How deep the screens nest. Four is more than the current tree needs and is
  * there so adding a level is a data change rather than a structural one. */
 #define MENU_DEPTH 4
+
+/* What the instrument is currently set to.
+ *
+ * The menu draws the current value beside each setting, so a glance at the
+ * list answers "what is it now" as well as "what could it be" - which is the
+ * whole reason to have a settings screen rather than a set of gestures.
+ *
+ * Passed in rather than read: this module has no song, no transport and no
+ * light strip, and giving it one so it could label a row would be a poor
+ * trade for a struct of four bytes. */
+struct menu_context {
+    uint8_t division;
+    uint8_t length;
+    uint8_t brightness_pct;
+    uint8_t sync_ppqn;
+};
+
 
 struct menu_level {
     enum menu_screen screen;
@@ -82,6 +115,12 @@ struct menu {
 
     uint8_t track; /* which track a sample is being chosen for */
     uint8_t anim;  /* which animation was picked */
+    /* What the chosen row meant, for the settings that are a plain number.
+     * One field rather than one per setting: only ever one is being answered,
+     * and the action says which question it was. */
+    uint32_t value;
+
+    struct menu_context context;
 
     /* The name being typed, and where the cursor sits in it. Held padded with
      * spaces to its full width rather than NUL-terminated early: the cursor has
@@ -93,6 +132,8 @@ struct menu {
     /* Filled in when an action is returned. */
     char chosen[FAT_NAME_MAX];
 };
+
+void menu_set_context(struct menu *menu, const struct menu_context *context);
 
 void menu_open(struct menu *menu);
 void menu_close(struct menu *menu);

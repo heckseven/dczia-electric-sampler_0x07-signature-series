@@ -22,7 +22,13 @@
 #include "pico/stdio_usb.h"
 
 #define CFG_TUSB_RHPORT0_MODE (OPT_MODE_DEVICE)
+
+/* The SDK's TinyUSB port already picks this. Naming it unconditionally is a
+ * redefinition warning and, if the port ever chose differently, a quietly
+ * mismatched build. */
+#ifndef CFG_TUSB_OS
 #define CFG_TUSB_OS (OPT_OS_PICO)
+#endif
 
 #ifndef CFG_TUSB_MEM_ALIGN
 #define CFG_TUSB_MEM_ALIGN __attribute__((aligned(4)))

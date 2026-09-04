@@ -16,13 +16,11 @@
  * a shift and a phase of "all the way round" is exactly one unit past zero. */
 #define PHASE_ONE 256
 
-static const uint8_t PLAY_PIXEL = 1;
-static const uint8_t FUNCTION_PIXEL = 0;
-
 /* What anything travelling goes round: a serpentine over the panel, left to
  * right along the buttons, back along the top pad row, forward along the
  * bottom. Not strip order - the two button pixels are numbered right to left
- * against the panel, so strip order would make a chase jump sideways. */
+ * against the panel (pixel 1 is Play, on the left; pixel 0 is Function, to its
+ * right), so strip order would make a chase jump sideways. */
 static const uint8_t PATH[] = {1, 0, 2, 3, 4, 5, 6, 7, 8, 9};
 #define PATH_LEN (sizeof(PATH) / sizeof(PATH[0]))
 

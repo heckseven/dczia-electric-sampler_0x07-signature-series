@@ -102,6 +102,9 @@ void song_init(struct song *song);
 
 uint32_t song_ticks_per_step(const struct song *song);
 const char *song_division_name(const struct song *song);
+/* By index rather than from a song, so a menu can list the choices without
+ * having to own one. */
+const char *song_division_label(uint32_t division);
 
 /* The furthest a hit may sit from its own grid line: strictly less than half a
  * step. A hit exactly halfway is equidistant between two grid lines and neither

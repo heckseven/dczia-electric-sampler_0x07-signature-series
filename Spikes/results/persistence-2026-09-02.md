@@ -331,3 +331,33 @@ The boot order changed to suit this: **the song loads before the kit.** Loading 
 first means loading whichever ones this build happens to default to and then loading them
 again once the song says otherwise. A song that names its sounds should sound the way it
 did when it was saved.
+
+## Confirmed by the player, 2026-09-03
+
+Pattern made, saved with Function + Select click, power pulled, plugged back in: **the
+screen flashed on save and the song loaded on boot.**
+
+Worth recording how long that took to establish, because the lesson is not about
+persistence. Saving had worked from the first attempt. What did not exist was any way to
+observe it:
+
+- a save gave no feedback, so a button press that never registered, a write that failed,
+  and a write that succeeded were indistinguishable;
+- the badge boots in LIVE mode, where the grid shows pad activity rather than the
+  pattern, so a song that loaded perfectly looked like one that had not;
+- and a test had overwritten the player's file with its own pattern, so even the steps
+  were not theirs.
+
+Three invisible things at once. Any one alone would have been confusing; together they
+made the system undiagnosable from the outside, and it took the player asking "is there
+any indication that it's saving" to break the deadlock. The answer was no, and that was
+the whole problem.
+
+The fix is feedback rather than function: solid fill on a save, bars on a failure, a
+brief fill at boot when a song came off the card, and key presses logged over USB so a
+gesture that never arrives can be told from one that arrives and does nothing.
+
+**The general point, worth carrying into the menu work: a feature with no observable
+result is not finished, however correct it is.** The measurements in this campaign were
+all designed to be observable. The first piece of actual instrument behaviour was not,
+and it cost more time than any bug in it would have.
